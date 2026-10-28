@@ -1,9 +1,12 @@
 import json
+import hashlib
 from pathlib import Path
 import tempfile
 import unittest
 
-from scripts.ci.gates import check_jobs, check_sarif
+from scripts.ci.gates import check_jobs, check_sarif, reviewed_locations, summarize_audit
+from contextlib import redirect_stdout
+import io
 
 
 class QualityGateTests(unittest.TestCase):
@@ -105,3 +108,52 @@ class CodeQLGateTests(unittest.TestCase):
         # Case 2: ruleId not in driver/extensions falls back to result level
         self.write_report(results=[{"ruleId": "external/rule", "level": "error"}])
         self.assertEqual(check_sarif(self.root), (1, 1))
+
+    def test_protocol_review_matches_only_exact_rule_function_and_digest(self):
+        source = "def protocol_sign(value):\n    return value\n"
+        (self.root / "protocol.py").write_text(source, encoding="utf-8")
+        entry = {"ruleId": "test/rule", "path": "protocol.py", "function": "protocol_sign",
+                 "sha256": hashlib.sha256(source.rstrip().encode()).hexdigest(),
+                 "reason": "External protocol contract"}
+        reviews = self.root / "reviews.json"
+        reviews.write_text(json.dumps([entry]), encoding="utf-8")
+        approved = reviewed_locations(reviews, self.root)
+        self.write_report(results=[{"ruleId": "test/rule", "locations": [{"physicalLocation": {
+            "artifactLocation": {"uri": "protocol.py"}, "region": {"startLine": 2},
+        }}]}])
+        self.assertEqual(check_sarif(self.root, approved=approved), (1, 0))
+        self.report["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["region"]["startLine"] = 3
+        self.save()
+        self.assertEqual(check_sarif(self.root, approved=approved), (1, 1))
+        self.assertEqual(check_sarif(self.root, approved={("different/rule", "protocol.py", 3)}), (1, 1))
+        (self.root / "protocol.py").write_text(source.replace("return value", "return str(value)"), encoding="utf-8")
+        with self.assertRaises(ValueError):
+            reviewed_locations(reviews, self.root)
+
+    def test_review_cannot_escape_source_root(self):
+        reviews = self.root / "reviews.json"
+        reviews.write_text(json.dumps([{"path": "../outside.py"}]), encoding="utf-8")
+        with self.assertRaises(ValueError):
+            reviewed_locations(reviews, self.root)
+
+    def test_secret_summary_never_prints_match_or_secret(self):
+        path = self.root / "gitleaks.json"
+        path.write_text(json.dumps([{"RuleID": "generic-api-key", "File": "config.py",
+                                    "Fingerprint": "sha:config.py:generic-api-key:1",
+                                    "Secret": "must-not-be-printed", "Match": "must-not-be-printed"}]), encoding="utf-8")
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(summarize_audit(path, "secrets"), 1)
+        self.assertNotIn("must-not-be-printed", output.getvalue())
+        self.assertIn("sha:config.py", output.getvalue())
+
+    def test_dependency_summary_blocks_unfixed_and_skipped_packages(self):
+        path = self.root / "pip.json"
+        dependency = {"name": "package", "version": "1", "vulns": [{"id": "CVE-test", "fix_versions": []}]}
+        path.write_text(json.dumps({"dependencies": [dependency]}), encoding="utf-8")
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(summarize_audit(path, "pip-audit"), 1)
+        dependency["skip_reason"] = "No metadata"
+        path.write_text(json.dumps({"dependencies": [dependency]}), encoding="utf-8")
+        with self.assertRaises(ValueError):
+            summarize_audit(path, "pip-audit")

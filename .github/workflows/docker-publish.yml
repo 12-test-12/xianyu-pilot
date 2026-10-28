@@ -191,6 +191,10 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+      - name: Summarize dependency vulnerabilities and available fixes
+        if: always()
+        run: python scripts/ci/gates.py pip-audit reports/pip-audit.json
+
   code-audit:
     name: CodeQL (${{ matrix.language }})
     runs-on: ubuntu-latest
@@ -220,7 +224,7 @@ jobs:
           output: reports/codeql
           upload: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
       - name: Reject high-risk findings and incomplete analysis
-        run: python scripts/ci/gates.py sarif reports/codeql
+        run: python scripts/ci/gates.py sarif reports/codeql --reviews .github/codeql-reviewed.json
       - name: Preserve CodeQL evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -256,6 +260,10 @@ jobs:
           path: reports/gitleaks.json
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Summarize fingerprints requiring review or credential rotation
+        if: always()
+        run: python scripts/ci/gates.py secrets reports/gitleaks.json
 
   docker-check:
     name: Docker build check (${{ matrix.component }})

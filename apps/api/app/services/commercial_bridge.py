@@ -4,6 +4,8 @@ import asyncio
 import copy
 import hashlib
 import logging
+import json
+from urllib.parse import urlencode
 import re
 import time
 from pathlib import Path
@@ -13,6 +15,7 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.config import settings
+from ..core.upload_security import request_public_https, UnsafeRemoteURLError
 
 logger = logging.getLogger(__name__)
 
@@ -286,18 +289,13 @@ def _rewrite_uploads_urls(data: Any, base_url: str) -> Any:
 
 
 async def _probe_health_url(config: dict[str, Any], path: str, scope: str) -> tuple[bool, str]:
-    timeout = httpx.Timeout(config["timeoutSeconds"], connect=5.0)
     url = f"{config['baseUrl']}{path}"
     try:
-        async with httpx.AsyncClient(
-            timeout=timeout,
-            follow_redirects=False,
-            trust_env=False,
-        ) as client:
-            response = await client.get(url)
-        if 300 <= response.status_code < 400:
-            return False, f"商业版{scope}健康检查拒绝重定向"
-        response.raise_for_status()
+        response = await request_public_https(
+            url, method="GET", timeout_seconds=config["timeoutSeconds"],
+        )
+        if response.status_code >= 400:
+            return False, f"商业版{scope}健康检查返回 HTTP {response.status_code}"
         payload = response.json()
         if isinstance(payload, dict):
             data = payload.get("data")
@@ -310,6 +308,8 @@ async def _probe_health_url(config: dict[str, Any], path: str, scope: str) -> tu
         return False, f"商业版{scope}健康检查返回 HTTP {exc.response.status_code}"
     except httpx.HTTPError as exc:
         return False, f"商业版{scope}健康检查失败: {exc}"
+    except UnsafeRemoteURLError:
+        return False, f"商业版{scope}健康检查需要安全的公网 HTTPS 地址"
     except ValueError:
         return True, f"商业版{scope}可访问"
 
@@ -370,40 +370,34 @@ async def _request_bridge(
     if not commercial_bridge_is_configured(config):
         raise CommercialBridgeNotConfigured("未配置商业版桥接地址或访问令牌")
 
-    timeout = httpx.Timeout(config["timeoutSeconds"], connect=5.0)
     request_url = f"{config['baseUrl']}{config['bridgePrefix']}{path}"
+    query = urlencode({k: v for k, v in (params or {}).items() if v not in (None, "")})
+    if query:
+        request_url += "?" + query
     try:
         headers = _bridge_headers(config)
         if idempotency_key:
             headers["Idempotency-Key"] = idempotency_key
-        async with httpx.AsyncClient(
-            timeout=timeout,
-            # Never forward the bridge credential to a redirect target. A
-            # deployment must expose one canonical HTTPS origin.
-            follow_redirects=False,
-            trust_env=False,
-        ) as client:
-            response = await client.request(
-                method.upper(),
-                request_url,
-                params={k: v for k, v in (params or {}).items() if v not in (None, "")},
-                json=json_data,
-                headers=headers,
-            )
-        if 300 <= response.status_code < 400:
-            raise CommercialBridgeError("商业版桥接接口返回了不安全的重定向")
-        response.raise_for_status()
+        body = None
+        if json_data is not None:
+            headers["Content-Type"] = "application/json"
+            body = json.dumps(json_data, ensure_ascii=False).encode("utf-8")
+        response = await request_public_https(
+            request_url, method=method.upper(), content=body, headers=headers,
+            timeout_seconds=config["timeoutSeconds"],
+            max_response_bytes=1024 * 1024,
+        )
+        if response.status_code == 404:
+            raise CommercialBridgeError(f"商业版桥接接口未部署: {path}")
+        if response.status_code in (401, 403):
+            raise CommercialBridgeError("商业版桥接令牌无效或没有接口权限")
+        if response.status_code >= 400:
+            raise CommercialBridgeError(f"商业版桥接接口返回 HTTP {response.status_code}")
         return _unwrap_result(response.json(), f"商业版桥接接口 {path}")
+    except UnsafeRemoteURLError as exc:
+        raise CommercialBridgeError("商业版桥接需要安全的公网 HTTPS 地址和有界响应") from exc
     except CommercialBridgeError:
         raise
-    except httpx.HTTPStatusError as exc:
-        if exc.response.status_code == 404:
-            raise CommercialBridgeError(f"商业版桥接接口未部署: {path}") from exc
-        if exc.response.status_code in (401, 403):
-            raise CommercialBridgeError("商业版桥接令牌无效或没有接口权限") from exc
-        raise CommercialBridgeError(
-            f"商业版桥接接口返回 HTTP {exc.response.status_code}"
-        ) from exc
     except httpx.HTTPError as exc:
         raise CommercialBridgeError(f"调用商业版桥接接口失败: {exc}") from exc
     except ValueError as exc:

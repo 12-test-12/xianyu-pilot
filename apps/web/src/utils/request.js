@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { createSecureId } from './secureId.js'
 import { clearAuth, getToken } from './auth.js'
 import {
   createRequestUiContext,
@@ -12,8 +13,7 @@ function emit(name, detail) {
 }
 
 function createRequestId() {
-  const rand = Math.random().toString(36).slice(2, 10)
-  return `web-${Date.now().toString(36)}-${rand}`
+  return createSecureId('web')
 }
 
 function getHeader(headers, name) {

@@ -1,5 +1,3 @@
-import base64
-import hashlib
 from pathlib import Path
 from typing import Any, List
 from urllib.parse import urlparse
@@ -95,10 +93,7 @@ class Settings(BaseSettings):
     # Comma-separated browser origins allowed to call the service directly.
     cors_allowed_origins: str = ""
 
-    # 商业后台反馈同步配置
-    # 桥接地址、访问令牌与前台引流地址均内置默认值（见 _BUILTIN_BRIDGE_DEFAULTS），
-    # 开源版用户下载部署后无需手动配置 token 即可直连商业版后端，使用广告申请、
-    # 反馈提交、动态获取广告等能力。环境变量可覆盖内置默认值。
+    # Optional commercial bridge; credentials must come from env or secret files.
     commercial_backend_base_url: str = ""
     commercial_backend_bridge_prefix: str = "/admin-api/open-source-bridge"
     commercial_backend_health_path: str = "/admin-api/health"  # backward compat alias
@@ -450,78 +445,5 @@ class Settings(BaseSettings):
     )
 
 
-# 开源版内置商业桥接默认值：用户下载部署后无需配置即可直连商业版后端。
-# 敏感值（token、后端地址、前台引流地址）以混淆编码存储，运行时解码，不以明文出现在源码中。
-# 混淆方式：base64(XOR(plaintext, sha256(seed)))，仅防止随意查看，非密码学加密。
-# token 轮换时需重新生成编码值并同步商业版 .env.production 的 OPEN_SOURCE_BRIDGE_TOKEN。
-# 重新生成编码值的方法见本文件末尾的 _regenerate_bridge_encoding 函数。
-# 详见 .trae/rules/opensource-commercial-bridge-sync.md
-def _resolve_bridge_value(encoded: str, seed: str) -> str:
-    """运行时解码内置桥接默认值。"""
-    raw = base64.b64decode(encoded.encode("ascii"))
-    key = hashlib.sha256(seed.encode("utf-8")).digest()
-    return bytes(b ^ key[i % len(key)] for i, b in enumerate(raw)).decode("utf-8")
-
-
-_BRIDGE_ENC_TOKEN = "0U34kM8JkBvWvFRjcJp3cCsYy3XY+0TCFYEu4L9fAa/uV+y/6gG4A7ydeFx1vWorLRLvFP36QOwxrCPZoWh4oA=="
-_BRIDGE_ENC_BACKEND = "noGcALZ+NUyrnGCFtSMSZ3WsvzSbI7znFXRP"
-_BRIDGE_ENC_FRONTEND = "zVB6D3X4NZfv2QYII2yZz0TaNJanh3S97d8j"
-_BRIDGE_SEED_TOKEN = "xianyu.bridge.token.3a1c9786"
-_BRIDGE_SEED_BACKEND = "xianyu.backend.url.e1c1b20b"
-_BRIDGE_SEED_FRONTEND = "xianyu.frontend.url.e1896305"
-
-_BUILTIN_BRIDGE_DEFAULTS: dict[str, str] = {
-    "commercial_backend_base_url": _resolve_bridge_value(_BRIDGE_ENC_BACKEND, _BRIDGE_SEED_BACKEND),
-    "commercial_backend_access_token": _resolve_bridge_value(_BRIDGE_ENC_TOKEN, _BRIDGE_SEED_TOKEN),
-    "commercial_frontend_url": _resolve_bridge_value(_BRIDGE_ENC_FRONTEND, _BRIDGE_SEED_FRONTEND),
-}
-
-
-def _apply_builtin_bridge_defaults(target: "Settings") -> "Settings":
-    """Apply built-in commercial bridge defaults after env/file resolution.
-
-    This runs AFTER validate_security_defaults so the HTTPS-in-production check
-    does not reject the built-in HTTP backend URL. Env vars and secret files
-    always take precedence — defaults only fill in empty values.
-    """
-    if not (getattr(target, "commercial_backend_base_url", "") or "").strip():
-        target.commercial_backend_base_url = _BUILTIN_BRIDGE_DEFAULTS["commercial_backend_base_url"]
-    if not (getattr(target, "commercial_backend_access_token", "") or "").strip():
-        target.commercial_backend_access_token = _BUILTIN_BRIDGE_DEFAULTS["commercial_backend_access_token"]
-    if not (getattr(target, "commercial_frontend_url", "") or "").strip():
-        target.commercial_frontend_url = _BUILTIN_BRIDGE_DEFAULTS["commercial_frontend_url"]
-    return target
-
-
-def _regenerate_bridge_encoding(token: str, backend_url: str, frontend_url: str) -> dict[str, str]:
-    """生成新的混淆编码值，用于 token 轮换。
-
-    用法：
-      1. 调用本函数生成新的编码值与种子
-      2. 将输出更新到 _BRIDGE_ENC_* 和 _BRIDGE_SEED_* 常量
-      3. 同步更新商业版 .env.production 的 OPEN_SOURCE_BRIDGE_TOKEN
-    """
-    import secrets
-
-    new_seed_token = f"xianyu.bridge.token.{secrets.token_hex(4)}"
-    new_seed_backend = f"xianyu.backend.url.{secrets.token_hex(4)}"
-    new_seed_frontend = f"xianyu.frontend.url.{secrets.token_hex(4)}"
-
-    def _encode(plain: str, seed: str) -> str:
-        raw = plain.encode("utf-8")
-        key = hashlib.sha256(seed.encode("utf-8")).digest()
-        xored = bytes(b ^ key[i % len(key)] for i, b in enumerate(raw))
-        return base64.b64encode(xored).decode("ascii")
-
-    return {
-        "_BRIDGE_ENC_TOKEN": _encode(token, new_seed_token),
-        "_BRIDGE_ENC_BACKEND": _encode(backend_url, new_seed_backend),
-        "_BRIDGE_ENC_FRONTEND": _encode(frontend_url, new_seed_frontend),
-        "_BRIDGE_SEED_TOKEN": new_seed_token,
-        "_BRIDGE_SEED_BACKEND": new_seed_backend,
-        "_BRIDGE_SEED_FRONTEND": new_seed_frontend,
-    }
-
-
+# All settings, including optional bridge credentials, pass validation.
 settings = Settings()
-_apply_builtin_bridge_defaults(settings)
