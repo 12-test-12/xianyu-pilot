@@ -185,7 +185,7 @@ python -m pytest apps/api/tests -q
 | 本地检查 | 实际结果 |
 | --- | --- |
 | actionlint 1.7.12 | 通过；本机未安装 ShellCheck，另行禁用其外部调用，不代表已完成 ShellCheck 扫描 |
-| 门禁/镜像规则回归 | 17 项通过 |
+| 门禁/镜像规则回归 | 19 项通过 |
 | 现有 Web 回归 | 2 项通过 |
 | Web 构建 | 新锁文件重新安装后通过 |
 | Crawler 构建 | 新锁文件重新安装后通过 |

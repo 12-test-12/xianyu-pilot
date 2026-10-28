@@ -13,7 +13,12 @@ import sys
 def check_jobs(jobs: dict, required: list[str]) -> list[str]:
     if not isinstance(jobs, dict) or not required or set(jobs) != set(required):
         raise ValueError("The quality gate must receive exactly the required jobs")
-    return [name for name in required if jobs[name].get("result") != "success"]
+    failed = []
+    for name in required:
+        job = jobs.get(name)
+        if not isinstance(job, dict) or job.get("result") != "success":
+            failed.append(name)
+    return failed
 
 
 def check_sarif(directory: Path, threshold: float = 7.0) -> tuple[int, int]:
@@ -34,31 +39,39 @@ def check_sarif(directory: Path, threshold: float = 7.0) -> tuple[int, int]:
                     raise ValueError("CodeQL execution failed")
                 if any(n.get("level") == "error" for n in invocation.get("toolExecutionNotifications", [])):
                     raise ValueError("CodeQL reported an execution error")
-            tool = run["tool"]
-            rules = tool["driver"].get("rules", [])
-            rule_map = {r["id"]: r for r in rules}
+            tool = run.get("tool") or {}
+            driver = tool.get("driver") or {}
+            rules = driver.get("rules", [])
+            rule_map = {r["id"]: r for r in rules if isinstance(r, dict) and "id" in r}
             for extension in tool.get("extensions", []):
-                for rule in extension.get("rules", []):
-                    rule_map.setdefault(rule["id"], rule)
+                if isinstance(extension, dict):
+                    for rule in extension.get("rules", []):
+                        if isinstance(rule, dict) and "id" in rule:
+                            rule_map.setdefault(rule["id"], rule)
             results = run.get("results")
             if not isinstance(results, list):
                 raise ValueError("SARIF results are missing")
             for result in results:
+                if not isinstance(result, dict):
+                    raise ValueError("Invalid SARIF result")
                 if "ruleId" in result:
-                    rule = rule_map[result["ruleId"]]
+                    rule = rule_map.get(result["ruleId"]) or {}
                 else:
-                    index = result["ruleIndex"]
+                    index = result.get("ruleIndex")
                     if type(index) is not int or not 0 <= index < len(rules):
                         raise ValueError("Invalid SARIF rule index")
                     rule = rules[index]
-                score = rule.get("properties", {}).get("security-severity")
+                props = rule.get("properties") if isinstance(rule, dict) else None
+                score = (props or {}).get("security-severity")
                 if score is not None:
                     score = float(score)
                     if not math.isfinite(score) or not 0 <= score <= 10:
                         raise ValueError("Invalid SARIF severity")
                     blocking = score >= threshold
                 else:
-                    blocking = result.get("level", rule.get("defaultConfiguration", {}).get("level")) == "error"
+                    default_cfg = (rule.get("defaultConfiguration") or {}) if isinstance(rule, dict) else {}
+                    level = result.get("level") or default_cfg.get("level")
+                    blocking = level == "error"
                 total += 1
                 blocked += bool(blocking)
     return total, blocked

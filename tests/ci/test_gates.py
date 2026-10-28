@@ -23,6 +23,10 @@ class QualityGateTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             check_jobs({}, [])
 
+    def test_malformed_job_entries_block(self):
+        jobs = {"build": None, "audit": {"result": "success"}}
+        self.assertEqual(check_jobs(jobs, ["build", "audit"]), ["build"])
+
 
 class CodeQLGateTests(unittest.TestCase):
     def setUp(self):
@@ -89,4 +93,15 @@ class CodeQLGateTests(unittest.TestCase):
         rule = run["tool"]["driver"]["rules"].pop()
         run["tool"]["extensions"] = [{"rules": [rule]}]
         self.save()
+        self.assertEqual(check_sarif(self.root), (1, 1))
+
+    def test_null_properties_and_missing_rule_id_safely_fallback(self):
+        # Case 1: properties is None/null
+        self.write_report(results=[{"ruleId": "test/rule", "level": "warning"}])
+        self.report["runs"][0]["tool"]["driver"]["rules"][0]["properties"] = None
+        self.save()
+        self.assertEqual(check_sarif(self.root), (1, 0))
+
+        # Case 2: ruleId not in driver/extensions falls back to result level
+        self.write_report(results=[{"ruleId": "external/rule", "level": "error"}])
         self.assertEqual(check_sarif(self.root), (1, 1))

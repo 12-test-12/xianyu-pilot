@@ -27,16 +27,19 @@ def image_name(owner: str, component: str) -> str:
 
 
 def revision(value: str) -> str:
+    value = value.strip().lower()
     if not re.fullmatch(r"[0-9a-f]{40}", value):
         raise ValueError("Expected full source revision")
     return value
 
 
 def release_tag(ref: str) -> str:
+    ref = ref.strip()
     if ref == "refs/heads/main":
         return "latest"
-    if ref.startswith("refs/tags/v"):
-        tag = ref.removeprefix("refs/tags/")
+    prefix = "refs/tags/"
+    if ref.startswith(prefix + "v"):
+        tag = ref[len(prefix):]
         if re.fullmatch(r"v[0-9][A-Za-z0-9_.-]{0,126}", tag):
             return tag
     raise ValueError("Image publishing is restricted to main and version tags")
@@ -108,14 +111,16 @@ def main() -> None:
     else:
         records = validate_manifests(args.directory, owner, sha)
         if os.environ["GITHUB_REF"] == "refs/heads/main":
-            current = revision(os.environ["CURRENT_MAIN_SHA"])
-            if current != sha:
-                message = "Source is no longer current main; revision images are retained, latest promotion is skipped."
-                print(message)
-                if os.environ.get("GITHUB_STEP_SUMMARY"):
-                    with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
-                        summary.write(message + "\n")
-                return
+            current_main_sha = os.environ.get("CURRENT_MAIN_SHA", "").strip().lower()
+            if current_main_sha:
+                current = revision(current_main_sha)
+                if current != sha:
+                    message = "Source is no longer current main; revision images are retained, latest promotion is skipped."
+                    print(message)
+                    if os.environ.get("GITHUB_STEP_SUMMARY"):
+                        with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+                            summary.write(message + "\n")
+                    return
         commands = promotion_commands(records, release_tag(os.environ["GITHUB_REF"]), os.environ.get("ACR_REGISTRY", ""), os.environ.get("ACR_NAMESPACE", ""))
         for command in commands:
             subprocess.run(command, check=True)

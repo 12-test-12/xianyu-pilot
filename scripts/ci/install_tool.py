@@ -31,7 +31,7 @@ def install(name: str, destination: Path) -> Path:
     with urlopen(f"{base}/{name}_{version}_checksums.txt", timeout=60) as response:
         checksums = response.read().decode("utf-8")
     entries = [line.split() for line in checksums.splitlines()]
-    expected = [parts[0] for parts in entries if len(parts) == 2 and parts[1].lstrip("*") == asset]
+    expected = [parts[0] for parts in entries if len(parts) >= 2 and parts[1].lstrip("*").lstrip("./") == asset]
     if len(expected) != 1:
         raise ValueError("Missing or ambiguous vendor checksum")
     with urlopen(f"{base}/{asset}", timeout=60) as response:
@@ -41,10 +41,16 @@ def install(name: str, destination: Path) -> Path:
     executable = name + (".exe" if windows else "")
     if windows:
         with zipfile.ZipFile(io.BytesIO(archive)) as bundle:
-            binary = bundle.read(executable)
+            names = [n for n in bundle.namelist() if Path(n).name.lower() == executable.lower()]
+            if not names:
+                raise ValueError("CI tool binary is missing")
+            binary = bundle.read(names[0])
     else:
         with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as bundle:
-            member = bundle.extractfile(executable)
+            members = [m for m in bundle.getmembers() if Path(m.name).name == executable and m.isreg()]
+            if not members:
+                raise ValueError("CI tool binary is missing")
+            member = bundle.extractfile(members[0])
             if member is None:
                 raise ValueError("CI tool binary is missing")
             binary = member.read()
