@@ -1,0 +1,5 @@
+# Reviewed public protocol app keys, not account/session credentials.
+e18da0b990210a2c05a8bac915e4eeaf7daf0bd0:apps/api/app/services/ws_protocol.py:generic-api-key:1029
+e18da0b990210a2c05a8bac915e4eeaf7daf0bd0:apps/api/app/services/ws_token.py:generic-api-key:188
+# Constant sessionStorage key for a publish intent, not an API credential.
+e18da0b990210a2c05a8bac915e4eeaf7daf0bd0:apps/web/src/pages/ProductPublishPage.vue:generic-api-key:334

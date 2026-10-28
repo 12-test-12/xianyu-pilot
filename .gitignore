@@ -24,6 +24,8 @@ htmlcov/
 *-audit-result.json
 .__atomic-write*
 .venv/
+.venv-ci/
+reports/
 venv/
 .tmp-api-venv/
 .tmp/
