@@ -65,6 +65,36 @@ class OfficialDeliveryRuntime:
         self.running=False
         self.resume_detector=ResumeDetector()
 
+    def pause(self,reason="manual"):
+        self.monitor.gate.block(reason)
+
+    async def resume(self,reason="manual",*,expected_revision=None):
+        if reason=="shutdown":
+            raise ValueError("shutdown cannot be resumed")
+        revision=self.monitor.gate.revision(reason) if expected_revision is None else expected_revision
+        if self.monitor.gate.revision(reason)!=revision:
+            return False
+        self.notify_resume(reason+"_recovery")
+        return self.monitor.gate.clear(reason,expected_revision=revision)
+
+    async def desktop_status(self):
+        reasons=self.monitor.gate.reasons
+        if not self.running:
+            state="offline"
+        elif "shutdown" in reasons:
+            state="stopping"
+        elif reasons:
+            state="paused"
+        elif self.monitor._resume_required:
+            state="reconciling"
+        elif not self.clients or not all(self.monitor.sender.is_ready(aid) for aid in self.clients):
+            state="paused"
+        else:
+            with self.monitor.store.connection() as conn:
+                rows=conn.execute("SELECT state FROM delivery_monitor_state WHERE account_id IN (%s)" % ','.join('?' for _ in self.clients),tuple(self.clients)).fetchall()
+            state="running" if len(rows)==len(self.clients) and {r[0] for r in rows}=={"monitoring"} else "attention"
+        return {"state":state,"pauseReasons":list(reasons),"accountCount":len(self.clients)}
+
     def notify_resume(self,reason="system_resumed"):
         for aid in self.clients:
             self.monitor.request_reconciliation(aid,reason)
@@ -111,11 +141,17 @@ class OfficialDeliveryRuntime:
             raise
 
     async def stop(self):
+        self.pause("shutdown")
         self.monitor._stopping=True
+        await asyncio.gather(*(client.stop() for client in self.clients.values()),return_exceptions=True)
+        # Wait for account executors while they finish their short DB commits
+        # and bounded external calls. No cancellation of a to_thread commit.
+        for aid in self.clients:
+            async with self.monitor.lock(aid):
+                await asyncio.to_thread(self.monitor.store.recover_interrupted,aid)
         self.stop_event.set()
         await asyncio.gather(*self.tasks,return_exceptions=True)
         self.tasks=[]
-        await asyncio.gather(*(client.stop() for client in self.clients.values()),return_exceptions=True)
         self.running=False
 
 

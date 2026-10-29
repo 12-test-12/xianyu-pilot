@@ -4,7 +4,7 @@
 
 本次参考 [12-test-12/ai-goofish-monitor 的流水线](https://github.com/12-test-12/ai-goofish-monitor/blob/master/.github/workflows/docker-image.yml)，核对文件 blob：`dfba3bd433cc85888fe15fa2920ba3738d2f1484`。采用其独立检查、安全审计、测试产物复用、源码与文件校验、统一质量门禁和下载摘要等做法。
 
-按本项目已确认要求，所有检查、构建和发布均直接在宿主运行，不使用 Docker、容器作业或容器服务。本轮不生成独立 Windows EXE；产物为原系统本机部署源码包。
+按本项目已确认要求，所有检查、构建和发布均直接在宿主运行，不使用 Docker、容器作业或容器服务。原源码部署包继续保留；新增 Windows x64 目录式 EXE 预览构建，依赖在 GitHub 下载，范围见 [Windows 便携说明](windows-portable.md)。尚未取得本轮远端构建结果。
 
 ## 工作流组织
 
@@ -46,6 +46,8 @@
 ## 下载与运行
 
 检查成功后，可在该 Actions 运行的 Artifacts 中下载 `xianyu-pilot-native-source`；打包作业摘要也提供下载链接。合规版本发布后，GitHub Releases 提供 ZIP 与校验文件。
+
+Windows 作业成功后另提供 `xianyu-pilot-windows-portable`（EXE ZIP/校验和）和 `windows-portable-validation`（构建与自检证据）。该作业加入构建门禁；便携预览包本轮不自动发布到公开 Release。
 
 运行沿用原 `start-local.bat` / `start-local.sh`。需要本机 Python、Node.js、MySQL 和 Redis，首次依赖与浏览器安装需要联网。详细范围见 [原系统本机部署包](native-deployment.md)。
 

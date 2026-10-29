@@ -122,6 +122,80 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  windows-portable:
+    name: Windows x64 portable EXE and relocation checks
+    needs: [workflow-checks, backend-tests, frontend-build]
+    runs-on: windows-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      RUNTIME_MODE: desktop
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          architecture: x64
+          cache: pip
+          cache-dependency-path: |
+            apps/api/requirements.txt
+            packaging/windows/requirements-build.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: apps/web/dist
+      - name: Verify the previously tested frontend
+        run: python scripts/ci/artifacts.py verify --component web --directory apps/web/dist
+      - name: Download runtime and packaging dependencies on GitHub only
+        run: |
+          python -m pip install --require-hashes -r apps/api/requirements.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Application dependency install failed' }
+          python -m pip install --only-binary=:all: -r packaging/windows/requirements-build.txt
+          if ($LASTEXITCODE -ne 0) { throw 'GUI dependency install failed' }
+          python -m pip install -r requirements-ci.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Test dependency install failed' }
+          python -m pip check
+          if ($LASTEXITCODE -ne 0) { throw 'Build dependency validation failed' }
+      - name: Check Qt tray and window contracts without a physical desktop
+        env:
+          APP_ENV: test
+          PYTHONPATH: apps/api
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest apps/api/tests/test_portable_qt.py -q --basetemp=.tmp/qt-contract --junitxml=reports/windows-qt-contract.xml
+      - name: Build directory-style EXE with embedded Python and Chromium
+        run: ./scripts/build-windows-portable.ps1 -SkipWebBuild
+      - name: Record runtime inventory and source identity
+        run: |
+          python scripts/ci/windows_portable.py record --directory dist/windows/XianyuPilot
+          New-Item -ItemType Directory -Force -Path reports | Out-Null
+          python -m pip freeze | Set-Content -Encoding utf8 reports/windows-build-dependencies.txt
+      - name: Verify frozen startup, relocated data and embedded Vue
+        run: python scripts/ci/windows_portable_smoke.py --directory dist/windows/XianyuPilot
+      - name: Package and reverify every ZIP file checksum
+        run: python scripts/ci/windows_portable.py package --directory dist/windows/XianyuPilot --output release/windows
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xianyu-pilot-windows-portable
+          path: release/windows/
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-portable-validation
+          path: |
+            reports/windows-portable-smoke.json
+            reports/windows-build-dependencies.txt
+            reports/windows-qt-contract.xml
+            build/windows/**/warn-*.txt
+          if-no-files-found: warn
+          retention-days: 14
+
   native-package:
     name: Verify and package native source distribution
     needs: [workflow-checks, backend-tests, frontend-build]
@@ -163,7 +237,7 @@ jobs:
   build-gate:
     name: Build and regression gate
     if: always()
-    needs: [workflow-checks, backend-tests, frontend-build, native-package]
+    needs: [workflow-checks, backend-tests, frontend-build, native-package, windows-portable]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -176,4 +250,4 @@ jobs:
       - name: Require every matrix variant to succeed
         env:
           JOB_RESULTS: ${{ toJSON(needs) }}
-        run: python scripts/ci/gates.py jobs workflow-checks backend-tests frontend-build native-package
+        run: python scripts/ci/gates.py jobs workflow-checks backend-tests frontend-build native-package windows-portable

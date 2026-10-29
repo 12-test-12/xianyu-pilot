@@ -37,7 +37,7 @@ def prepare_portable_runtime():
 
 
 def startup_error(exc):
-    message = "无法在程序所在目录的 data 文件夹内安全保存数据，程序已停止。请检查目录权限及是否存在链接目录。"
+    message = "无法在程序所在目录的 data 文件夹内安全保存数据，程序已停止。请将软件移至具备写权限的普通文件夹运行，并检查是否存在链接目录。"
     if sys.platform == "win32":
         import ctypes
         ctypes.windll.user32.MessageBoxW(None, message, "闲鱼助手启动失败", 0x10)

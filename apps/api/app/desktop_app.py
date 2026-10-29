@@ -7,6 +7,7 @@ import asyncio
 import logging
 import sqlite3
 import secrets
+from contextlib import nullcontext
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -30,10 +31,12 @@ from app.desktop_safety_api import router as safety_router
 logger = logging.getLogger(__name__)
 
 
-def create_desktop_app(config=None, *, web_dir=None, platform_runtime=None):
+def create_desktop_app(config=None, *, web_dir=None, platform_runtime=None, instance_lock=None):
     config = config or settings
     if not config.is_desktop:
         raise ValueError("桌面应用需要显式选择 desktop 模式")
+    if instance_lock is not None and (instance_lock.file is None or instance_lock.path.parent!=config.desktop_data_path):
+        raise ValueError("桌面宿主必须已持有同一 data 目录的实例锁")
     runtime = DatabaseRuntime(config)
     store = DesktopStore(config.sqlite_path)
     web_dir = Path(web_dir) if web_dir is not None else Path(__file__).resolve().parents[2] / "web" / "dist"
@@ -41,7 +44,7 @@ def create_desktop_app(config=None, *, web_dir=None, platform_runtime=None):
 
     @asynccontextmanager
     async def lifespan(app):
-        with SingleInstance(config.desktop_data_path):
+        with nullcontext() if instance_lock is not None else SingleInstance(config.desktop_data_path):
             try:
                 await asyncio.to_thread(store.initialize)
                 await asyncio.to_thread(DesktopDeliveryStore(config.sqlite_path).recover_interrupted)
@@ -95,8 +98,10 @@ def create_desktop_app(config=None, *, web_dir=None, platform_runtime=None):
         schema = await asyncio.to_thread(store.status)
         async with runtime.engine.connect() as connection:
             await connection.execute(text("SELECT 1"))
+        lifecycle=await lifecycle_status()
         return {"mode": "desktop", "storage": "sqlite", "schema": schema,
-                "phase": "verified-delivery-config", "automaticDeliveryEnabled": bool(platform_runtime and platform_runtime.running),
+                "phase": "verified-delivery-config", "automaticDeliveryEnabled": lifecycle["state"]=="running",
+                "deliveryLifecycle":lifecycle,
                 "realPlatformConnections": bool(platform_runtime and any(c.is_connected for c in platform_runtime.clients.values())), "businessRoutesEnabled": True,
                 "enabledBusinessModules": ["cards", "delivery-rules", "goods-config", "orders-read", "delivery-records-read"],
                 "deliveryExecutionMode": "official-verification" if platform_runtime else "offline-tests-only",
@@ -118,6 +123,15 @@ def create_desktop_app(config=None, *, web_dir=None, platform_runtime=None):
     @app.get("/api/desktop/status")
     async def desktop_status():
         return ResultObject.success(await status())
+
+    async def lifecycle_status():
+        if platform_runtime and hasattr(platform_runtime,"desktop_status"):
+            return await platform_runtime.desktop_status()
+        return {"state":"offline","pauseReasons":[],"accountCount":0}
+
+    @app.get("/api/desktop/lifecycle")
+    async def desktop_lifecycle():
+        return ResultObject.success(await lifecycle_status())
 
     @app.get("/api/desktop/monitor-status")
     def monitor_status():

@@ -29,8 +29,10 @@ ROOT_FILES = {
 LOCAL_SCRIPTS = {
     "scripts/local-dev.ps1", "scripts/setup-local.ps1", "scripts/setup-local.sh",
     "scripts/verify-local.ps1", "scripts/read_only_smoke.py",
+    "scripts/build-windows-portable.ps1", "scripts/ci/windows_portable.py", "scripts/ci/windows_portable_smoke.py",
 }
-LOCAL_DOCS = {"docs/local-dev-runbook.md", "docs/native-deployment.md", "docs/desktop-sqlite-foundation.md", "docs/desktop-delivery-design.md", "docs/official-order-delivery.md", "docs/delivery-safety-recovery.md"}
+LOCAL_DOCS = {"docs/local-dev-runbook.md", "docs/native-deployment.md", "docs/desktop-sqlite-foundation.md", "docs/desktop-delivery-design.md", "docs/official-order-delivery.md", "docs/delivery-safety-recovery.md", "docs/windows-portable.md"}
+PORTABLE_BUILD_FILES={"packaging/windows/requirements-build.txt","packaging/windows/xianyu_portable.spec","packaging/windows/portable_runtime_hook.py"}
 REQUIRED = {
     "LICENSE", "start-local.bat", "start-local.sh", "scripts/setup-local.ps1",
     "scripts/setup-local.sh", "scripts/local-dev.ps1", "apps/api/app/main.py",
@@ -51,6 +53,10 @@ REQUIRED = {
     "apps/api/app/desktop_migrations/005_delivery_safety.sql", "apps/api/app/desktop_safety_api.py",
     "apps/api/app/services/delivery_safety.py", "apps/api/app/services/delivery_resume.py",
     "docs/delivery-safety-recovery.md", "apps/web/dist/desktop-safety.html",
+    "apps/api/run_portable.py", "apps/api/app/portable/backend.py", "apps/api/app/portable/bootstrap.py",
+    "apps/api/app/portable/qt_host.py", "apps/api/app/portable/windows_events.py", "apps/api/app/portable/webengine_check.py",
+    "apps/api/app/services/delivery_gate.py", "docs/windows-portable.md", "scripts/build-windows-portable.ps1",
+    *PORTABLE_BUILD_FILES,
 }
 README = """Xianyu Pilot - original system, native source distribution
 
@@ -93,7 +99,7 @@ def allowed_source(name: str) -> bool:
     if not safe_name(name):
         return False
     path = PurePosixPath(name)
-    if name in ROOT_FILES or name in LOCAL_SCRIPTS or name in LOCAL_DOCS:
+    if name in ROOT_FILES or name in LOCAL_SCRIPTS or name in LOCAL_DOCS or name in PORTABLE_BUILD_FILES:
         return True
     if path.name.startswith(".env") or path.name in {"Dockerfile", ".dockerignore"}:
         return False

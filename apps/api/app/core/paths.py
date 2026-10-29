@@ -1,6 +1,7 @@
 """Portable runtime paths anchored to the program, never the working directory."""
 from pathlib import Path, PurePosixPath
 import sys
+import stat
 
 
 API_DIR = Path(__file__).resolve().parents[2]
@@ -17,6 +18,18 @@ def data_directory() -> Path:
     return program_root() / "data"
 
 
+def is_link_or_junction(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    try:
+        # Python 3.11 has no Path.is_junction(). The native reparse attribute
+        # still detects directory junctions and cloud reparse points there.
+        attributes=getattr(path.lstat(),"st_file_attributes",0)
+    except FileNotFoundError:
+        return False
+    return bool(attributes & getattr(stat,"FILE_ATTRIBUTE_REPARSE_POINT",0x400))
+
+
 def contained_data_path(root: Path, relative: str) -> Path:
     """Resolve a portable reference, refusing traversal and existing links."""
     path = PurePosixPath(relative)
@@ -26,7 +39,7 @@ def contained_data_path(root: Path, relative: str) -> Path:
     current = root
     for part in ("", *path.parts):
         current = current / part if part else current
-        if current.is_symlink() or (hasattr(current, "is_junction") and current.is_junction()):
+        if is_link_or_junction(current):
             raise ValueError("数据目录不允许符号链接或目录联接")
     target = root.joinpath(*path.parts)
     if not target.resolve().is_relative_to(root.resolve()):

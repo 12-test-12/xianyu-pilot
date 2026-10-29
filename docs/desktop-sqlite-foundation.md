@@ -15,6 +15,8 @@
 
 ## 启动验证
 
+以下脚本仍为源码后端开发入口；Windows 桌面宿主与 GitHub 下载依赖、打包 EXE 的新路径见 [Windows 便携说明](windows-portable.md)。
+
 使用 Python 3.11，在项目根目录准备环境：
 
 ```powershell
