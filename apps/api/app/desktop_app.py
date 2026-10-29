@@ -4,6 +4,8 @@ No platform clients, server migration runner, Redis or automatic send loops are
 loaded here. Original business routes are enabled only as they are adapted.
 """
 import asyncio
+import logging
+import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -17,6 +19,10 @@ from app.core.database import DatabaseRuntime
 from app.core.instance_lock import SingleInstance
 from app.core.response import ResultObject
 from app.desktop_storage import DesktopStore
+from app.desktop_inventory_api import router as inventory_router
+from app.services.desktop_inventory import InventoryError
+
+logger = logging.getLogger(__name__)
 
 
 def create_desktop_app(config=None, *, web_dir=None):
@@ -52,7 +58,21 @@ def create_desktop_app(config=None, *, web_dir=None):
         origin = request.headers.get("origin")
         if (origin and origin not in origins) or request.headers.get("sec-fetch-site") == "cross-site":
             return JSONResponse({"detail": "只允许本机桌面工作区访问"}, status_code=403)
-        return await call_next(request)
+        response = await call_next(request)
+        if request.url.path.startswith(("/api/cards", "/api/auto-delivery/rules")):
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+
+    @app.exception_handler(InventoryError)
+    async def inventory_error(request, exc):
+        return JSONResponse(ResultObject.failed(str(exc), code=exc.status).model_dump(), status_code=exc.status)
+
+    @app.exception_handler(sqlite3.Error)
+    async def inventory_storage_error(request, exc):
+        # Do not log bound card contents, SQL text or raw SQLite error messages.
+        logger.error("Desktop inventory storage failed: %s", type(exc).__name__)
+        return JSONResponse(ResultObject.failed("本地库存操作失败，事务已回滚，请检查数据库状态", code=503).model_dump(), status_code=503)
 
     @app.get("/health")
     @app.get("/health/live")
@@ -64,8 +84,9 @@ def create_desktop_app(config=None, *, web_dir=None):
         async with runtime.engine.connect() as connection:
             await connection.execute(text("SELECT 1"))
         return {"mode": "desktop", "storage": "sqlite", "schema": schema,
-                "phase": "storage-foundation", "automaticDeliveryEnabled": False,
-                "realPlatformConnections": False, "businessRoutesEnabled": False,
+                "phase": "inventory-rules", "automaticDeliveryEnabled": False,
+                "realPlatformConnections": False, "businessRoutesEnabled": True,
+                "enabledBusinessModules": ["cards", "delivery-rules"],
                 "externalServicesRequired": [], "uiBuilt": (web_dir / "index.html").is_file()}
 
     @app.get("/health/ready")
@@ -83,6 +104,8 @@ def create_desktop_app(config=None, *, web_dir=None):
     @app.get("/api/desktop/status")
     async def desktop_status():
         return ResultObject.success(await status())
+
+    app.include_router(inventory_router)
 
     @app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
     async def not_adapted(path: str):

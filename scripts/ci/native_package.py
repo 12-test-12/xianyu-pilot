@@ -39,16 +39,19 @@ REQUIRED = {
     "NATIVE-README.txt",
     "start-desktop.bat", "start-desktop.sh", "apps/api/run_desktop.py",
     "apps/api/app/desktop_migrations/001_original_core.sql", "docs/desktop-sqlite-foundation.md",
+    "apps/api/app/desktop_migrations/002_inventory_rules.sql", "apps/api/app/desktop_inventory_api.py",
+    "apps/api/app/services/desktop_inventory.py",
 }
 README = """Xianyu Pilot - original system, native source distribution
 
 This is a source deployment ZIP with tested Web/Crawler builds, not a standalone EXE.
 The application and this distribution require no container runtime.
 
-Desktop SQLite storage foundation: read docs/desktop-sqlite-foundation.md and run
+Desktop SQLite inventory/rules: read docs/desktop-sqlite-foundation.md and run
 start-desktop.bat (Windows) or sh start-desktop.sh. Python dependencies are needed.
-This phase provides storage/status only; original business APIs/UI are not yet
-enabled in desktop mode. It needs no MySQL/Redis and sends no platform messages.
+This phase provides storage/status and local card warehouse/delivery-rule APIs.
+The original Vue UI, orders and actual delivery are not yet enabled in desktop
+mode. It needs no MySQL/Redis and sends no platform messages.
 
 Original server development mode (pending SQLite business migration):
 Prepare Python 3.11, Node.js 22.23.1 / npm 10.9.8, local MySQL 8 and Redis 7.
