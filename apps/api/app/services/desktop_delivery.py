@@ -477,7 +477,9 @@ class DesktopDeliveryStore(DesktopInventory):
             segments = conn.execute("SELECT * FROM delivery_segment WHERE delivery_id=? ORDER BY position", (delivery_id,)).fetchall()
             order=conn.execute("SELECT external_order_id,official_status,official_checked_at FROM xianyu_trade_order WHERE id=?",(record["order_id"],)).fetchone()
             return {"id": delivery_id, "orderId": record["order_id"], "workflowState": record["workflow_state"],
-                    "orderNumber":order["external_order_id"],"officialStatus":order["official_status"],"officialCheckedAt":order["official_checked_at"],
+                    "orderNumber": order["external_order_id"] if order else "",
+                    "officialStatus": order["official_status"] if order else "",
+                    "officialCheckedAt": order["official_checked_at"] if order else None,
                     "receiptMode": record["receipt_mode"], "confirmationState": record["confirmation_state"],
                     "confirmationOperationId": record["confirmation_operation_id"], "quantityRequested": record["quantity_requested"],
                     "quantitySent": record["quantity_sent"], "errorMessage": record["error_message"],
@@ -497,7 +499,7 @@ class DesktopDeliveryStore(DesktopInventory):
             for row in rows:
                 segments=conn.execute("SELECT state,retry_safe FROM delivery_segment WHERE delivery_id=? ORDER BY position",(row["id"],)).fetchall()
                 order=conn.execute("SELECT external_order_id FROM xianyu_trade_order WHERE id=?",(row["order_id"],)).fetchone()
-                records.append({"id":row["id"],"orderId":row["order_id"],"orderNumber":order[0],"workflowState":row["workflow_state"],
+                records.append({"id":row["id"],"orderId":row["order_id"],"orderNumber":order[0] if order else "","workflowState":row["workflow_state"],
                     "receiptMode":row["receipt_mode"],"confirmationState":row["confirmation_state"],**safety_summary(row,segments)})
             return page(records,total,current,size)
 

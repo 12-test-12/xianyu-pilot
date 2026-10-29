@@ -500,3 +500,15 @@ def test_fixed_content_delivery_needs_no_card_group_and_can_leave_platform_confi
     assert store.get_group(1,stats=True)["remainCount"] == 12
     store.reconcile_confirmed(did,result["confirmationOperationId"],actor="seller",evidence="mock:manual-shipped-evidence")
     assert store.detail(did)["workflowState"] == "completed"
+
+
+def test_delivery_detail_and_list_records_handle_missing_order_gracefully(store):
+    did = store.prepare(order(store, quantity=1), DeliveryPlan(confirm_shipment=False, parts=(DeliveryPart(kind="text", content="测试文本"),)))
+    with store.connection(write=True) as conn:
+        conn.execute("DELETE FROM xianyu_trade_order WHERE id=(SELECT order_id FROM delivery_record WHERE id=?)", (did,))
+    detail = store.detail(did)
+    assert detail["orderNumber"] == ""
+    assert detail["officialStatus"] == ""
+    assert detail["officialCheckedAt"] is None
+    page_data = store.list_records(current=1, size=10)
+    assert any(r["id"] == did and r["orderNumber"] == "" for r in page_data["records"])

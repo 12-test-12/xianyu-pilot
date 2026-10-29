@@ -95,8 +95,11 @@ class DesktopBackend:
             except Exception:
                 self.status={**self.status,"state":"attention"}
             self._status_future=None
-        if self._status_future is None:
-            self._status_future=asyncio.run_coroutine_threadsafe(self._status(),self.loop)
+        if self._status_future is None and self.loop and self.loop.is_running():
+            try:
+                self._status_future=asyncio.run_coroutine_threadsafe(self._status(),self.loop)
+            except (RuntimeError, AttributeError):
+                pass
         # A stale successful status must never hide an immediate pause.
         if self.gate.blocked:
             return {**self.status,"state":"paused","pauseReasons":list(self.gate.reasons)}

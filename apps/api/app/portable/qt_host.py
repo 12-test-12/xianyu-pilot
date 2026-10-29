@@ -75,14 +75,18 @@ class ConsoleWindow(QMainWindow):
         self.controller.hide_to_tray()
 
     def nativeEvent(self,event_type,message):
-        msg=ctypes.cast(int(message),ctypes.POINTER(wintypes.MSG)).contents
-        event=power_event(msg.message,int(msg.wParam))
-        if event=="suspend":
-            self.controller.backend.pause("suspend")
-            self.controller.render("paused")
-        elif event=="resume":
-            self.controller.backend.resume("suspend")
-            self.controller.render("reconciling")
+        try:
+            if message and event_type in (b"windows_generic_MSG", "windows_generic_MSG", b"windows_dispatcher_MSG"):
+                msg=ctypes.cast(int(message),ctypes.POINTER(wintypes.MSG)).contents
+                event=power_event(msg.message,int(msg.wParam))
+                if event=="suspend":
+                    self.controller.backend.pause("suspend")
+                    self.controller.render("paused")
+                elif event=="resume":
+                    self.controller.backend.resume("suspend")
+                    self.controller.render("reconciling")
+        except Exception:
+            pass
         return False,0
 
 

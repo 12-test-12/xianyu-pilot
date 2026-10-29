@@ -258,7 +258,7 @@ class OfficialDeliveryMonitor:
                 if work.kind=="image":
                     path=contained_data_path(self.store.path.parent,work.payload["content"])
                     if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest()!=work.payload["sha256"]:
-                        result=StepResult("not_sent","local:asset_changed")
+                        result=StepResult("not_sent","local:asset_changed",retry_safe=False)
                     else:
                         result=await self.sender.send(work,official,path.read_bytes())
                 elif work.kind=="platform_confirm":
