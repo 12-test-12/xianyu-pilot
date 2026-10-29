@@ -1,6 +1,12 @@
 """Start the original API's SQLite adaptation without external services."""
 import argparse
 import os
+from pathlib import Path
+import sys
+
+CURRENT_DIR = Path(__file__).resolve().parent
+if str(CURRENT_DIR) not in sys.path:
+    sys.path.insert(0, str(CURRENT_DIR))
 
 
 def main():
@@ -12,7 +18,7 @@ def main():
     os.environ["RUNTIME_MODE"] = "desktop"
     os.environ["DESKTOP_PORT"] = str(args.port)
     import uvicorn
-    uvicorn.run("app.main:app", host="127.0.0.1", port=args.port, workers=1, reload=False)
+    uvicorn.run("app.main:app", host="127.0.0.1", port=args.port, workers=1, reload=False, app_dir=str(CURRENT_DIR))
 
 
 if __name__ == "__main__":

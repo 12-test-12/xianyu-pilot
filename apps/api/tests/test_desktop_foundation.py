@@ -5,6 +5,12 @@ import sqlite3
 import subprocess
 import sys
 
+ROOT = Path(__file__).resolve().parents[3]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+if str(ROOT / "apps" / "api") not in sys.path:
+    sys.path.insert(0, str(ROOT / "apps" / "api"))
+
 from fastapi.testclient import TestClient
 import pytest
 from sqlalchemy import text
@@ -175,3 +181,21 @@ def test_personal_cleanup_preserves_core_and_optional_ai_routes():
     assert any("ai" in path or "auto-reply" in path for path in paths)
     from app.services.personal_content import about_content
     assert about_content()["heroBadgeText"] == "个人使用"
+
+
+def test_desktop_runtime_and_launcher_importable_without_pythonpath():
+    repo_root = Path(__file__).resolve().parents[3]
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    script = """
+import sys
+from pathlib import Path
+repo = Path(sys.argv[1])
+sys.path.insert(0, str(repo))
+import apps.desktop.runtime
+import apps.api.run_desktop
+assert apps.desktop.runtime.default_data_dir() is not None
+assert apps.api.run_desktop.CURRENT_DIR.is_dir()
+"""
+    result = subprocess.run([sys.executable, "-c", script, str(repo_root)], env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+
