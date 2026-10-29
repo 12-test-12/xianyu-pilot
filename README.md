@@ -35,6 +35,8 @@
 
 自动发货后续改造以原有后台、订单、货源库、卡密仓库与发货记录为基础，继续复用原业务流程，实施记录见 [原系统自动发货增量改造](docs/auto-delivery-incremental.md)。下方独立桌面工作流保留为历史验证入口。
 
+本分支流水线直接在 Linux/Windows 宿主检查和构建，产出原系统本机部署源码包，不使用 Docker。下载、依赖和启动方式见 [本机部署包说明](docs/native-deployment.md)，触发与发布规则见 [流水线说明](docs/ci-pipeline.md)。
+
 ## 本地工作流（无需 Docker）
 
 当前产品方向为**自动发货优先、QQ 按需启用**。不配置 QQ 或 MCP 也应能完成直接发货；当前能力、页面调整目标与实施顺序见 [自动发货产品标准](docs/auto-delivery-product-standard.md)。

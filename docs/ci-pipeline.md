@@ -1,253 +1,65 @@
-# CI/CD 流水线分析与改造说明
+# CI 检查、构建与本机发布
 
-日期：2026-10-28（北京时间）。参考项目：[12-test-12/ai-goofish-monitor 的流水线](https://github.com/12-test-12/ai-goofish-monitor/blob/master/.github/workflows/docker-image.yml)。本次通过 GitHub 连接读取参考文件，核对的文件 blob 为 `dfba3bd433cc85888fe15fa2920ba3738d2f1484`。
+更新日期：2026-10-29（北京时间）。
 
-本文说明当前仓库实际完成的流水线修改。它不表示 GitHub 远端任务已经执行，也不表示桌面版已经实现。本次不触发外部镜像发布或 Release。
+本次参考 [12-test-12/ai-goofish-monitor 的流水线](https://github.com/12-test-12/ai-goofish-monitor/blob/master/.github/workflows/docker-image.yml)，核对文件 blob：`dfba3bd433cc85888fe15fa2920ba3738d2f1484`。采用其独立检查、安全审计、测试产物复用、源码与文件校验、统一质量门禁和下载摘要等做法。
 
-## 0. 首次远端运行后的修复（2026-10-28）
+按本项目已确认要求，所有检查、构建和发布均直接在宿主运行，不使用 Docker、容器作业或容器服务。本轮不生成独立 Windows EXE；产物为原系统本机部署源码包。
 
-已读取 [Actions 运行 #1](https://github.com/12-test-12/xianyu-pilot/actions/runs/40668398563) 的失败日志与原始审计报告，对应提交 `2fb5cf8b830b7f25dc287a533b700d45f614eb62`。下文第 7.1 节是首次改造时的历史验证快照；本节记录之后的修复。
+## 工作流组织
 
-### 原因与修改
-
-- Python 审计检出 7 个包的 64 条漏洞记录。重新生成哈希锁，仅升级这 7 个包：AnyIO 4.15.1、Certifi 2026.10.23、cryptography 50.0.0、msgpack 1.2.4、Pillow 13.0.0、PyJWT 2.15.1、urllib3 2.8.0。包集合不变，其余版本保持原锁。更新说明可参阅 [Pillow 13.0.0 发布说明](https://pillow.readthedocs.io/en/stable/releasenotes/13.0.0.html)。
-- Python CodeQL 报告共 137 条，8 条达到阻断阈值；JavaScript/TypeScript 共 5 条，均阻断。修复发布意图等操作标识的弱随机数兜底、Crawler 对 URL 的域名子串判断、图片 CDN 主机判断，以及日志中回显代理配置的问题。
-- 远程滑块预检、实际求解及其重试、商业桥接请求和健康检查改用已有的公网 HTTPS 请求工具：拒绝内网/本机/元数据地址，DNS 解析后连接固定公网 IP，保留 Host/TLS SNI，禁止代理和重定向，限制响应体。商业图片下载也复用公网图片下载校验，并保留图片类型、解码、重编码和 404 语义。
-- 三条 MD5 告警对应闲鱼 Mtop 协议签名。算法由上游接口规定，不能直接替换。`.github/codeql-reviewed.json` 仅记录这三个顶层函数的规则 ID、路径、函数名、完整源码 SHA-256 与理由。门禁核对源码后才认可，函数改动会要求重新审查；其他路径、函数、规则和未知发现仍阻断。原始 SARIF 保留，GitHub 代码扫描里仍可看到这些告警，不关闭整条查询。
-- 删除当前源码和规则文档中内置的可逆编码桥接令牌及校验后注入逻辑；桥接地址/凭据改由环境变量或密钥文件提供，未配置时禁用桥接。更新 `.env.example` 和旧桥接维护规则，防止以后重新引入共享凭据。
-- Python 审计、CodeQL 和 Gitleaks 增加步骤摘要，显示依赖修复版本、规则/源码位置或历史指纹。摘要不回显凭据匹配内容。缺失或无效报告仍失败。
-
-### 本地验证结果及限制
-
-| 检查 | 结果 |
+| 文件 | 职责 |
 | --- | --- |
-| 更新后的完整哈希锁安装、pip check | 通过 |
-| 同 CI 命令重新执行 pip-audit | 通过，50 个依赖未检出已知漏洞 |
-| 后端 pytest | 22 项通过，包含 DNS 固定/内网拒绝、重定向和响应大小、预检后 DNS 变化、桥接请求契约、图片处理、Mtop 签名向量、JWT 和 Cookie 加解密 |
-| 门禁/镜像规则 unittest | 23 项通过，包含协议例外的摘要校验、范围限制、密钥摘要脱敏和漏洞阻断 |
-| Web node:test | 4 项通过 |
-| Web 与 Crawler 构建 | 通过 |
-| actionlint 1.7.12 | 通过；本机未安装 ShellCheck，外部 ShellCheck 调用禁用 |
-| Gitleaks 全历史扫描 | 用户确认旧令牌已在服务端撤销或轮换后，记录 3 条精确历史指纹例外；44 个提交扫描通过，未检出未处置凭据 |
-| 新版远端 CodeQL、Linux/Windows CI 和 Docker | 本轮尚未重新执行；不能用旧 SARIF 宣称新代码已通过 CodeQL |
+| `.github/workflows/ci.yml` | 触发、调用构建和审计、总质量门禁、受限 Release 发布 |
+| `.github/workflows/ci-checks.yml` | 可复用的语法校验、CI 回归、Linux/Windows 后端回归、Web 测试、Web/Crawler 构建、本机部署打包和校验 |
+| `.github/workflows/security-audits.yml` | 可复用的 npm/pip 依赖审计、CodeQL、完整 Git 历史 Gitleaks 和安全门禁 |
 
-本地解释器为 Python 3.12.14，远端继续使用 3.11。新增安全检查也意味着商业桥接、回源图片和远程滑块服务需要公网 HTTPS 地址；HTTP 或内网部署地址会被拒绝。
+旧 `docker-publish.yml` 已移除，避免重复触发旧发布逻辑。仓库历史 Docker 部署文件及镜像规则测试保留，但本流水线不调用它们构建或发布镜像。
 
-**历史令牌处置更新（2026-10-28，北京时间）：** 用户最初确认“尚未撤销／不确定”，因此第一次修复保留了阻断。之后用户明确确认旧令牌已在服务端撤销或轮换，并要求记录三条精确历史例外。本地已复核发现均来自历史提交，当前源码中的默认令牌已于 `fd2d664` 移除。现将以下精确指纹加入 `.gitleaksignore`：
+## 触发与发布范围
 
-```text
-c6b55fd2603e1e0c70cbf0a9329599b0c2642cbb:apps/api/app/core/config.py:generic-api-key:466
-f02059ad7e52d0aa5659056c826ba894baae76f3:.trae/rules/opensource-commercial-bridge-sync.md:generic-api-key:52
-f02059ad7e52d0aa5659056c826ba894baae76f3:apps/api/app/core/config.py:generic-api-key:466
-```
-
-处置依据为用户对服务端撤销/轮换的确认，没有向商业服务发送旧令牌验证。全历史扫描和失败退出码保持启用，不按文件、规则或整份报告排除；新提交中再次出现凭据仍会被检出。修改后使用 CI 相同的 Gitleaks 命令扫描 44 个提交通过，摘要门禁通过；人工生成的测试凭据通过 stdin 扫描仍被检出。修复按用户要求提交到本地 Git；不改写历史、不推送远端，也不发布镜像。远端本轮扫描结果须在推送并重新运行后确认。
-
-## 1. 原流水线有什么问题
-
-原 `.github/workflows/docker-publish.yml` 只有三个组件的镜像构建/发布矩阵：
-
-```text
-推送 main / 手动触发
-  → api、web、crawler 各自构建
-  → 直接推送 GHCR latest 和短 SHA
-  → 可选从 latest 同步到 ACR
-```
-
-| 原有问题 | 影响 | 本次处理 |
+| 事件 | 检查与构建 | 公开 Release |
 | --- | --- | --- |
-| 没有 PR 校验入口 | 合并前无法发现构建、测试和审计失败 | 增加 `pull_request` 检查 |
-| 构建之前没有测试/审计门禁 | 问题代码仍可能发布 | 所有必需检查经统一 Quality gate 汇总 |
-| workflow 默认具有 `packages: write` | 不需要发布的任务也请求写权限 | 默认只读，只有发布/标签推进任务申请包写权限 |
-| GHCR 命名空间写死上游组织 | Fork 可能无权推送 | 默认使用当前仓库所有者，可显式配置命名空间 |
-| `secrets` 直接出现在 step `if` 中 | 不符合 GitHub 的条件表达式使用限制 | 在独立步骤校验设置并输出非敏感 enabled 标志 |
-| ACR 源是可变 `latest` | 并发时可能同步另一轮构建 | 记录 build-push 输出的精确 digest，并据此同步 |
-| 每个组件立即覆盖 latest | 某个组件失败时，容易出现混合版本 | 三个组件均发布出 digest 后才进入标签推进 |
-| ARM64 构建没有显式 QEMU 初始化 | 跨架构构建环境不明确 | 发布阶段显式配置 QEMU/Buildx |
-| 没有统一报告和超时 | 排错证据不足，任务等待无界 | 各阶段设置超时并保存测试、审计、构建身份和 digest |
+| 推送 `codex/**` 开发分支 | 执行 | 禁止 |
+| 推送 `main` | 执行 | 不自动发布 |
+| 面向 `main` 的 PR（含 Fork） | 执行 | 禁止 |
+| 推送 `v*` 标签 | 执行 | 门禁通过且标签符合版本格式后发布 |
+| 手动运行 | 执行 | 默认关闭；只有 main/版本标签且显式开启才允许 |
 
-## 2. 从旧项目沿用哪些做法
+正式版本格式为 `v主版本.次版本.修订版本`，允许 `-rc.1` 等预发布后缀。手动 main 发布使用 `native-运行编号-尝试编号`，标记为预发布，避免更新正式最新版。版本标签在发布前再次核对其提交，已移动的标签拒绝发布。重跑不会覆盖既有 Release 或附件。
 
-参考项目的结构为“后端回归、前端构建、Windows 桌面、CodeQL、Gitleaks、Python 依赖审计 → Quality gate → 发布”。
+`contents: write` 仅授予最后的 Release 作业；普通检查只读源码。CodeQL 单独获得所需的 `security-events: write`，Fork PR 不上传扫描结果。没有容器仓库写权限，也不需要镜像仓库凭据。
 
-本仓库沿用：
+同一 PR 或开发分支的新提交会取消旧检查以节省资源；主分支和版本发布不主动取消正在运行的任务。
 
-- 测试、构建、安全审计并行执行。
-- 必需检查失败、取消或跳过均阻止发布。
-- CodeQL 分析 Python、JavaScript/TypeScript 和 GitHub Actions；检查 SARIF，而不是仅上传报告。
-- Gitleaks 扫描完整 Git 历史，报告脱敏，发现项阻断。
-- 运行依赖审计与应用安装包分离。
-- 保存构建产物和证据，PR 只检查、不登录发布仓库。
-- PR 的旧运行可自动取消，发布任务不被自动取消。
+## 构建产物如何复用
 
-没有复制：
+1. 使用现有锁文件安装 Python/Node 依赖，后端在 Linux 和 Windows 直接回归。
+2. Web 运行现有 Node 单元测试，再构建 Web；Crawler 直接编译 TypeScript。
+3. `scripts/ci/artifacts.py` 为两个 `dist` 记录源码提交、Actions 运行编号与全部文件的 SHA256。
+4. 打包作业只下载本次运行的编译产物，核对归属和每个文件，拒绝缺失、额外、变更和链接文件。
+5. `scripts/ci/native_package.py` 从当前提交读取原系统源码，与已验证的 `dist` 组合成 ZIP。只使用允许的路径，不打包真实配置、业务数据或独立桌面演示。
+6. ZIP 内保存文件清单与校验和，外部附带 ZIP 的 `SHA256SUMS.txt`。发布前重新校验整个 ZIP 和内部文件。
 
-- 参考项目的 EXE、`desktop.spec`、桌面依赖文件和 GUI 冒烟脚本。本仓库尚未实现对应入口。
-- 参考项目自己的 Gitleaks 指纹豁免和 npm 漏洞例外。它们不适用于本仓库。
-- 整套目录结构、镜像名、分支名或 Release 发布描述。
+重跑失败作业时使用同一个运行编号，允许继续使用本次运行中未重跑的成功构建；不同运行的产物不能混用。
 
-本仓库额外加入 workflow 语法检查、门禁回归、Windows 后端回归、三组件 Docker 预构建及 digest 完整性校验。
+## 下载与运行
 
-## 3. 改造后的流程
+检查成功后，可在该 Actions 运行的 Artifacts 中下载 `xianyu-pilot-native-source`；打包作业摘要也提供下载链接。合规版本发布后，GitHub Releases 提供 ZIP 与校验文件。
 
-```text
-main 推送 / main PR / v* 标签 / 手动运行
-  ├─ workflow-checks：actionlint + 门禁/发布规则单元测试
-  ├─ backend-tests：Linux、Windows 安装锁定依赖并运行现有后端回归
-  ├─ frontend-build：Web 回归 + Vue 构建；Crawler TypeScript 构建
-  ├─ npm-audit：Web、Crawler 的 high/critical 漏洞及审计错误
-  ├─ python-audit：按带哈希运行锁文件严格审计
-  ├─ code-audit：三种语言的 CodeQL，检查高风险结果/执行错误
-  ├─ secrets-audit：Gitleaks 全历史扫描
-  └─ docker-check：三个 amd64 镜像只构建，不推送
-           ↓
-      quality-gate：所有必需检查均成功
-           ↓ 仅 main/版本标签的允许发布事件
-      publish-images：按组件推送完整 SHA 标签，保存 digest
-           ↓ 三组件均成功
-      promote-images：核对来源、组件与 digest
-           → main 更新 latest；版本标签更新对应版本
-           → 配置完整时，按精确 digest 镜像到 ACR
-```
+运行沿用原 `start-local.bat` / `start-local.sh`。需要本机 Python、Node.js、MySQL 和 Redis，首次依赖与浏览器安装需要联网。详细范围见 [原系统本机部署包](native-deployment.md)。
 
-后端现有测试覆盖范围有限。本次将其放进门禁，并不意味着已经验证真实闲鱼登录、MySQL 迁移、Redis 业务、真实 QQ 收发或桌面安装。Crawler 当前只有编译构建检查，没有虚构出不存在的业务测试。Docker 检查不是服务启动/订单闭环测试。
+## 门禁与证据
 
-## 4. 触发与权限
+构建组和审计组分别使用 `if: always()` 汇总完整作业结果，总 `Quality gate` 再检查两个组。失败、跳过、取消或缺少结果均阻断发布，不使用 `continue-on-error` 绕过审计。
 
-| 事件 | 检查 | 发布 |
-| --- | --- | --- |
-| 向 main 提 PR，包括 Fork PR | 全部检查 | 不发布，不读取 ACR 凭据 |
-| 推送 main | 全部检查 | 通过后发布 SHA 镜像；仍是当前 main 时推进 latest |
-| 推送合法 `v` 版本标签，如 `v1.2.0` | 全部检查 | 通过后发布 SHA 与版本标签，不覆盖 latest |
-| 手动运行，不勾选 publish_docker | 全部检查 | 不发布 |
-| 手动运行并勾选 publish_docker | 全部检查 | 仅 main 或合法版本标签允许发布 |
-| feature 分支手动运行 | 全部检查 | 即使勾选也不发布 |
+保留现有高危阈值、CodeQL 对协议签名的精确源码审查例外和 Gitleaks 已撤销凭据的精确历史指纹例外。测试报告、审计 JSON 与 SARIF 保留 14 天，本机部署包保留 30 天。
 
-`v*` 是触发条件，具体镜像版本还要通过脚本的标签格式验证。latest 推进前读取当前 main 的 SHA，过时构建保留 SHA 镜像但跳过推进，降低延迟任务覆盖新版本的风险。此检查不是对远端分支和镜像仓库的跨系统原子锁。
-
-所有 PR 使用 `pull_request`，不使用可执行不可信 PR 代码的 `pull_request_target`。checkout 不持久化 Git 凭据。CodeQL 在 Fork PR 保留本地分析和门禁，但不要求将 SARIF 上传到代码扫描服务；报告仍作为 artifact 保存。
-
-## 5. 仓库需要配置什么
-
-### 5.1 GHCR
-
-默认不需要额外的个人访问 Token，使用 Actions 的 `GITHUB_TOKEN` 和仓库包写权限。默认镜像为：
-
-```text
-ghcr.io/12-test-12/xianyu-assistant-api
-ghcr.io/12-test-12/xianyu-assistant-web
-ghcr.io/12-test-12/xianyu-assistant-crawler
-```
-
-可选 Repository Variable：`GHCR_IMAGE_NAMESPACE`。只有实际拥有该用户/组织包发布权限时才设置。已有同名 GHCR 包也需要允许此仓库的 Actions 访问，workflow 文件无法替代账号/包权限设置。
-
-标签为 `sha-<完整40位提交>`、当前 main 的 `latest` 或 `v1.2.0` 等版本标签。真正用于同步和构建证据的身份是 `sha256:...` digest；SHA 标签在同提交重跑时仍可能更新，不将标签宣传为不可变存储。
-
-### 5.2 可选 ACR
-
-四项全部不配置时关闭 ACR。要启用必须同时配置：
-
-| 类型 | 名称 | 内容 |
-| --- | --- | --- |
-| Variable | `ALIYUN_ACR_REGISTRY` | 纯主机名，例如 `registry.cn-hangzhou.aliyuncs.com` |
-| Variable | `ALIYUN_ACR_NAMESPACE` | 有权限的镜像命名空间 |
-| Secret | `ALIYUN_ACR_USERNAME` | 登录账号 |
-| Secret | `ALIYUN_ACR_PASSWORD` | 登录凭据 |
-
-只配置部分项目会明确失败，不能显示为“镜像成功但悄悄没同步”。同步使用 `ghcr.io/...@sha256:...`，不再从 latest 查找源。
-
-三组件构建完成后才推进标签，但多个仓库/多个标签无法一起原子提交；远端同步中途失败仍可能部分推进。遇到这种失败应核对本轮 digest，修复连接/权限后恢复，不声称已经实现跨注册表的事务。
-
-### 5.3 分支保护与部署地址
-
-建议在 GitHub 规则集中将 `Quality gate` 设置为 main 的必需检查。此项属于仓库设置，本次没有修改远端规则。
-
-Compose 的活跃默认镜像仍是原 ACR 地址，没有擅自切换用户现有部署。使用本 Fork 的新 GHCR 镜像时，应在部署 `.env` 显式填写：
-
-```dotenv
-API_IMAGE=ghcr.io/12-test-12/xianyu-assistant-api:latest
-WEB_IMAGE=ghcr.io/12-test-12/xianyu-assistant-web:latest
-CRAWLER_IMAGE=ghcr.io/12-test-12/xianyu-assistant-crawler:latest
-```
-
-生产部署需要固定版本时，可使用同一轮的版本标签或各组件 digest。本次同步更新了 `.env.example` 的 GHCR 注释示例。
-
-## 6. 架构、版本与缓存
-
-- Python：CI 使用 3.11，与 API Dockerfile 对齐。运行依赖按原哈希锁安装，测试/审计工具放根目录 `requirements-ci.txt`，不进入应用镜像。
-- Node/npm：按当前两个 package.json 使用 Node 22.23.1、npm 10.9.8，避免 web 的 engine-strict 导致安装失败。
-- npm 安装使用 `npm ci --ignore-scripts`，不随意改锁文件。
-- 缓存按实际锁文件、组件隔离。Buildx 缓存写入失败不会伪装成镜像构建成功；只是允许缓存保存失败不影响已经完成的构建。
-- Gitleaks 固定 8.24.2，与参考版本一致；actionlint 固定 1.7.12。下载后核对供应方对应资产校验和，只取指定可执行文件。
-- API/Web 发布 amd64+arm64；Crawler 保留 amd64。不能据此宣称整套 Compose 已支持原生 ARM64。
-- Web/Crawler dist artifact 带源提交信息；Dockerfile 仍从同一提交源码构建。它们不是已完成打包的 Windows 软件。
-
-## 7. 文件与本地验证
-
-| 文件 | 作用 |
-| --- | --- |
-| `.github/workflows/docker-publish.yml` | 检查、门禁、构建与发布流程 |
-| `scripts/ci/gates.py` | 验证依赖 job 结果及 CodeQL SARIF |
-| `scripts/ci/images.py` | 校验镜像身份、来源提交、组件完整性与 digest，同步发布标签 |
-| `scripts/ci/install_tool.py` | 固定版本工具下载、校验与安全读取资产 |
-| `tests/ci/test_gates.py`、`test_images.py` | 失败/取消/跳过、报告缺失、严重级别、缺组件、错来源和迟到发布测试 |
-| `requirements-ci.txt` | 固定直接测试/审计工具版本 |
-| `.github/dependabot.yml` | 增加 CI 工具依赖维护 |
-
-不需要网络和应用依赖的门禁回归：
+本地可运行：
 
 ```powershell
-Set-Location D:\xianyu-pilot
 python -m unittest discover -s tests/ci -v
+python -m compileall -q scripts/ci
 ```
 
-后端依赖安装完毕后，以明确的测试配置执行现有回归：
-
-```powershell
-$env:APP_ENV = 'test'
-$env:PYTHONPATH = 'apps/api'
-python -m pytest apps/api/tests -q
-```
-
-本地使用的解释器应与选定虚拟环境一致。不要用测试模式启动对真实账号执行任务的服务。完整检查还包括 actionlint、前端构建、锁文件审计、Gitleaks 和远端 CodeQL/Docker；以实际结果为准。
-
-新加入的审计可能暴露旧代码或历史提交问题。不能为了得到绿色流水线而关闭审计、使用 continue-on-error 或复制其他项目的豁免。发现误报时核对原始证据后单独处理；发现真实凭据时先撤销/轮换，而不是只删文件。
-
-### 7.1 本次依赖修复与本地验证结果
-
-实际运行 npm 审计后，发现旧 Web 锁文件有 9 个 high 条目，Crawler 有 5 个 high 和 1 个 critical 条目。没有通过降低阈值处理，而是：
-
-- Web：Axios `1.16.1 → 1.21.0`、Vite `8.0.16 → 8.3.5`、Vue `3.5.35 → 3.5.44`，保持原大版本。
-- Crawler：Express `4.22.2 → 4.22.3`；移除没有对应测试文件、也没有源码引用的 Vitest 开发依赖，避免无用依赖链及其更新时的 npm peer 解析错误。
-- 更新两份锁文件中的兼容修复版本，并用项目指定的 Node 22.23.1/npm 10.9.8 重新执行 `npm ci` 和构建。
-
-| 本地检查 | 实际结果 |
-| --- | --- |
-| actionlint 1.7.12 | 通过；本机未安装 ShellCheck，另行禁用其外部调用，不代表已完成 ShellCheck 扫描 |
-| 门禁/镜像规则回归 | 19 项通过 |
-| 现有 Web 回归 | 2 项通过 |
-| Web 构建 | 新锁文件重新安装后通过 |
-| Crawler 构建 | 新锁文件重新安装后通过 |
-| Web npm audit（high 阈值） | 通过：0 high/critical；剩余 1 moderate 的 ECharts 公告，修复涉及大版本升级，未在本次强制升级 |
-| Crawler npm audit（high 阈值） | 通过：0 项告警 |
-| Gitleaks 全历史扫描 | 仍阻断：3 条商业桥接 Token 记录待核验，未豁免 |
-| 现有后端 pytest | 依赖下载速度过低，本次已停止下载，尚未执行完整回归；Python 源码编译检查通过，不将门禁自身测试计作后端回归 |
-| Docker、CodeQL、GitHub 实际运行 | 未完成；本机 Docker 验证权限请求未获批准，远端 workflow 尚未触发 |
-
-Gitleaks 最初检出 6 条，已核对其中两处是相同公开协议 app key，一处是发布意图的 sessionStorage 键。仅将这三条历史提交/文件/规则/行号的精确指纹加入本仓库新建的 `.gitleaksignore`，其他位置仍受检查。
-
-剩余 3 条位于旧提交的 `apps/api/app/core/config.py` 和 `.trae/rules/opensource-commercial-bridge-sync.md`，属于商业桥接 Token 相关记录。没有向第三方接口发送这些值去测试有效性，没有在文档中复制凭据，也没有假定“已公开”或“已混淆”就等于可放行。需核对实际用途和撤销/轮换状态，再决定后续修复。单独删除当前文件不会清除历史记录。
-
-因此，本次交付是可执行、会真实阻断风险的流水线配置，不是“所有远端检查已绿”的声明。工作流未加路径过滤，以免文档 PR 导致必需门禁永久等待；成本通过缓存、并行和任务超时控制。
-
-## 8. 后续桌面流水线如何接入
-
-等桌面宿主、SQLite 与凭据、冻结构建入口真实存在后，再增加：
-
-1. Windows 桌面依赖锁与构建任务。
-2. 使用同一提交构建的 Vue 资源，验证资源哈希和版本。
-3. 打包后启动、受保护本机 API、退出/托盘、单实例和恢复冒烟。
-4. 干净 Windows 的无全局开发环境安装验证。
-5. 桌面任务加入 Quality gate，通过后才创建 Release 并上传安装包与校验文件。
-
-这些任务当前仍是后续工作，本次流水线没有假装产生可用 EXE。
+另需 actionlint、现有后端回归、Web 测试和两项前端构建。完整审计结果和远端运行情况以具体 Actions 记录为准；离线校验不代表真实数据库或账号联调已通过。
