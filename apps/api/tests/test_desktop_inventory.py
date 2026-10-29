@@ -216,3 +216,32 @@ def test_upgrade_keeps_existing_stock_and_rejects_duplicates_without_data_loss(t
         assert conn.execute("SELECT COUNT(*) FROM card_item").fetchone() == (2,)
         assert conn.execute("SELECT COUNT(*) FROM desktop_schema_history").fetchone() == (1,)
         assert "alert_threshold" not in {r[1] for r in conn.execute("PRAGMA table_info(card_group)")}
+
+
+def test_optimized_inventory_wal_export_parsing_and_alerts(client, config):
+    with sqlite3.connect(config.sqlite_path) as conn:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+
+    gid = group(client, "解析测试")
+    data(client.post(f"/api/cards/{gid}/items", json={"cardContent": "auto-key----auto-pass"}))
+    items = data(client.get(f"/api/cards/{gid}/items"))["records"]
+    assert len(items) == 1
+    assert items[0]["cardKey"] == "auto-key"
+    assert items[0]["cardValue"] == "auto-pass"
+
+    rid = data(client.post("/api/auto-delivery/rules", json={
+        "ruleName": "特产搜索规则", "deliveryMode": "text", "replyContent": "发货消息", "matchKeywords": "特产"
+    }))["id"]
+    hit = data(client.get("/api/auto-delivery/rules", params={"keyword": "特产"}))
+    assert hit["total"] == 1
+    miss = data(client.get("/api/auto-delivery/rules", params={"keyword": "数码"}))
+    assert miss["total"] == 0
+
+    healthy_gid = group(client, "充足分组")
+    data(client.put(f"/api/cards/{healthy_gid}", json={"groupName": "充足分组", "alertThreshold": 1}))
+    data(client.post(f"/api/cards/{healthy_gid}/items", json={"content": "item-1"}))
+    data(client.post(f"/api/cards/{healthy_gid}/items", json={"content": "item-2"}))
+    alert_groups = data(client.get("/api/cards/alerts"))
+    alert_ids = [g["id"] for g in alert_groups]
+    assert healthy_gid not in alert_ids
+    assert gid in alert_ids

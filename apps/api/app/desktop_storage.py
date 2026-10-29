@@ -43,6 +43,8 @@ class DesktopStore:
         try:
             connection.execute("PRAGMA foreign_keys=ON")
             connection.execute("PRAGMA busy_timeout=5000")
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("PRAGMA synchronous=NORMAL")
             tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
             if tables and "desktop_schema_history" not in tables:
                 raise DesktopSchemaError("目录包含其他应用或演示数据库，未修改已有数据")

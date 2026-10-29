@@ -8,7 +8,7 @@
 - 所有本地业务文件固定放在程序根目录的 `data/` 内：SQLite 为 `data/app.sqlite3`，上传文件为 `data/uploads/`，历史演示为 `data/demo/`。源码运行时使用项目根目录，打包后使用 EXE 所在目录；不受当前工作目录影响，也不使用 EXE 临时解压目录。
 - 首次启动初始化原模型对应的账号、授权、运行状态、商品、订单、订单明细、发货规则、卡密组、卡密和发货记录表。主键在 SQLite 使用 `INTEGER`，保留原 MySQL 类型。
 - 迁移按版本和 SHA256 记录，事务执行。拒绝覆盖其他应用的数据库、篡改过的迁移和更新版本的数据库；同一数据目录只允许一个实例。
-- 数据库连接启用外键检查和 5 秒锁等待。卡密和规则写入使用短事务串行提交，卡密与库存计数一起更新，尚未启动后台发送任务。
+- 数据库连接启用 WAL 日志模式、外键检查和 5 秒锁等待，保障读写并发流畅。卡密和规则写入使用短事务串行提交，卡密与库存计数一起更新，尚未启动后台发送任务。
 - 新增 `002_inventory_rules.sql`，补齐原卡密页面使用的分组字段与索引。活跃卡密按“分组 + 卡号 + 密码”唯一，空密码与 NULL 视为同一项；批量请求内和重复请求均会去重。迁移不会修改 `001` 或静默删除旧数据；若旧库已有重复卡密，升级整体回滚，需保留备份后核查。
 
 **当前是卡密与规则接口阶段，尚非完整桌面产品。** 桌面入口的 `/` 返回状态 JSON，尚未挂载原 Vue 页面。仅开放下表已适配接口，其余 `/api/*` 请求返回 HTTP 503。完整业务仍处于原本机服务端流程，暂时保留其 MySQL/Redis 代码，待对应模块完成 SQLite 适配后删除。
@@ -47,15 +47,15 @@ Linux/macOS 的安装解释器使用 `.venv/bin/python`，启动使用 `sh ./sta
 | --- | --- |
 | `GET/POST /api/cards` | 分组分页查询、新建，创建成功返回分组 ID |
 | `GET/PUT/DELETE /api/cards/{id}` | 分组详情、修改、软删除；修改保留未提供的配置字段 |
-| `GET /api/cards/alerts` | 低库存提醒 |
+| `GET /api/cards/alerts` | 低库存提醒（基于 available_count 预警阈值快速过滤） |
 | `POST /api/cards/import/validate` | 预检 `items`，返回有效、无效及批内重复数量；不写库 |
 | `GET/POST /api/cards/{id}/items` | 明细分页及状态过滤、添加单条卡密 |
 | `POST /api/cards/{id}/items/batch` | 最多 5000 条，返回 `successCount/duplicateCount/failCount` |
 | `DELETE /api/cards/{id}/items/{itemId}` | 软删除未使用且未锁定、未认领卡密 |
 | `POST /api/cards/{id}/items/{itemId}/reset` | 将未使用、未被任务认领的卡密恢复可用 |
 | `POST /api/cards/{id}/items/{itemId}/lock`、`/invalid` | 手动锁定、作废 |
-| `GET /api/cards/{id}/stats`、`/usage`、`/export` | 库存统计、使用记录、纯文本导出（支持状态过滤，最多 50000 条） |
-| `GET/POST /api/auto-delivery/rules` | 原 `delivery_rule` 表规则分页查询、新建 |
+| `GET /api/cards/{id}/stats`、`/usage`、`/export` | 库存统计、使用记录、纯文本轻量导出（支持状态过滤，最多 50000 条） |
+| `GET/POST /api/auto-delivery/rules` | 原 `delivery_rule` 表规则分页与关键词查询、新建 |
 | `PUT/DELETE /api/auto-delivery/rules/{id}` | 完整替换规则、软删除 |
 
 批量导入先校验整批内容，存在空卡密或无效字段则整批拒绝，不会部分入库；数据库中途失败也整批回滚。状态继续使用 `0=可用、1=锁定、2=已使用、3=无效、4=错误`。已使用或带有任务认领/订单关联的卡密不能重置、修改或删除，避免重新入库。被规则引用、包含锁定/已使用/认领卡密的分组不能删除。

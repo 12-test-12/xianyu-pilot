@@ -219,8 +219,14 @@ def export(group_id: Id, repo: Inventory, status: Status = None):
 
 
 @router.get("/auto-delivery/rules")
-def rules(repo: Inventory, accountId: int | None = Query(default=None, gt=0, le=2**63 - 1), current: Current = 1, size: Size = 20):
-    return ResultObject.success(repo.list_rules(accountId, current, size))
+def rules(
+    repo: Inventory,
+    accountId: int | None = Query(default=None, gt=0, le=2**63 - 1),
+    keyword: str = Query(default="", max_length=200),
+    current: Current = 1,
+    size: Size = 20,
+):
+    return ResultObject.success(repo.list_rules(accountId, current, size, keyword=keyword))
 
 
 @router.post("/auto-delivery/rules")

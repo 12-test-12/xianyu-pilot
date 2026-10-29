@@ -58,6 +58,10 @@ def parse_item(raw):
         parts = content.split("----", 1)
         key = parts[0]
         value = parts[1] if len(parts) == 2 else value
+    elif not value.strip() and "----" in key:
+        parts = key.split("----", 1)
+        key = parts[0]
+        value = parts[1]
     key, value, extra = key.strip(), value.strip(), extra.strip()
     if not key or max(len(key), len(value), len(extra)) > 16000 or "\n" in key or "\r" in key or "\n" in value or "\r" in value:
         raise InventoryError("卡密不能为空、不能换行，且单个字段不得超过 16000 字符")
@@ -75,6 +79,7 @@ class DesktopInventory:
         conn.row_factory = sqlite3.Row
         try:
             conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute("PRAGMA busy_timeout=5000")
             conn.execute("BEGIN IMMEDIATE" if write else "BEGIN")
             yield conn
             conn.commit()
@@ -123,8 +128,9 @@ class DesktopInventory:
                 where += " AND instr(group_name, ?) > 0"
                 params.append(keyword)
             if alerts:
+                where += " AND available_count < alert_threshold"
                 rows = conn.execute(f"SELECT * FROM card_group WHERE {where} ORDER BY id DESC", params)
-                return [r for row in rows if (r := self.group_record(conn, row))["remainCount"] < r["alertThreshold"]]
+                return [self.group_record(conn, row) for row in rows]
             total = conn.execute(f"SELECT COUNT(*) FROM card_group WHERE {where}", params).fetchone()[0]
             rows = conn.execute(f"SELECT * FROM card_group WHERE {where} ORDER BY id DESC LIMIT ? OFFSET ?",
                                 (*params, size, (current - 1) * size))
@@ -185,7 +191,8 @@ class DesktopInventory:
             if export:
                 if total > 50000:
                     raise InventoryError("单次导出最多 50000 条，请按状态筛选")
-                return [item_record(r) for r in conn.execute(f"SELECT * FROM card_item WHERE {where} ORDER BY id", params)]
+                cursor = conn.execute(f"SELECT card_key, card_value FROM card_item WHERE {where} ORDER BY id", params)
+                return [{"content": r["card_key"] + ("----" + r["card_value"] if r["card_value"] else "")} for r in cursor]
             rows = conn.execute(f"SELECT * FROM card_item WHERE {where} ORDER BY id DESC LIMIT ? OFFSET ?",
                                 (*params, size, (current - 1) * size))
             return page([item_record(r) for r in rows], total, current, size)
@@ -194,16 +201,25 @@ class DesktopInventory:
         # Validate the whole input before writing: invalid input never partly imports.
         parsed = [parse_item(raw) for raw in items]
         imported = duplicates = 0
+        seen_in_batch = set()
         with self.connection(write=True) as conn:
             self.group(conn, group_id)
             for key, value, extra in parsed:
+                identity = (key, value)
+                if identity in seen_in_batch:
+                    if single:
+                        raise InventoryError("该卡密已存在", 409)
+                    duplicates += 1
+                    continue
                 exists = conn.execute("""SELECT 1 FROM card_item WHERE group_id=? AND card_key=?
                     AND COALESCE(card_value,'')=? AND deleted=0 LIMIT 1""", (group_id, key, value)).fetchone()
                 if exists:
                     if single:
                         raise InventoryError("该卡密已存在", 409)
                     duplicates += 1
+                    seen_in_batch.add(identity)
                     continue
+                seen_in_batch.add(identity)
                 stamp = now()
                 conn.execute("""INSERT INTO card_item(group_id,card_key,card_value,extra_info,status,is_used,deleted,
                     created_time,updated_time) VALUES(?,?,?,?,0,0,0,?,?)""", (group_id, key, value or None, extra, stamp, stamp))
@@ -239,12 +255,15 @@ class DesktopInventory:
                 "triggerOnPay": row["trigger_on_pay"], "maxDeliveryPerDay": row["max_delivery_per_day"],
                 "status": row["status"], "createdTime": row["created_time"], "updatedTime": row["updated_time"]}
 
-    def list_rules(self, account_id, current, size):
+    def list_rules(self, account_id, current, size, keyword=""):
         with self.connection() as conn:
             where, params = "deleted=0", []
             if account_id is not None:
                 where += " AND account_id=?"
                 params.append(account_id)
+            if keyword:
+                where += " AND (instr(rule_name, ?) > 0 OR instr(trigger_keyword, ?) > 0)"
+                params.extend([keyword, keyword])
             total = conn.execute(f"SELECT COUNT(*) FROM delivery_rule WHERE {where}", params).fetchone()[0]
             rows = conn.execute(f"SELECT * FROM delivery_rule WHERE {where} ORDER BY id DESC LIMIT ? OFFSET ?",
                                 (*params, size, (current - 1) * size))
