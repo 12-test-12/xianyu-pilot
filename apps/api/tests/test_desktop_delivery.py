@@ -321,7 +321,8 @@ def test_external_gateway_calls_hold_no_sqlite_write_transaction(store):
 
 def test_asset_changed_and_unverified_identity_block_dispatch(store):
     did = store.prepare(order(store), plan())
-    (store.path.parent / "assets" / "guide.png").write_bytes(b"changed guide")
+    pinned=store.detail(did)["assetReferences"][0]
+    (store.path.parent / pinned).write_bytes(b"corrupt frozen guide")
     gateway = Gateway()
     result = DesktopDeliveryCoordinator(store, gateway).execute(did)
     assert result["workflowState"] == "failed"
@@ -346,7 +347,7 @@ def test_relative_assets_moving_program_and_snapshot_payloads(store, tmp_path):
     gateway = Gateway()
     assert DesktopDeliveryCoordinator(relocated, gateway).execute(did)["workflowState"] == "completed"
     image = next(w for w in gateway.calls if w.kind == "image")
-    assert image.payload["content"] == "assets/guide.png"
+    assert image.payload["content"].startswith("assets/.snapshots/")
     assert store.detail(did)["workflowState"] == "ready"
 
 

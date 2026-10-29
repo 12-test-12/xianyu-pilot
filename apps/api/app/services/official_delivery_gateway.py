@@ -2,6 +2,7 @@
 import asyncio
 from app.services.desktop_delivery_contracts import StepResult
 from app.services.seller_orders_api import PlatformOrderError
+from app.services.delivery_resume import ResumeDetector
 
 
 class OfficialDeliverySender:
@@ -62,6 +63,29 @@ class OfficialDeliveryRuntime:
         self.stop_event=asyncio.Event()
         self.tasks=[]
         self.running=False
+        self.resume_detector=ResumeDetector()
+
+    def notify_resume(self,reason="system_resumed"):
+        for aid in self.clients:
+            self.monitor.request_reconciliation(aid,reason)
+
+    async def reconcile_record(self,*args,**kwargs):
+        return await self.monitor.reconcile_record(*args,**kwargs)
+
+    async def watch_continuity(self):
+        previous={aid:self.monitor.sender.is_ready(aid) for aid in self.clients}
+        self.resume_detector.sample()
+        while not self.stop_event.is_set():
+            try:
+                await asyncio.wait_for(self.stop_event.wait(),timeout=5)
+            except asyncio.TimeoutError:
+                if self.resume_detector.sample():
+                    self.notify_resume()
+                for aid in self.clients:
+                    connected=self.monitor.sender.is_ready(aid)
+                    if connected!=previous[aid]:
+                        self.monitor.request_reconciliation(aid,"im_reconnected" if connected else "im_disconnected")
+                    previous[aid]=connected
 
     async def start(self):
         if not getattr(self.monitor.source,"contract_verified",False):
@@ -78,7 +102,9 @@ class OfficialDeliveryRuntime:
                     await self.monitor.on_ws_message(account_id,message,self.seller_ids[owner])
                 client.on_message_callback=callback
                 await client.start()
+                self.monitor.request_reconciliation(aid,"startup")
                 self.tasks.append(asyncio.create_task(self.monitor.run(aid,self.stop_event)))
+            self.tasks.append(asyncio.create_task(self.watch_continuity()))
             self.running=True
         except BaseException:
             await self.stop()

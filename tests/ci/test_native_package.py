@@ -23,6 +23,8 @@ class NativePackageTests(unittest.TestCase):
         for component, directory, entry in [("web", self.web, "index.html"), ("crawler", self.crawler, "server.js")]:
             directory.mkdir()
             (directory / entry).write_text("compiled " + component, encoding="utf-8")
+            if component=="web":
+                (directory/"desktop-safety.html").write_text("compiled safety",encoding="utf-8")
             artifacts.record(directory, component, ENV)
         self.sources = {name: b"source" for name in package.REQUIRED
                         if package.allowed_source(name)}

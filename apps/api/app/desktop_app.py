@@ -6,11 +6,13 @@ loaded here. Original business routes are enabled only as they are adapted.
 import asyncio
 import logging
 import sqlite3
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse,FileResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -23,6 +25,7 @@ from app.desktop_inventory_api import router as inventory_router
 from app.desktop_delivery_api import router as delivery_router
 from app.services.desktop_delivery import DesktopDeliveryStore
 from app.services.desktop_inventory import InventoryError
+from app.desktop_safety_api import router as safety_router
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +61,8 @@ def create_desktop_app(config=None, *, web_dir=None, platform_runtime=None):
     app.state.ready = False
     app.state.database = runtime
     app.state.desktop_store = store
+    app.state.platform_runtime=platform_runtime
+    app.state.safety_action_token=secrets.token_urlsafe(32)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
 
     @app.middleware("http")
@@ -66,7 +71,7 @@ def create_desktop_app(config=None, *, web_dir=None, platform_runtime=None):
         if (origin and origin not in origins) or request.headers.get("sec-fetch-site") == "cross-site":
             return JSONResponse({"detail": "只允许本机桌面工作区访问"}, status_code=403)
         response = await call_next(request)
-        if request.url.path.startswith(("/api/cards", "/api/auto-delivery/", "/api/orders")):
+        if request.url.path.startswith(("/api/cards", "/api/auto-delivery/", "/api/orders","/api/desktop/safety")):
             response.headers["Cache-Control"] = "no-store"
             response.headers["X-Content-Type-Options"] = "nosniff"
         return response
@@ -95,7 +100,8 @@ def create_desktop_app(config=None, *, web_dir=None, platform_runtime=None):
                 "realPlatformConnections": bool(platform_runtime and any(c.is_connected for c in platform_runtime.clients.values())), "businessRoutesEnabled": True,
                 "enabledBusinessModules": ["cards", "delivery-rules", "goods-config", "orders-read", "delivery-records-read"],
                 "deliveryExecutionMode": "official-verification" if platform_runtime else "offline-tests-only",
-                "externalServicesRequired": [], "uiBuilt": (web_dir / "index.html").is_file()}
+                "externalServicesRequired": [], "uiBuilt": (web_dir / "index.html").is_file(),
+                "safetyUiBuilt":(web_dir/"desktop-safety.html").is_file(),"safetyPage":"/desktop/safety"}
 
     @app.get("/health/ready")
     async def ready():
@@ -127,6 +133,17 @@ def create_desktop_app(config=None, *, web_dir=None, platform_runtime=None):
 
     app.include_router(inventory_router)
     app.include_router(delivery_router)
+    app.include_router(safety_router)
+
+    @app.get("/desktop/safety")
+    async def safety_page():
+        target=web_dir/"desktop-safety.html"
+        if not target.is_file():
+            return JSONResponse({"detail":"安全工作台尚未构建，请先构建 apps/web"},status_code=503)
+        return FileResponse(target,headers={"Cache-Control":"no-store","X-Content-Type-Options":"nosniff"})
+
+    if (web_dir/"assets").is_dir():
+        app.mount("/assets",StaticFiles(directory=web_dir/"assets"),name="desktop-ui-assets")
 
     @app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
     async def not_adapted(path: str):

@@ -8,8 +8,8 @@ import datetime as dt
 import sqlite3
 import json
 
-CARD_STATUS_SQL = """CASE WHEN is_used=1 OR used_order_id IS NOT NULL OR used_by_order_id IS NOT NULL
-    OR used_time IS NOT NULL THEN 2 WHEN claim_token IS NOT NULL OR realtime_attempt_id IS NOT NULL
+CARD_STATUS_SQL = """CASE WHEN is_used=1 OR status=2 OR used_by_order_id IS NOT NULL
+    OR used_time IS NOT NULL THEN 2 WHEN claim_token IS NOT NULL OR realtime_attempt_id IS NOT NULL OR used_order_id IS NOT NULL
     THEN 1 ELSE COALESCE(status,0) END"""
 
 
@@ -29,9 +29,9 @@ def page(records, total, current, size):
 
 def card_status(row):
     # Legacy rows may have NULL status or only is_used populated.
-    if row["is_used"] == 1 or row["used_order_id"] is not None or row["used_by_order_id"] is not None or row["used_time"] is not None:
+    if row["is_used"] == 1 or row["status"]==2 or row["used_by_order_id"] is not None or row["used_time"] is not None:
         return 2
-    if row["claim_token"] is not None or row["realtime_attempt_id"] is not None:
+    if row["claim_token"] is not None or row["realtime_attempt_id"] is not None or row["used_order_id"] is not None:
         return 1
     return row["status"] if row["status"] is not None else 0
 

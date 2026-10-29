@@ -30,7 +30,7 @@ LOCAL_SCRIPTS = {
     "scripts/local-dev.ps1", "scripts/setup-local.ps1", "scripts/setup-local.sh",
     "scripts/verify-local.ps1", "scripts/read_only_smoke.py",
 }
-LOCAL_DOCS = {"docs/local-dev-runbook.md", "docs/native-deployment.md", "docs/desktop-sqlite-foundation.md", "docs/desktop-delivery-design.md", "docs/official-order-delivery.md"}
+LOCAL_DOCS = {"docs/local-dev-runbook.md", "docs/native-deployment.md", "docs/desktop-sqlite-foundation.md", "docs/desktop-delivery-design.md", "docs/official-order-delivery.md", "docs/delivery-safety-recovery.md"}
 REQUIRED = {
     "LICENSE", "start-local.bat", "start-local.sh", "scripts/setup-local.ps1",
     "scripts/setup-local.sh", "scripts/local-dev.ps1", "apps/api/app/main.py",
@@ -48,6 +48,9 @@ REQUIRED = {
     "apps/api/app/services/official_delivery_monitor.py", "apps/api/app/services/official_delivery_gateway.py",
     "apps/api/app/services/official_delivery_store.py", "apps/api/app/services/official_delivery_contracts.py",
     "apps/api/app/services/unified_delivery_rules.py", "apps/api/app/services/seller_orders_api.py",
+    "apps/api/app/desktop_migrations/005_delivery_safety.sql", "apps/api/app/desktop_safety_api.py",
+    "apps/api/app/services/delivery_safety.py", "apps/api/app/services/delivery_resume.py",
+    "docs/delivery-safety-recovery.md", "apps/web/dist/desktop-safety.html",
 }
 README = """Xianyu Pilot - original system, native source distribution
 
@@ -58,7 +61,8 @@ Desktop SQLite inventory/rules: read docs/desktop-sqlite-foundation.md and run
 start-desktop.bat (Windows) or sh start-desktop.sh. Python dependencies are needed.
 This phase provides warehouse/rule APIs and read-only original order/delivery
 records. The local segmented state machine runs in offline Mock tests only.
-The original Vue UI and actual delivery are not yet enabled in desktop mode.
+Build Web to use /desktop/safety for local delivery-state review. Actual delivery
+requires explicitly configured and verified official adapters; it stays off by default.
 It needs no MySQL/Redis and sends no platform messages. See the delivery design.
 
 Original server development mode (pending SQLite business migration):
