@@ -25,7 +25,9 @@ htmlcov/
 .__atomic-write*
 .venv/
 .venv-ci/
+.venv-desktop/
 reports/
+apps/desktop/web-dist/
 venv/
 .tmp-api-venv/
 .tmp/

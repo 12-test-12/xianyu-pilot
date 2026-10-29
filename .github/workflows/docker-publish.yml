@@ -82,7 +82,7 @@ jobs:
       - name: Check Python syntax and run existing regressions
         run: |
           mkdir -p reports
-          python -m compileall -q apps/api/app scripts/ci
+          python -m compileall -q apps/api/app apps/desktop scripts/ci
           python -m pytest apps/api/tests -q --junitxml=reports/pytest.xml
       - name: Preserve backend test evidence
         if: always()
@@ -122,6 +122,10 @@ jobs:
       - name: Build component
         working-directory: apps/${{ matrix.component }}
         run: npm run build
+      - name: Build local desktop demo
+        if: matrix.component == 'web'
+        working-directory: apps/web
+        run: npm run build:desktop
       - name: Record compiled artifact source identity
         working-directory: apps/${{ matrix.component }}
         env:

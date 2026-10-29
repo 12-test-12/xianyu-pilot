@@ -33,6 +33,12 @@
 
 遇到行为差异时，以当前仓库的代码、测试和文档为准。
 
+## 本地工作流（无需 Docker）
+
+当前产品方向为**自动发货优先、QQ 按需启用**。不配置 QQ 或 MCP 也应能完成直接发货；当前能力、页面调整目标与实施顺序见 [自动发货产品标准](docs/auto-delivery-product-standard.md)。
+
+Windows 下双击 `start-desktop-demo.bat`，打开 `http://127.0.0.1:15179`，使用自有账号、处理服务、商品规则和任务快照四个页面。支持直接发货与 QQ 处理两条流程，以及本项目自行实现的 MCP 接口；无需安装 Tulpa，不依赖 MySQL、Redis。真实闲鱼接口尚未接入，QQ 真实收发需要自行配置兼容连接器；见 [本地工作流说明](docs/desktop-demo.md) 与 [MCP 接入说明](docs/native-mcp.md)。
+
 ## ⭐ 项目特色
 
 ### 🚀 长期维护 · 持续进化
