@@ -2,6 +2,8 @@
 
 本分支的 CI 直接使用 Python、Node.js 进行检查、构建和发布，不使用 Docker、容器作业或容器服务。
 
+个人桌面端已加入 SQLite 存储基础入口 `start-desktop.bat` / `start-desktop.sh`，无需启动 MySQL/Redis；当前只提供存储与状态接口，业务接口尚在适配。具体步骤和边界见 [桌面存储基础](desktop-sqlite-foundation.md)。下文 `start-local` 指尚待迁移的原服务端开发流程。
+
 ## 下载的是什么
 
 Actions 产物 `xianyu-pilot-native-source` 中有源码部署 ZIP 和 `SHA256SUMS.txt`。ZIP 包含：

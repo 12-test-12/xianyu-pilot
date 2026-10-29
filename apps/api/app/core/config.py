@@ -1,5 +1,6 @@
 from pathlib import Path
-from typing import Any, List
+import os
+from typing import Any, List, Literal
 from urllib.parse import urlparse
 
 from pydantic import Field, model_validator
@@ -18,7 +19,6 @@ FILE_BACKED_SECRET_FIELDS = (
     "mysql_app_password",
     "mysql_migration_password",
     "internal_api_token",
-    "commercial_backend_access_token",
     "jwt_secret",
     "cookie_crypto_secret",
     "admin_password_hash",
@@ -27,23 +27,24 @@ FILE_BACKED_SECRET_FIELDS = (
     "ai_provider_api_key",
 )
 OPTIONAL_FILE_BACKED_SECRET_FIELDS = (
-    "commercial_backend_access_token",
     "embedding_api_key",
     "ai_provider_api_key",
 )
 
 
 class Settings(BaseSettings):
+    runtime_mode: Literal["server", "desktop"] = "server"
+    desktop_data_dir: str = ""
+    desktop_port: int = Field(default=15177, ge=1024, le=65535)
     app_name: str = "xianyu-assistant-python"
     server_host: str = "127.0.0.1"
-    # Isolated local default. Production Compose explicitly overrides this
-    # with its private, unpublished container port (12401).
+    # Loopback-only native development default.
     server_port: int = 15177
 
     db_path: str = "../dbdata/xianyu_assistant.db"  # kept for backward compat
     uploads_dir: str = str(DEFAULT_UPLOADS_DIR)
 
-    # MySQL 配置（替换 SQLite）
+    # 原业务暂存配置：对应业务迁移完成后移除。
     mysql_host: str = "localhost"
     mysql_port: int = 3306
     mysql_user: str = "xianyu"
@@ -93,24 +94,31 @@ class Settings(BaseSettings):
     # Comma-separated browser origins allowed to call the service directly.
     cors_allowed_origins: str = ""
 
-    # Optional commercial bridge; credentials must come from env or secret files.
-    commercial_backend_base_url: str = ""
-    commercial_backend_bridge_prefix: str = "/admin-api/open-source-bridge"
-    commercial_backend_health_path: str = "/admin-api/health"  # backward compat alias
-    commercial_backend_admin_health_path: str = "/admin-api/health"
-    commercial_backend_user_health_path: str = "/api/health"
-    commercial_backend_access_token: str = Field(default="", exclude=True, repr=False)
-    commercial_backend_access_token_file: str = Field(default="", exclude=True, repr=False)
-    commercial_backend_site_code: str = "open-source"
-    commercial_backend_site_name: str = "开源版"
-    commercial_backend_timeout_seconds: int = 15
-    # 三能力开关默认全部开启：商业版后端已通过幂等键与付费广告投放合约验证，
-    # 开源版开箱即用。如需关闭某项能力，可在 .env 中显式设为 false。
-    commercial_backend_mutation_idempotency_enabled: bool = True
-    commercial_backend_payment_idempotency_enabled: bool = True
-    commercial_backend_paid_ad_placement_enforced: bool = True
-    commercial_frontend_url: str = ""
-    commercial_admin_url: str = ""
+    @property
+    def is_desktop(self) -> bool:
+        return self.runtime_mode == "desktop"
+
+    @property
+    def desktop_data_path(self) -> Path:
+        if self.desktop_data_dir:
+            path = Path(self.desktop_data_dir).expanduser()
+        elif os.name == "nt":
+            path = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))) / "XianyuPilot"
+        else:
+            path = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local" / "share"))) / "XianyuPilot"
+        if str(path).startswith(("\\\\", "//")):
+            raise ValueError("桌面数据库必须放在本机目录")
+        return path.resolve()
+
+    @property
+    def sqlite_path(self) -> Path:
+        return self.desktop_data_path / "app.sqlite3"
+
+    @property
+    def database_url(self) -> URL:
+        if self.is_desktop:
+            return URL.create("sqlite+aiosqlite", database=str(self.sqlite_path))
+        return self.mysql_runtime_url
 
     @property
     def mysql_runtime_url(self) -> URL:
@@ -152,6 +160,8 @@ class Settings(BaseSettings):
 
     @property
     def uploads_path(self) -> Path:
+        if self.is_desktop:
+            return self.desktop_data_path / "uploads"
         value = Path(self.uploads_dir).expanduser()
         if not value.is_absolute():
             value = API_DIR / value
@@ -232,9 +242,7 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 10 * 1024 * 1024
     max_rag_document_bytes: int = 5 * 1024 * 1024
     # GitHub 仓库地址（owner/repo 格式），用于检查更新
-    github_repo: str = "dameng2026/XianYuPilo"
-    # 阿里云 ACR 镜像源（可选，留空则不展示此镜像源 tab）
-    acr_registry_url: str = ""
+    github_repo: str = "12-test-12/xianyu-pilot"
     # Only trust forwarded client IP headers when the direct socket peer is in
     # one of these comma-separated IPs/CIDRs.
     trusted_proxy_ips: str = ""
@@ -340,26 +348,6 @@ class Settings(BaseSettings):
             origins.append(origin.rstrip("/"))
         self.cors_allowed_origins = ",".join(dict.fromkeys(origins))
 
-        for field_name, value in {
-            "COMMERCIAL_BACKEND_BASE_URL": self.commercial_backend_base_url,
-            "COMMERCIAL_FRONTEND_URL": self.commercial_frontend_url,
-            "COMMERCIAL_ADMIN_URL": self.commercial_admin_url,
-        }.items():
-            normalized = (value or "").strip()
-            if not normalized:
-                continue
-            parsed = urlparse(normalized)
-            if (
-                parsed.scheme not in {"http", "https"}
-                or not parsed.hostname
-                or parsed.username
-                or parsed.password
-                or parsed.fragment
-            ):
-                raise ValueError(f"{field_name} must be a valid HTTP(S) URL without credentials")
-            if self.is_production_like and parsed.scheme != "https":
-                raise ValueError(f"{field_name} must use HTTPS in prod/staging")
-
         if self.is_production_like:
             insecure_values = {
                 "please-change-this-to-a-random-32-char-string",
@@ -394,8 +382,6 @@ class Settings(BaseSettings):
                     raise ValueError(f"{role} password must be strong in prod/staging")
                 if (url.username or "").strip().casefold() in {"", "root", "mysql", "admin"}:
                     raise ValueError(f"{role} user must be a dedicated non-root account")
-            if self.commercial_backend_access_token and len(self.commercial_backend_access_token.strip()) < 32:
-                raise ValueError("COMMERCIAL_BACKEND_ACCESS_TOKEN must be at least 32 chars")
             if not self.trusted_hosts_list or "*" in self.trusted_hosts_list:
                 raise ValueError("TRUSTED_HOSTS must contain explicit hostnames in prod/staging")
             if not self.audit_mutation_intent_required:
@@ -420,6 +406,15 @@ class Settings(BaseSettings):
         del settings_cls
 
         def file_aware_settings() -> dict[str, Any]:
+            explicit = {**env_settings(), **init_settings()}
+            runtime_mode = explicit.get("runtime_mode", "server")
+            if runtime_mode == "desktop":
+                # Do not read the server dotenv, secret files, or inherited
+                # MySQL/Redis credentials in the desktop process.
+                values = {key: value for key, value in explicit.items()
+                          if key in {"runtime_mode", "desktop_data_dir", "desktop_port"}}
+                values.update(app_env="desktop", server_host="127.0.0.1")
+                return values
             # Source priority remains init > environment > dotenv > secrets_dir.
             merged: dict[str, Any] = {}
             for source in (
@@ -429,6 +424,8 @@ class Settings(BaseSettings):
                 init_settings,
             ):
                 merged.update(source())
+            # A server dotenv must never silently switch application modes.
+            merged["runtime_mode"] = runtime_mode
             return resolve_file_secret_values(
                 merged,
                 secret_fields=FILE_BACKED_SECRET_FIELDS,
@@ -445,5 +442,5 @@ class Settings(BaseSettings):
     )
 
 
-# All settings, including optional bridge credentials, pass validation.
+# All settings pass validation before the application starts.
 settings = Settings()

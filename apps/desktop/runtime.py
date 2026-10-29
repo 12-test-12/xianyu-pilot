@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from app.core.instance_lock import SingleInstance
 
 
 def default_data_dir() -> Path:
@@ -14,31 +15,7 @@ def default_data_dir() -> Path:
     return base / "XianyuPilot" / "demo"
 
 
-class InstanceLock:
-    """OS-owned lock releases after a crash; a stale PID file is never trusted."""
+class InstanceLock(SingleInstance):
+    """Compatibility wrapper for the historical demo's separate data folder."""
     def __init__(self, directory: Path):
-        self.path = directory / "host.lock"
-        self.file = None
-
-    def __enter__(self):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.file = self.path.open("a+b")
-        try:
-            if os.name == "nt":
-                import msvcrt
-                if self.path.stat().st_size == 0:
-                    self.file.write(b"\0")
-                    self.file.flush()
-                self.file.seek(0)
-                msvcrt.locking(self.file.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(self.file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as exc:
-            self.file.close()
-            raise RuntimeError("本数据目录已有演示服务运行，请使用原窗口或先停止它") from exc
-        return self
-
-    def __exit__(self, *_):
-        if self.file:
-            self.file.close()
+        super().__init__(directory, filename="host.lock", description="演示服务")

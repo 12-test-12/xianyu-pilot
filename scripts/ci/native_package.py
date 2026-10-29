@@ -24,24 +24,33 @@ ROOT_FILES = {
     "README.md", "LICENSE", "NOTICE", ".env.example", ".env.development.example",
     "start-local.bat", "start-local.sh", "stop-local.bat", "stop-local.sh",
     "status-local.bat", "status-local.sh", "verify-local.bat",
+    "start-desktop.bat", "start-desktop.sh",
 }
 LOCAL_SCRIPTS = {
     "scripts/local-dev.ps1", "scripts/setup-local.ps1", "scripts/setup-local.sh",
     "scripts/verify-local.ps1", "scripts/read_only_smoke.py",
 }
-LOCAL_DOCS = {"docs/local-dev-runbook.md", "docs/native-deployment.md"}
+LOCAL_DOCS = {"docs/local-dev-runbook.md", "docs/native-deployment.md", "docs/desktop-sqlite-foundation.md"}
 REQUIRED = {
     "LICENSE", "start-local.bat", "start-local.sh", "scripts/setup-local.ps1",
     "scripts/setup-local.sh", "scripts/local-dev.ps1", "apps/api/app/main.py",
     "apps/api/requirements.txt", "apps/web/package-lock.json", "apps/crawler/package-lock.json",
     "apps/web/dist/index.html", "apps/crawler/dist/server.js", "docs/native-deployment.md",
     "NATIVE-README.txt",
+    "start-desktop.bat", "start-desktop.sh", "apps/api/run_desktop.py",
+    "apps/api/app/desktop_migrations/001_original_core.sql", "docs/desktop-sqlite-foundation.md",
 }
 README = """Xianyu Pilot - original system, native source distribution
 
 This is a source deployment ZIP with tested Web/Crawler builds, not a standalone EXE.
 The application and this distribution require no container runtime.
 
+Desktop SQLite storage foundation: read docs/desktop-sqlite-foundation.md and run
+start-desktop.bat (Windows) or sh start-desktop.sh. Python dependencies are needed.
+This phase provides storage/status only; original business APIs/UI are not yet
+enabled in desktop mode. It needs no MySQL/Redis and sends no platform messages.
+
+Original server development mode (pending SQLite business migration):
 Prepare Python 3.11, Node.js 22.23.1 / npm 10.9.8, local MySQL 8 and Redis 7.
 First-time dependency and Playwright browser installation needs network access.
 Read docs/native-deployment.md before running start-local.bat or sh start-local.sh.
