@@ -27,7 +27,7 @@ from app.services.desktop_inventory import InventoryError
 logger = logging.getLogger(__name__)
 
 
-def create_desktop_app(config=None, *, web_dir=None):
+def create_desktop_app(config=None, *, web_dir=None, platform_runtime=None):
     config = config or settings
     if not config.is_desktop:
         raise ValueError("桌面应用需要显式选择 desktop 模式")
@@ -44,10 +44,14 @@ def create_desktop_app(config=None, *, web_dir=None):
                 await asyncio.to_thread(DesktopDeliveryStore(config.sqlite_path).recover_interrupted)
                 async with runtime.engine.connect() as connection:
                     await connection.execute(text("SELECT 1"))
+                if platform_runtime is not None:
+                    await platform_runtime.start()
                 app.state.ready = True
                 yield
             finally:
                 app.state.ready = False
+                if platform_runtime is not None:
+                    await platform_runtime.stop()
                 await runtime.dispose()
 
     app = FastAPI(title="闲鱼助手 · 个人桌面端", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -87,10 +91,10 @@ def create_desktop_app(config=None, *, web_dir=None):
         async with runtime.engine.connect() as connection:
             await connection.execute(text("SELECT 1"))
         return {"mode": "desktop", "storage": "sqlite", "schema": schema,
-                "phase": "local-delivery-state", "automaticDeliveryEnabled": False,
-                "realPlatformConnections": False, "businessRoutesEnabled": True,
-                "enabledBusinessModules": ["cards", "delivery-rules", "orders-read", "delivery-records-read"],
-                "deliveryExecutionMode": "offline-tests-only",
+                "phase": "verified-delivery-config", "automaticDeliveryEnabled": bool(platform_runtime and platform_runtime.running),
+                "realPlatformConnections": bool(platform_runtime and any(c.is_connected for c in platform_runtime.clients.values())), "businessRoutesEnabled": True,
+                "enabledBusinessModules": ["cards", "delivery-rules", "goods-config", "orders-read", "delivery-records-read"],
+                "deliveryExecutionMode": "official-verification" if platform_runtime else "offline-tests-only",
                 "externalServicesRequired": [], "uiBuilt": (web_dir / "index.html").is_file()}
 
     @app.get("/health/ready")
@@ -108,6 +112,18 @@ def create_desktop_app(config=None, *, web_dir=None):
     @app.get("/api/desktop/status")
     async def desktop_status():
         return ResultObject.success(await status())
+
+    @app.get("/api/desktop/monitor-status")
+    def monitor_status():
+        from app.services.official_delivery_store import OfficialDeliveryStore
+        with OfficialDeliveryStore(config.sqlite_path).connection() as conn:
+            data=[]
+            for r in conn.execute("SELECT * FROM delivery_monitor_state ORDER BY account_id"):
+                counts=conn.execute("""SELECT COALESCE(SUM(r.workflow_state='stock_blocked'),0),COALESCE(SUM(r.workflow_state='needs_review'),0)
+                    FROM delivery_record r JOIN xianyu_trade_order o ON o.id=r.order_id WHERE o.account_id=? AND r.desktop_managed=1""",(r["account_id"],)).fetchone()
+                data.append({"accountId":r["account_id"],"state":r["state"],"reason":r["reason"],"updatedAt":r["updated_at"],
+                    "stockBlockedCount":counts[0],"needsReviewCount":counts[1]})
+            return ResultObject.success(data)
 
     app.include_router(inventory_router)
     app.include_router(delivery_router)

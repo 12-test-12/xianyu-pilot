@@ -110,7 +110,7 @@ def test_startup_lock_local_boundary_and_explicit_unavailable_routes(desktop_con
         assert ready.json()["storage"] == "sqlite"
         assert ready.json()["externalServicesRequired"] == []
         assert ready.json()["businessRoutesEnabled"] is True
-        assert ready.json()["enabledBusinessModules"] == ["cards", "delivery-rules", "orders-read", "delivery-records-read"]
+        assert ready.json()["enabledBusinessModules"] == ["cards", "delivery-rules", "goods-config", "orders-read", "delivery-records-read"]
         assert client.post("/api/delivery/send", json={}).status_code == 503
         assert client.get("/api/desktop/status", headers={"origin": "https://outside.example"}).status_code == 403
         assert client.get("/health", headers={"host": "outside.example"}).status_code == 400

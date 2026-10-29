@@ -30,7 +30,7 @@ LOCAL_SCRIPTS = {
     "scripts/local-dev.ps1", "scripts/setup-local.ps1", "scripts/setup-local.sh",
     "scripts/verify-local.ps1", "scripts/read_only_smoke.py",
 }
-LOCAL_DOCS = {"docs/local-dev-runbook.md", "docs/native-deployment.md", "docs/desktop-sqlite-foundation.md", "docs/desktop-delivery-design.md"}
+LOCAL_DOCS = {"docs/local-dev-runbook.md", "docs/native-deployment.md", "docs/desktop-sqlite-foundation.md", "docs/desktop-delivery-design.md", "docs/official-order-delivery.md"}
 REQUIRED = {
     "LICENSE", "start-local.bat", "start-local.sh", "scripts/setup-local.ps1",
     "scripts/setup-local.sh", "scripts/local-dev.ps1", "apps/api/app/main.py",
@@ -44,6 +44,10 @@ REQUIRED = {
     "apps/api/app/desktop_migrations/003_delivery_state.sql", "apps/api/app/desktop_delivery_api.py",
     "apps/api/app/services/desktop_delivery.py", "apps/api/app/services/desktop_delivery_contracts.py",
     "apps/api/app/core/portable_runtime.py", "docs/desktop-delivery-design.md",
+    "apps/api/app/desktop_migrations/004_official_delivery.sql", "docs/official-order-delivery.md",
+    "apps/api/app/services/official_delivery_monitor.py", "apps/api/app/services/official_delivery_gateway.py",
+    "apps/api/app/services/official_delivery_store.py", "apps/api/app/services/official_delivery_contracts.py",
+    "apps/api/app/services/unified_delivery_rules.py", "apps/api/app/services/seller_orders_api.py",
 }
 README = """Xianyu Pilot - original system, native source distribution
 

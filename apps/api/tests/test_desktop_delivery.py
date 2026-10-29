@@ -365,7 +365,7 @@ def test_read_only_apis_and_startup_recovery_never_enable_real_sending(store, mo
     store.claim_next(did)
     with TestClient(create_desktop_app(Settings(runtime_mode="desktop")), base_url="http://127.0.0.1:15177") as client:
         ready = client.get("/health/ready").json()
-        assert ready["phase"] == "local-delivery-state"
+        assert ready["phase"] == "verified-delivery-config"
         assert ready["automaticDeliveryEnabled"] is ready["realPlatformConnections"] is False
         assert client.get("/api/orders").json()["data"]["total"] == 1
         assert client.get("/api/orders/1").json()["data"]["verificationSource"] == "mock"

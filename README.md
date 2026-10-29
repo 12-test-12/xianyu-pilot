@@ -9,7 +9,8 @@
 - 原有自动发货和卡密操作继续沿用原业务设计。
 - CI 在 Linux/Windows 本机检查和构建，发布可校验的源码部署 ZIP。
 - SQLite 已支持卡密与规则接口、只读订单与发货记录，以及离线测试中的整单占用、逐段回执、未知锁定和重启恢复。完整 Vue 业务页面与真实发货尚未接入。
-- 阶段设计与安全验收见 [自动发货与便携版设计](docs/desktop-delivery-design.md)。当前执行器只允许测试注入 Mock，HTTP 不提供模拟付款或发货入口。
+- 阶段设计与安全验收见 [自动发货与便携版设计](docs/desktop-delivery-design.md)。普通启动仅提供本地配置与查询，HTTP 不提供模拟付款、伪造平台核验或绕过验证的发货入口。
+- 新增 [官方订单核验与双监听](docs/official-order-delivery.md)：统一商品/SKU 规则、严格付款状态、关键词核验与实时/20 秒轮询入口。真实运行通过受信宿主显式装配；普通桌面启动默认离线，待真实接口契约及账号接入验证后启用。
 - 原服务端流程暂时仍依赖 MySQL/Redis，供未迁移的原业务开发使用。待相关业务适配完成后删除这些依赖。
 
 SQLite 存储基础的安装、启动和后续顺序见 [桌面改造说明](docs/desktop-sqlite-foundation.md)。Windows 准备好 Python 依赖后运行 `start-desktop.bat`，默认状态入口为 `http://127.0.0.1:15177/health/ready`。

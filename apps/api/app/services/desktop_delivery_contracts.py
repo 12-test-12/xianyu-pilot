@@ -43,6 +43,9 @@ class DeliveryPlan(LocalContract):
     sku_id: str = Field(default="", max_length=100)
     card_group_id: int | None = Field(default=None, gt=0, le=2**63-1)
     confirm_shipment: bool = True
+    max_attempts: int = Field(default=3,ge=1,le=20)
+    low_stock_threshold: int = Field(default=0,ge=0,le=10000)
+    pause_on_low_stock: bool = False
     parts: tuple[DeliveryPart, ...] = Field(min_length=1, max_length=50)
 
     @model_validator(mode="after")

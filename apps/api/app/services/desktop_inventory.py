@@ -6,6 +6,7 @@ platform imports belong here; inventory counts commit with the cards they count.
 from contextlib import contextmanager
 import datetime as dt
 import sqlite3
+import json
 
 CARD_STATUS_SQL = """CASE WHEN is_used=1 OR used_order_id IS NOT NULL OR used_by_order_id IS NOT NULL
     OR used_time IS NOT NULL THEN 2 WHEN claim_token IS NOT NULL OR realtime_attempt_id IS NOT NULL
@@ -255,7 +256,10 @@ class DesktopInventory:
                 "deliveryContent": row["delivery_content"] or "", "matchType": "keyword",
                 "matchKeywords": row["trigger_keyword"] or "", "triggerKeyword": row["trigger_keyword"] or "",
                 "triggerOnPay": row["trigger_on_pay"], "maxDeliveryPerDay": row["max_delivery_per_day"],
-                "status": row["status"], "createdTime": row["created_time"], "updatedTime": row["updated_time"]}
+                "status": row["status"], "createdTime": row["created_time"], "updatedTime": row["updated_time"],
+                "skuId":row["sku_id"],"configVersion":row["config_version"],
+                "plan":json.loads(row["plan_json"]) if row["plan_json"] else None,
+                "trigger":json.loads(row["trigger_json"]) if row["trigger_json"] else None}
 
     def list_rules(self, account_id, current, size, keyword=""):
         with self.connection() as conn:
@@ -272,33 +276,14 @@ class DesktopInventory:
             return page([self.rule_record(r) for r in rows], total, current, size)
 
     def save_rule(self, values, rule_id=None):
-        with self.connection(write=True) as conn:
-            if rule_id is not None and not conn.execute("SELECT 1 FROM delivery_rule WHERE id=? AND deleted=0", (rule_id,)).fetchone():
-                raise InventoryError("发货规则不存在", 404)
-            if values["delivery_mode"] in ("card", "kami"):
-                self.group(conn, values["card_group_id"])
-            for table, field in (("xianyu_account", "account_id"), ("xianyu_goods", "goods_id")):
-                if values[field] is not None and not conn.execute(f"SELECT 1 FROM {table} WHERE id=? AND deleted=0", (values[field],)).fetchone():
-                    raise InventoryError("关联的账号或商品不存在", 404)
-            if values["goods_id"] is not None and values["account_id"] is not None:
-                goods = conn.execute("SELECT account_id FROM xianyu_goods WHERE id=?", (values["goods_id"],)).fetchone()
-                if goods["account_id"] != values["account_id"]:
-                    raise InventoryError("商品不属于所选账号")
-            stamp = now()
-            if rule_id is None:
-                rule_id = conn.execute("""INSERT INTO delivery_rule(rule_name,account_id,goods_id,delivery_mode,
-                    card_group_id,delivery_content,trigger_on_pay,trigger_keyword,max_delivery_per_day,status,
-                    deleted,created_time,updated_time) VALUES(:rule_name,:account_id,:goods_id,:delivery_mode,
-                    :card_group_id,:delivery_content,:trigger_on_pay,:trigger_keyword,:max_delivery_per_day,:status,0,:stamp,:stamp)""",
-                    {**values, "stamp": stamp}).lastrowid
-            else:
-                conn.execute("""UPDATE delivery_rule SET rule_name=:rule_name,account_id=:account_id,goods_id=:goods_id,
-                    delivery_mode=:delivery_mode,card_group_id=:card_group_id,delivery_content=:delivery_content,
-                    trigger_on_pay=:trigger_on_pay,trigger_keyword=:trigger_keyword,max_delivery_per_day=:max_delivery_per_day,
-                    status=:status,updated_time=:stamp WHERE id=:id""", {**values, "stamp": stamp, "id": rule_id})
-            return {"id": rule_id}
+        from app.services.unified_delivery_rules import UnifiedDeliveryRules
+        return UnifiedDeliveryRules(self.path).save_legacy(values,rule_id)
 
     def delete_rule(self, rule_id):
         with self.connection(write=True) as conn:
+            prior=conn.execute("SELECT goods_id FROM delivery_rule WHERE id=? AND deleted=0",(rule_id,)).fetchone()
             if conn.execute("UPDATE delivery_rule SET deleted=1,updated_time=? WHERE id=? AND deleted=0", (now(), rule_id)).rowcount != 1:
                 raise InventoryError("发货规则不存在", 404)
+            if prior[0] is not None:
+                from app.services.unified_delivery_rules import UnifiedDeliveryRules
+                UnifiedDeliveryRules(self.path).project(conn,prior[0])

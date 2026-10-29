@@ -11,7 +11,7 @@
 - 数据库连接启用 WAL、FULL 同步、内存临时存储、外键检查和 5 秒锁等待。写入使用短事务，业务状态与库存一起提交，事务中不等待网络，尚未启动后台真实发送任务。
 - 新增 `002_inventory_rules.sql`，补齐原卡密页面使用的分组字段与索引。活跃卡密按“分组 + 卡号 + 密码”唯一，空密码与 NULL 视为同一项；批量请求内和重复请求均会去重。迁移不会修改 `001` 或静默删除旧数据；若旧库已有重复卡密，升级整体回滚，需保留备份后核查。
 
-**当前为本地发货状态机阶段，尚非完整桌面产品。** 新增 `003_delivery_state.sql`，沿用原订单与发货记录，增加库存占用、逐段回执与审计。执行仅允许离线测试 Mock，不对 HTTP 开放模拟付款或发货。桌面入口的 `/` 仍返回状态 JSON，尚未挂载原 Vue 页面。其余未适配 `/api/*` 请求返回 HTTP 503。详细设计与阶段边界见 [自动发货与便携版设计](desktop-delivery-design.md)。
+**当前为官方核验与统一配置阶段，尚非完整桌面产品。** `003_delivery_state.sql` 增加库存占用、逐段回执与审计；`004_official_delivery.sql` 增加权威 SKU 规则、官方事实、IM 线索和触发授权。普通启动仍离线，不对 HTTP 开放模拟付款或伪造平台核验。受信宿主可显式装配双监听及真实网关，启用条件见 [官方订单核验说明](official-order-delivery.md)。桌面入口仍返回状态 JSON，原 Vue 页面尚未挂载。
 
 ## 启动验证
 
@@ -57,21 +57,22 @@ Linux/macOS 的安装解释器使用 `.venv/bin/python`，启动使用 `sh ./sta
 | `GET /api/cards/{id}/stats`、`/usage`、`/export` | 库存统计、使用记录、纯文本轻量导出（支持状态过滤，最多 50000 条） |
 | `GET/POST /api/auto-delivery/rules` | 原 `delivery_rule` 表规则分页与关键词查询、新建 |
 | `PUT/DELETE /api/auto-delivery/rules/{id}` | 完整替换规则、软删除 |
+| `GET/PUT /api/auto-delivery/goods/{id}/config` | 同一权威规则的商品/SKU 编排入口与版本校验 |
 | `GET /api/orders`、`/api/orders/{id}` | 原订单、明细与核验来源，只读 |
 | `GET /api/auto-delivery/records`、`/api/auto-delivery/records/{id}` | 本地任务、逐段状态、回执及审计；支持 `needsReview=true` 待核对过滤；不返回卡密明文 |
 
 批量导入先校验整批内容，存在空卡密或无效字段则整批拒绝，不会部分入库；数据库中途失败也整批回滚。状态继续使用 `0=可用、1=锁定、2=已使用、3=无效、4=错误`。已使用或带有任务认领/订单关联的卡密不能重置、修改或删除，避免重新入库。被规则引用、包含锁定/已使用/认领卡密的分组不能删除。
 
-规则字段采用原 CRUD 契约：`ruleName`、`deliveryMode`（`text/card/kami`）、`cardGroupId`、`replyContent`、`matchKeywords`、`triggerOnPay`、`maxDeliveryPerDay`、`accountId`、`goodsId`、`status`。文字规则须填写内容；卡密规则须引用存在的分组。新规则默认 `status=0`。规则中的启用状态只被保存，当前不会触发真实发货；商品 JSON 配置、批量规则、订单及平台调用尚未开放。
+旧规则 CRUD 契约继续保留，并支持 `plan/trigger/skuId`。新规则默认 `status=0`。商品 JSON 配置与旧规则均经同一规范存取；订单只读、批量规则未开放。普通启动未装配真实网关，保存“启用”不等于程序立即开始真实发货。
 
 重启旧进程前先退出并备份整个 `data/`。重新运行 `start-desktop.bat` 后，健康检查应出现：
 
 ```json
 {
-  "phase": "local-delivery-state",
-  "schema": {"current": true, "version": "003_delivery_state.sql"},
+  "phase": "verified-delivery-config",
+  "schema": {"current": true, "version": "004_official_delivery.sql"},
   "businessRoutesEnabled": true,
-  "enabledBusinessModules": ["cards", "delivery-rules", "orders-read", "delivery-records-read"],
+  "enabledBusinessModules": ["cards", "delivery-rules", "goods-config", "orders-read", "delivery-records-read"],
   "deliveryExecutionMode": "offline-tests-only",
   "automaticDeliveryEnabled": false,
   "realPlatformConnections": false
@@ -98,7 +99,7 @@ Invoke-RestMethod "$api/cards/$groupId/stats"
 ## 下一步实施顺序
 
 1. 已完成原卡密仓库与 `delivery_rule` CRUD 的首批 SQLite 接口及回归；原商品 JSON 发货配置仍待适配。
-2. 本地订单与逐段状态机已实现服务层和 Mock 故障验证；下一阶段统一商品 JSON 配置、规则与原页面，并完善素材导入。
+2. 本地状态机、统一商品 JSON/规则入口和官方核验双监听适配已实现；接下来需验证真实接口契约、账号凭据与会话解析，再接原页面和素材导入。
 3. 将原账号、消息和平台连接改为本地流程，替换 Redis 在单用户模式下的会话、锁和调度用途，再删除剩余服务端依赖。
 4. 挂载原 Vue 页面并做本机完整链路回归，最后再制作桌面窗口、安装包和更新机制。
 

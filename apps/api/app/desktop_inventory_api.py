@@ -1,13 +1,15 @@
 """SQLite adapters for the existing Vue warehouse and legacy rule contracts."""
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Path, Query, Request
+from fastapi import APIRouter, Body, Depends, Path, Query, Request
 from fastapi.responses import Response
-from pydantic import ConfigDict, Field, field_validator, model_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator, ValidationError
 
 from app.core.camel import CamelModel
 from app.core.response import ResultObject
 from app.services.desktop_inventory import DesktopInventory, InventoryError, parse_item
+from app.services.desktop_delivery_contracts import DeliveryPlan
+from app.services.official_delivery_contracts import TriggerPolicy, GoodsDeliveryConfig
 
 
 class InventoryBody(CamelModel):
@@ -64,12 +66,17 @@ class RuleBody(InventoryBody):
     trigger_on_pay: Literal[0, 1] = 1
     max_delivery_per_day: int = Field(default=0, ge=0, le=1000000)
     status: Literal[0, 1] = 0
+    plan: DeliveryPlan | None = None
+    trigger: TriggerPolicy | None = None
+    sku_id: str = Field(default="",max_length=100)
 
     @model_validator(mode="after")
     def validate_rule(self):
         self.rule_name = self.rule_name.strip()
         if not self.rule_name:
             raise ValueError("规则名称不能为空")
+        if self.plan is not None:
+            return self
         if self.delivery_mode in ("card", "kami"):
             if self.card_group_id is None:
                 raise ValueError("卡密规则必须选择卡密分组")
@@ -243,3 +250,20 @@ def update_rule(rule_id: Id, body: RuleBody, repo: Inventory):
 def delete_rule(rule_id: Id, repo: Inventory):
     repo.delete_rule(rule_id)
     return ResultObject.success(None, "发货规则已删除")
+
+
+@router.get("/auto-delivery/goods/{goods_id}/config")
+def goods_config(goods_id: Id,repo:Inventory):
+    from app.services.unified_delivery_rules import UnifiedDeliveryRules
+    return ResultObject.success(UnifiedDeliveryRules(repo.path).get_goods(goods_id))
+
+
+@router.put("/auto-delivery/goods/{goods_id}/config")
+def save_goods_config(goods_id:Id,repo:Inventory,body:dict=Body(...)):
+    from app.services.unified_delivery_rules import UnifiedDeliveryRules
+    rules=UnifiedDeliveryRules(repo.path)
+    try:
+        config=rules.translate_goods_body(goods_id,body)
+    except ValidationError as exc:
+        raise InventoryError("商品规则格式无效，保存已拒绝") from exc
+    return ResultObject.success(rules.save_goods(goods_id,config))

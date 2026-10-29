@@ -1,12 +1,13 @@
-"""SQLite adapter for original orders, inventory and delivery records.
+"""SQLite adapter shared by offline tests and the guarded official-order loop.
 
-No production gateway is installed in phase 1. Each operation is committed before
-an external call; ambiguous outcomes always retain their original inventory.
+Each operation commits before an external call. Ambiguous results retain stock;
+ordinary startup installs no live gateway without explicit host composition.
 """
 import hashlib
 import json
 import re
 import uuid
+import time
 
 from app.core.paths import contained_data_path
 from app.services.desktop_inventory import DesktopInventory, InventoryError, now, page
@@ -60,8 +61,15 @@ class DesktopDeliveryStore(DesktopInventory):
         items = conn.execute("SELECT * FROM xianyu_trade_order_item WHERE order_id=? AND deleted=0", (order_id,)).fetchall()
         if order is None:
             raise InventoryError("订单不存在", 404)
-        if order["verification_source"] != "mock" or order["order_status"] not in (1, 2) or not order["payment_evidence"]:
-            raise InventoryError("阶段 1 仅接受明确标识的离线 Mock 付款订单", 409)
+        if order["verification_source"] not in ("mock","platform") or order["order_status"] not in (1, 2) or not order["payment_evidence"]:
+            raise InventoryError("订单缺少平台核验或明确的离线 Mock 来源",409)
+        if order["verification_source"] == "platform":
+            age=time.time()-(order["official_checked_at"] or 0)
+            if order["official_status"] != "WAIT_SELLER_SEND_GOODS" or order["official_refunding"] or not 0<=age<=30:
+                raise InventoryError("官方状态不允许发货或核验已过期",409)
+            seller=conn.execute("SELECT external_uid FROM xianyu_account WHERE id=?",(order["account_id"],)).fetchone()
+            if not seller or not seller[0] or seller[0]!=order["official_seller_id"]:
+                raise InventoryError("官方卖家身份不匹配",409)
         if len(items) != 1 or not 1 <= (items[0]["quantity"] or 0) <= 1000:
             raise InventoryError("本阶段须为单商品规格订单，数量必须为 1–1000", 409)
         item = items[0]
@@ -110,6 +118,13 @@ class DesktopDeliveryStore(DesktopInventory):
                     raise InventoryError("SKU 没有精确匹配的发货规则", 409)
                 if plan.rule_id is not None and not conn.execute("SELECT 1 FROM delivery_rule WHERE id=? AND deleted=0 AND status=1", (plan.rule_id,)).fetchone():
                     raise InventoryError("发货规则不存在或未启用", 409)
+                source=conn.execute("SELECT verification_source FROM xianyu_trade_order WHERE id=?",(order_id,)).fetchone()[0]
+                if source=="platform":
+                    gate=conn.execute("""SELECT a.* FROM delivery_authorization a JOIN delivery_rule r ON r.id=a.rule_id
+                        WHERE a.order_id=? AND a.rule_id=? AND a.rule_version=? AND r.config_version=a.rule_version AND r.deleted=0 AND r.status=1""",
+                        (order_id,plan.rule_id,plan.version)).fetchone()
+                    if not gate or not 0<=time.time()-gate["verified_at"]<=30:
+                        raise InventoryError("订单未通过触发条件核验",409)
                 snapshot = {"schemaVersion": 1, "plan": plan.model_dump(), "assets": self.asset_manifest(plan), "order": context}
                 stamp = now()
                 delivery_id = conn.execute("""INSERT INTO delivery_record(account_id,order_id,rule_id,delivery_type,
@@ -119,25 +134,47 @@ class DesktopDeliveryStore(DesktopInventory):
                     VALUES(?,?,?,'automatic','composite','after_payment',0,'mock_pending',?,0,0,?,?,1,'stock_blocked','mock',?,?,?,?)""",
                     (context["accountId"], order_id, plan.rule_id, context["quantity"], stamp, stamp, identity, encode(snapshot),
                      "pending" if plan.confirm_shipment else "manual_pending", uuid.uuid4().hex)).lastrowid
+                if source=="platform":
+                    conn.execute("UPDATE delivery_record SET receipt_mode='platform',delivery_status='pending' WHERE id=?",(delivery_id,))
                 self.audit(conn, delivery_id, "snapshot_frozen")
             if snapshot["assets"] != self.asset_manifest(plan):
                 raise InventoryError("素材与订单快照不一致，禁止继续发送", 409)
+            is_platform=conn.execute("SELECT verification_source FROM xianyu_trade_order WHERE id=?",(order_id,)).fetchone()[0]=="platform"
+            if is_platform:
+                gate=conn.execute("""SELECT a.verified_at FROM delivery_authorization a JOIN delivery_rule r ON r.id=a.rule_id
+                    WHERE a.order_id=? AND a.rule_id=? AND a.rule_version=? AND r.config_version=a.rule_version AND r.status=1 AND r.deleted=0""",
+                    (order_id,plan.rule_id,plan.version)).fetchone()
+                if not gate or not 0<=time.time()-gate[0]<=30:
+                    raise InventoryError("订单规则授权失效，禁止领取库存",409)
             cards = []
             if plan.card_group_id is not None:
                 group = self.group(conn, plan.card_group_id)
                 if group["status"] != 1:
                     raise InventoryError("卡密组未启用", 409)
-                cards = conn.execute("""SELECT * FROM card_item c WHERE group_id=? AND deleted=0
+                availability="""group_id=? AND deleted=0
                     AND COALESCE(status,0)=0 AND COALESCE(is_used,0)=0 AND claim_token IS NULL
                     AND realtime_attempt_id IS NULL AND used_order_id IS NULL AND used_by_order_id IS NULL
                     AND used_time IS NULL AND (expire_time IS NULL OR expire_time>?)
-                    AND NOT EXISTS(SELECT 1 FROM delivery_card_reservation r WHERE r.card_id=c.id)
-                    ORDER BY id LIMIT ?""", (plan.card_group_id, now(), context["quantity"])).fetchall()
+                    AND NOT EXISTS(SELECT 1 FROM delivery_card_reservation r WHERE r.card_id=c.id)"""
+                available=conn.execute(f"SELECT COUNT(*) FROM card_item c WHERE {availability}",(plan.card_group_id,now())).fetchone()[0]
+                if available<plan.low_stock_threshold:
+                    self.audit(conn,delivery_id,"low_stock_warning")
+                    if plan.pause_on_low_stock:
+                        conn.execute("UPDATE delivery_record SET error_message='低库存阈值触发，整单暂停',updated_time=? WHERE id=?",(now(),delivery_id))
+                        return delivery_id
+                cards=conn.execute(f"SELECT * FROM card_item c WHERE {availability} ORDER BY id LIMIT ?",(plan.card_group_id,now(),context["quantity"])).fetchall()
                 if len(cards) < context["quantity"]:
                     conn.execute("UPDATE delivery_record SET error_message='库存不足，整单暂停',updated_time=? WHERE id=?", (now(), delivery_id))
                     self.audit(conn, delivery_id, "stock_insufficient")
                     return delivery_id
             stamp = now()
+            if plan.rule_id is not None:
+                quota=conn.execute("SELECT max_delivery_per_day FROM delivery_rule WHERE id=?",(plan.rule_id,)).fetchone()
+                if quota and (quota[0] or 0)>0:
+                    allocated=conn.execute("SELECT COALESCE(SUM(quantity),0) FROM delivery_daily_reservation WHERE rule_id=? AND day=?",(plan.rule_id,stamp[:10])).fetchone()[0]
+                    if allocated+context["quantity"]>quota[0]:
+                        raise InventoryError("规则每日发货额度不足，整单暂停",409)
+                    conn.execute("INSERT INTO delivery_daily_reservation VALUES(?,?,?,?)",(delivery_id,plan.rule_id,stamp[:10],context["quantity"]))
             for card in cards:
                 conn.execute("INSERT INTO delivery_card_reservation VALUES(?,?,?,'reserved',?,?)",
                              (card["id"], delivery_id, order_id, stamp, stamp))
@@ -196,10 +233,15 @@ class DesktopDeliveryStore(DesktopInventory):
                 self._review(conn, delivery_id, "order_identity_changed")
                 return None
             segment = conn.execute("SELECT * FROM delivery_segment WHERE delivery_id=? AND state!='confirmed' ORDER BY position LIMIT 1", (delivery_id,)).fetchone()
+            max_attempts=DeliveryPlan.model_validate(json.loads(record["snapshot_json"])["plan"]).max_attempts
             if segment:
                 if segment["state"] in ("sending", "unknown") or (segment["state"] == "failed" and not segment["retry_safe"]):
                     return None
                 operation, segment_id, kind = segment["operation_id"], segment["id"], segment["kind"]
+                if conn.execute("SELECT COUNT(*) FROM delivery_step_attempt WHERE operation_id=?",(operation,)).fetchone()[0]>=max_attempts:
+                    conn.execute("UPDATE delivery_segment SET retry_safe=0 WHERE id=?",(segment_id,))
+                    self.audit(conn,delivery_id,"retry_limit_reached",operation)
+                    return None
                 payload = json.loads(segment["payload_json"])
                 conn.execute("UPDATE delivery_segment SET state='sending',retry_safe=0,updated_time=? WHERE id=?", (now(), segment_id))
                 conn.execute("UPDATE delivery_record SET workflow_state='delivering',status=1,updated_time=? WHERE id=?", (now(), delivery_id))
@@ -213,6 +255,10 @@ class DesktopDeliveryStore(DesktopInventory):
                 if record["confirmation_state"] in ("sending", "unknown") or (record["confirmation_state"] == "failed" and not record["confirmation_retry_safe"]):
                     return None
                 operation, segment_id, kind = record["confirmation_operation_id"], None, "platform_confirm"
+                if conn.execute("SELECT COUNT(*) FROM delivery_step_attempt WHERE operation_id=?",(operation,)).fetchone()[0]>=max_attempts:
+                    conn.execute("UPDATE delivery_record SET confirmation_retry_safe=0 WHERE id=?",(delivery_id,))
+                    self.audit(conn,delivery_id,"confirmation_retry_limit_reached",operation)
+                    return None
                 payload = {"orderId": context["externalOrderId"], "accountId": context["accountId"]}
                 conn.execute("UPDATE delivery_record SET workflow_state='confirmation_pending',confirmation_state='sending',confirmation_retry_safe=0,updated_time=? WHERE id=?", (now(), delivery_id))
             attempt_id = conn.execute("""INSERT INTO delivery_step_attempt(delivery_id,segment_id,operation_id,state,created_time,updated_time)
@@ -240,7 +286,7 @@ class DesktopDeliveryStore(DesktopInventory):
             if state == "unknown":
                 self._review(conn, work.delivery_id, "operation_result_unknown")
             elif state == "failed":
-                conn.execute("UPDATE delivery_record SET workflow_state='failed',status=3,delivery_status='mock_failed',updated_time=? WHERE id=?", (now(), work.delivery_id))
+                conn.execute("UPDATE delivery_record SET workflow_state='failed',status=3,delivery_status=CASE WHEN receipt_mode='mock' THEN 'mock_failed' ELSE 'failed' END,updated_time=? WHERE id=?", (now(), work.delivery_id))
             else:
                 conn.execute("UPDATE delivery_record SET workflow_state='ready',updated_time=? WHERE id=?", (now(), work.delivery_id))
                 self._complete(conn, work.delivery_id)
@@ -260,7 +306,7 @@ class DesktopDeliveryStore(DesktopInventory):
         self.refresh(conn, card["group_id"])
 
     def _review(self, conn, delivery_id, action):
-        conn.execute("UPDATE delivery_record SET workflow_state='needs_review',status=5,delivery_status='mock_unknown',updated_time=? WHERE id=?", (now(), delivery_id))
+        conn.execute("UPDATE delivery_record SET workflow_state='needs_review',status=5,delivery_status=CASE WHEN receipt_mode='mock' THEN 'mock_unknown' ELSE 'unknown' END,updated_time=? WHERE id=?", (now(), delivery_id))
         conn.execute("UPDATE delivery_card_reservation SET state='unknown',updated_time=? WHERE delivery_id=? AND state='reserved'", (now(), delivery_id))
         self.audit(conn, delivery_id, action)
 
@@ -271,9 +317,10 @@ class DesktopDeliveryStore(DesktopInventory):
         delivered = conn.execute("SELECT COUNT(*) FROM delivery_card_reservation WHERE delivery_id=? AND state='delivered'", (delivery_id,)).fetchone()[0]
         conn.execute("UPDATE delivery_record SET quantity_sent=? WHERE id=?", (delivered if remaining else record["quantity_requested"], delivery_id))
         if record["confirmation_state"] == "confirmed" and not remaining:
-            conn.execute("""UPDATE delivery_record SET workflow_state='completed',status=2,delivery_status='mock_completed',
+            conn.execute("""UPDATE delivery_record SET workflow_state='completed',status=2,delivery_status=CASE WHEN receipt_mode='mock' THEN 'mock_completed' ELSE 'success' END,
                 quantity_sent=quantity_requested,completed_time=?,updated_time=? WHERE id=?""", (now(), now(), delivery_id))
-            # Mock platform confirmation MUST NOT mark the actual order shipped.
+            if record["receipt_mode"]=="platform":
+                conn.execute("UPDATE xianyu_trade_order SET order_status=3,ship_time=?,updated_time=? WHERE id=?",(now(),now(),record["order_id"]))
 
     def recover_interrupted(self):
         """Startup only, under the host's SingleInstance lock."""
@@ -293,6 +340,18 @@ class DesktopDeliveryStore(DesktopInventory):
             raise InventoryError("核验必须提供操作人和证据引用")
         with self.connection(write=True) as conn:
             record = self.record(conn, delivery_id)
+            if record["receipt_mode"]=="platform" and record["confirmation_operation_id"]==operation_id:
+                official=conn.execute("SELECT * FROM xianyu_trade_order WHERE id=?",(record["order_id"],)).fetchone()
+                items=conn.execute("SELECT * FROM xianyu_trade_order_item WHERE order_id=? AND deleted=0",(record["order_id"],)).fetchall()
+                original=json.loads(record["snapshot_json"])["order"]
+                owner=conn.execute("SELECT external_uid FROM xianyu_account WHERE id=?",(record["account_id"],)).fetchone()
+                if (official["verification_source"]!="platform" or official["official_status"] not in ("WAIT_BUYER_CONFIRM_GOODS","TRADE_FINISHED")
+                    or official["official_refunding"] or not 0<=time.time()-(official["official_checked_at"] or 0)<=30
+                    or not owner or owner[0]!=official["official_seller_id"] or len(items)!=1
+                    or official["buyer_id"]!=original["buyerId"] or official["total_amount"]!=original["amount"]
+                    or items[0]["goods_id"]!=original["goodsId"] or items[0]["sku_id"]!=original["skuId"]
+                    or items[0]["quantity"]!=original["quantity"]):
+                    raise InventoryError("平台确认必须依据新鲜的官方已发货核验，不能只凭人工备注",409)
             segment = conn.execute("SELECT * FROM delivery_segment WHERE delivery_id=? AND operation_id=?", (delivery_id, operation_id)).fetchone()
             if segment:
                 if segment["state"] != "unknown":
