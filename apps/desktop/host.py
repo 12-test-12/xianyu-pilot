@@ -41,9 +41,9 @@ def open_when_ready(url: str, stop: threading.Event):
 def main() -> int:
     parser = argparse.ArgumentParser(description="无需 Docker / MySQL / Redis 的本地工作流")
     parser.add_argument("--port", type=int, default=15179)
-    parser.add_argument("--data-dir", type=Path, default=default_data_dir())
     parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args()
+    data_dir = default_data_dir()
     if not 1024 <= args.port <= 65535:
         parser.error("port 必须在 1024–65535 之间")
     web_dir = Path(__file__).parent / "web-dist"
@@ -51,18 +51,18 @@ def main() -> int:
         print("前端尚未构建，请运行 start-desktop-demo.bat。", file=sys.stderr)
         return 1
     try:
-        with InstanceLock(args.data_dir), socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        with InstanceLock(data_dir), socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
             # Reserve before migration; an occupied port never changes user data.
             if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
                 listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
             listener.bind(("127.0.0.1", args.port))
             listener.listen(128)
-            store = Store(args.data_dir / "demo.sqlite3")
+            store = Store(data_dir / "demo.sqlite3")
             store.migrate()
             app = create_app(store, port=args.port, web_dir=web_dir,
                              on_shutdown=lambda: setattr(server, "should_exit", True))
             url = f"http://127.0.0.1:{args.port}"
-            print(f"\n本地工作流：{url}\n数据目录：{args.data_dir}\nMCP：{url}/mcp\n真实 QQ 能力需由用户自行配置并验证；页面可停止服务。\n", flush=True)
+            print(f"\n本地工作流：{url}\n数据目录：{data_dir}\nMCP：{url}/mcp\n真实 QQ 能力需由用户自行配置并验证；页面可停止服务。\n", flush=True)
             stop = threading.Event()
             if not args.no_browser:
                 threading.Thread(target=open_when_ready, args=(url, stop), daemon=True).start()

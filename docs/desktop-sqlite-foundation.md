@@ -5,7 +5,7 @@
 ## 当前可验证的内容
 
 - `app.main` 根据显式运行模式选择启动流程。桌面流程不加载原服务端启动器，不连接 MySQL/Redis，不启动平台连接、定时任务或自动发货。
-- SQLite 文件为 `%LOCALAPPDATA%\XianyuPilot\app.sqlite3`（Windows）。其他系统使用用户本地数据目录；支持 `--data-dir` 指定本机目录。与历史工作流演示的数据库分开。
+- 所有本地业务文件固定放在程序根目录的 `data/` 内：SQLite 为 `data/app.sqlite3`，上传文件为 `data/uploads/`，历史演示为 `data/demo/`。源码运行时使用项目根目录，打包后使用 EXE 所在目录；不受当前工作目录影响，也不使用 EXE 临时解压目录。
 - 首次启动初始化原模型对应的账号、授权、运行状态、商品、订单、订单明细、发货规则、卡密组、卡密和发货记录表。主键在 SQLite 使用 `INTEGER`，保留原 MySQL 类型。
 - 迁移按版本和 SHA256 记录，事务执行。拒绝覆盖其他应用的数据库、篡改过的迁移和更新版本的数据库；同一数据目录只允许一个实例。
 - 数据库连接启用外键检查和 5 秒锁等待。尚未引入并行写入或后台发送任务。
@@ -27,10 +27,14 @@ Linux/macOS 的安装解释器使用 `.venv/bin/python`，启动使用 `sh ./sta
 启动参数示例：
 
 ```powershell
-.\start-desktop.bat --data-dir D:\XianyuPilotData --port 15181
+.\start-desktop.bat --port 15181
 ```
 
 默认访问 `http://127.0.0.1:15177/health/ready` 查看数据库和迁移状态，`/api/desktop/status` 查看适配阶段。服务只绑定回环地址，拒绝外站 Origin。终端按 Ctrl+C 退出。不会自动打开浏览器或发送消息。
+
+数据位置固定，不再提供 `--data-dir` 参数，旧的 `DESKTOP_DATA_DIR`、`XYA_DESKTOP_DATA_DIR`、`UPLOADS_DIR` 和 `STORAGE_DIR` 环境变量不会改变目录。程序目录必须可写；不可写时启动报错，不会回退到 AppData 或其他位置。`data/` 已被 Git 忽略，不进入源码发布包。移动整个程序目录时一并保留 `data/`。
+
+旧版本数据不会自动覆盖到新位置。如曾在用户目录保存数据，应先停止旧实例、备份后，将原正式数据目录的内容复制到程序根目录的 `data/`；历史演示数据则放在 `data/demo/`。
 
 桌面流程不读取服务端 `.env`、服务端密钥文件或 MySQL/Redis 环境配置。此阶段只开放存储状态；AI、平台和其他配置将在相关原业务适配时接入。
 

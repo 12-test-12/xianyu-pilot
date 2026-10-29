@@ -49,7 +49,7 @@ class NativePackageTests(unittest.TestCase):
             self.assertEqual(archive.read("apps/crawler/dist/server.js"), b"compiled crawler")
 
     def test_worktree_data_desktop_prototype_and_containers_are_not_sources(self):
-        for name in [".env", "secrets/token", "apps/api/.env", "apps/api/uploads/customer.txt",
+        for name in [".env", "secrets/token", "data/app.sqlite3", "data/uploads/customer.txt", "apps/api/.env", "apps/api/uploads/customer.txt",
                      "apps/api/secrets/key", "apps/web/node_modules/dependency/index.js",
                      "apps/desktop/host.py", "apps/web/Dockerfile", "docker-compose.yml", "../escape"]:
             with self.subTest(name=name):

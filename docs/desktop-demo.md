@@ -10,11 +10,11 @@
 
 此电脑已准备项目独立的 `.venv-ci` 和 Node.js 22.23.1 / npm 10.9.8。启动器核对锁定依赖，构建页面后运行本机服务，不修改全局 Python 或现有数据库。其他开发电脑需要 Python 3.11–3.13、同版本 Node/npm；首次缺依赖时会创建 `.venv-desktop` 并按哈希锁安装，首次安装需要网络。当前不是自带运行环境的安装包。
 
-默认数据目录：`%LOCALAPPDATA%/XianyuPilot/demo/`，数据库为 `demo.sqlite3`。可通过 `-DataDir` 或 `XYA_DESKTOP_DATA_DIR` 指定独立目录。当前验收预览使用 `D:/xianyu-pilot/.tmp/desktop-demo-preview`，其中演示数据不会自动出现在默认目录。
+数据固定保存在程序根目录的 `data/demo/`，数据库为 `demo.sqlite3`。不再提供 `-DataDir` 参数或 `XYA_DESKTOP_DATA_DIR` 覆盖。旧预览目录中的数据不会自动导入；停止旧实例并备份后，可自行复制到 `data/demo/`。
 
 ```powershell
 Set-Location D:\xianyu-pilot
-.\start-desktop-demo.bat -NoBrowser -DataDir D:\xianyu-pilot\.tmp\desktop-demo-preview
+.\start-desktop-demo.bat -NoBrowser
 ```
 
 同一目录只能运行一个宿主。启动时先锁目录、预留端口，再执行带校验和的追加迁移；不会执行旧 MySQL 迁移或读取根目录 `.env`。旧版演示的三个历史记录仍在原表中，不伪装成新工作流订单。

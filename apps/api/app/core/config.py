@@ -1,5 +1,4 @@
 from pathlib import Path
-import os
 from typing import Any, List, Literal
 from urllib.parse import urlparse
 
@@ -8,12 +7,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import URL
 
 from app.core.file_secrets import resolve_file_secret_values
+from app.core.paths import data_directory
 
 API_DIR = Path(__file__).resolve().parents[2]
 MONOREPO_LAYOUT = API_DIR.parent.name.casefold() == "apps"
 ROOT_DIR = API_DIR.parent.parent if MONOREPO_LAYOUT else API_DIR
 ROOT_ENV_FILE = ROOT_DIR / ".env"
-DEFAULT_UPLOADS_DIR = (API_DIR.parent / "uploads" if MONOREPO_LAYOUT else API_DIR / "uploads").resolve()
 FILE_BACKED_SECRET_FIELDS = (
     "mysql_password",
     "mysql_app_password",
@@ -34,15 +33,11 @@ OPTIONAL_FILE_BACKED_SECRET_FIELDS = (
 
 class Settings(BaseSettings):
     runtime_mode: Literal["server", "desktop"] = "server"
-    desktop_data_dir: str = ""
     desktop_port: int = Field(default=15177, ge=1024, le=65535)
     app_name: str = "xianyu-assistant-python"
     server_host: str = "127.0.0.1"
     # Loopback-only native development default.
     server_port: int = 15177
-
-    db_path: str = "../dbdata/xianyu_assistant.db"  # kept for backward compat
-    uploads_dir: str = str(DEFAULT_UPLOADS_DIR)
 
     # 原业务暂存配置：对应业务迁移完成后移除。
     mysql_host: str = "localhost"
@@ -100,15 +95,7 @@ class Settings(BaseSettings):
 
     @property
     def desktop_data_path(self) -> Path:
-        if self.desktop_data_dir:
-            path = Path(self.desktop_data_dir).expanduser()
-        elif os.name == "nt":
-            path = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))) / "XianyuPilot"
-        else:
-            path = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local" / "share"))) / "XianyuPilot"
-        if str(path).startswith(("\\\\", "//")):
-            raise ValueError("桌面数据库必须放在本机目录")
-        return path.resolve()
+        return data_directory()
 
     @property
     def sqlite_path(self) -> Path:
@@ -160,12 +147,7 @@ class Settings(BaseSettings):
 
     @property
     def uploads_path(self) -> Path:
-        if self.is_desktop:
-            return self.desktop_data_path / "uploads"
-        value = Path(self.uploads_dir).expanduser()
-        if not value.is_absolute():
-            value = API_DIR / value
-        return value.resolve()
+        return data_directory() / "uploads"
 
     jwt_secret: str = Field(
         default="xianyu-assistant-jwt-secret-key-2026-04-22-very-long-secret-for-hmac-sha",
@@ -220,9 +202,10 @@ class Settings(BaseSettings):
     xianyu_mtop_category_version: str = "2.0"
     xianyu_mtop_upload_url: str = "https://stream-upload.goofish.com/api/upload.api?floderId=0&appkey=xy_chat"
 
-    # Optional read-only local homepage-content fallback directory.
-    # Runtime mutations live in MySQL or the advertising bridge.
-    STORAGE_DIR: str = "../data"
+    @property
+    def STORAGE_DIR(self) -> str:
+        """Compatibility path for local file storage in the original services."""
+        return str(data_directory())
 
     # 自动分类置信度阈值
     # 注意：闲鱼官方 categoryPredictResult 已优先采用并跳过阈值检查，
@@ -412,7 +395,7 @@ class Settings(BaseSettings):
                 # Do not read the server dotenv, secret files, or inherited
                 # MySQL/Redis credentials in the desktop process.
                 values = {key: value for key, value in explicit.items()
-                          if key in {"runtime_mode", "desktop_data_dir", "desktop_port"}}
+                          if key in {"runtime_mode", "desktop_port"}}
                 values.update(app_env="desktop", server_host="127.0.0.1")
                 return values
             # Source priority remains init > environment > dotenv > secrets_dir.

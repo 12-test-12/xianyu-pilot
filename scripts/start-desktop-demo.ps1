@@ -1,6 +1,5 @@
 param(
     [ValidateRange(1024, 65535)][int]$Port = 15179,
-    [string]$DataDir = '',
     [switch]$NoBrowser,
     [switch]$CheckOnly
 )
@@ -101,7 +100,6 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Demo frontend build failed.' }
     } finally { Pop-Location }
     $hostArgs = @('-m', 'apps.desktop.host', '--port', "$Port")
-    if ($DataDir) { $hostArgs += @('--data-dir', $DataDir) }
     if ($NoBrowser) { $hostArgs += '--no-browser' }
     & $pythonExecutable @hostArgs
     if ($LASTEXITCODE -ne 0) { throw 'Demo host stopped with an error.' }

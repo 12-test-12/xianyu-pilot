@@ -1,18 +1,11 @@
-import os
 from pathlib import Path
 from app.core.instance_lock import SingleInstance
+from app.core.paths import data_directory
 
 
 def default_data_dir() -> Path:
-    """Resolve only the explicit demo environment; never read the server .env."""
-    configured = os.environ.get("XYA_DESKTOP_DATA_DIR")
-    if configured:
-        return Path(configured).expanduser().resolve()
-    if os.name == "nt":
-        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
-    else:
-        base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
-    return base / "XianyuPilot" / "demo"
+    """Keep historical demo data beside the program, separate from real data."""
+    return data_directory() / "demo"
 
 
 class InstanceLock(SingleInstance):

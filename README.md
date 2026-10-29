@@ -13,6 +13,8 @@
 
 SQLite 存储基础的安装、启动和后续顺序见 [桌面改造说明](docs/desktop-sqlite-foundation.md)。Windows 准备好 Python 依赖后运行 `start-desktop.bat`，默认状态入口为 `http://127.0.0.1:15177/health/ready`。
 
+本地数据固定保存在程序根目录的 `data/` 下，数据库为 `data/app.sqlite3`，上传文件为 `data/uploads/`。移动程序时保留该文件夹即可；不使用 AppData 或自定义数据目录。
+
 ## 开发与发布
 
 - [原本机开发流程](docs/local-dev-runbook.md)：`start-local.bat` / `start-local.sh`，适用于迁移中的原服务端。
