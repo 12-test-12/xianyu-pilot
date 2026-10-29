@@ -165,7 +165,7 @@ def test_rule_crud_references_and_restart(config):
         assert records[0]["cardGroupId"] is None
         assert records[0]["matchKeywords"] == ""
         ready = restarted.get("/health/ready").json()
-        assert ready["phase"] == "inventory-rules"
+        assert ready["phase"] == "local-delivery-state"
         assert ready["automaticDeliveryEnabled"] is ready["realPlatformConnections"] is False
         data(restarted.delete(f"/api/auto-delivery/rules/{rid}"))
         assert data(restarted.get("/api/auto-delivery/rules"))["total"] == 0
@@ -201,7 +201,7 @@ def test_upgrade_keeps_existing_stock_and_rejects_duplicates_without_data_loss(t
     with sqlite3.connect(path) as conn:
         conn.execute("INSERT INTO card_group(id,group_name,deleted) VALUES(1,'old',0)")
         conn.execute("INSERT INTO card_item(group_id,card_key,deleted) VALUES(1,'existing',0)")
-    assert DesktopStore(path).initialize()["version"] == "002_inventory_rules.sql"
+    assert DesktopStore(path).initialize()["version"] == "003_delivery_state.sql"
     assert DesktopStore(path).initialize()["current"]
     with sqlite3.connect(path) as conn:
         assert conn.execute("SELECT card_key FROM card_item").fetchall() == [("existing",)]

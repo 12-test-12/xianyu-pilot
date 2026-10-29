@@ -1,6 +1,7 @@
 """A per-data-directory OS lock, released automatically when the host exits."""
 import os
 from pathlib import Path
+from app.core.paths import contained_data_path
 
 
 class SingleInstance:
@@ -10,6 +11,7 @@ class SingleInstance:
         self.file = None
 
     def __enter__(self):
+        contained_data_path(self.path.parent, self.path.name)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.file = self.path.open("a+b")
         try:

@@ -30,7 +30,7 @@ LOCAL_SCRIPTS = {
     "scripts/local-dev.ps1", "scripts/setup-local.ps1", "scripts/setup-local.sh",
     "scripts/verify-local.ps1", "scripts/read_only_smoke.py",
 }
-LOCAL_DOCS = {"docs/local-dev-runbook.md", "docs/native-deployment.md", "docs/desktop-sqlite-foundation.md"}
+LOCAL_DOCS = {"docs/local-dev-runbook.md", "docs/native-deployment.md", "docs/desktop-sqlite-foundation.md", "docs/desktop-delivery-design.md"}
 REQUIRED = {
     "LICENSE", "start-local.bat", "start-local.sh", "scripts/setup-local.ps1",
     "scripts/setup-local.sh", "scripts/local-dev.ps1", "apps/api/app/main.py",
@@ -41,6 +41,9 @@ REQUIRED = {
     "apps/api/app/desktop_migrations/001_original_core.sql", "docs/desktop-sqlite-foundation.md",
     "apps/api/app/desktop_migrations/002_inventory_rules.sql", "apps/api/app/desktop_inventory_api.py",
     "apps/api/app/services/desktop_inventory.py",
+    "apps/api/app/desktop_migrations/003_delivery_state.sql", "apps/api/app/desktop_delivery_api.py",
+    "apps/api/app/services/desktop_delivery.py", "apps/api/app/services/desktop_delivery_contracts.py",
+    "apps/api/app/core/portable_runtime.py", "docs/desktop-delivery-design.md",
 }
 README = """Xianyu Pilot - original system, native source distribution
 
@@ -49,9 +52,10 @@ The application and this distribution require no container runtime.
 
 Desktop SQLite inventory/rules: read docs/desktop-sqlite-foundation.md and run
 start-desktop.bat (Windows) or sh start-desktop.sh. Python dependencies are needed.
-This phase provides storage/status and local card warehouse/delivery-rule APIs.
-The original Vue UI, orders and actual delivery are not yet enabled in desktop
-mode. It needs no MySQL/Redis and sends no platform messages.
+This phase provides warehouse/rule APIs and read-only original order/delivery
+records. The local segmented state machine runs in offline Mock tests only.
+The original Vue UI and actual delivery are not yet enabled in desktop mode.
+It needs no MySQL/Redis and sends no platform messages. See the delivery design.
 
 Original server development mode (pending SQLite business migration):
 Prepare Python 3.11, Node.js 22.23.1 / npm 10.9.8, local MySQL 8 and Redis 7.

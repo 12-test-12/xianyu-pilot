@@ -88,7 +88,7 @@ def test_failed_migration_rolls_back_and_newer_database_is_preserved(tmp_path):
         (migrations / original.name).write_bytes(original.read_bytes())
     store = DesktopStore(tmp_path / "app.sqlite3", migrations)
     store.initialize()
-    newer = migrations / "003_failure.sql"
+    newer = migrations / "999_failure.sql"
     newer.write_text("CREATE TABLE partial(value TEXT);\nINVALID SQL;\n", encoding="utf-8")
     with pytest.raises(sqlite3.Error):
         store.initialize()
@@ -99,7 +99,7 @@ def test_failed_migration_rolls_back_and_newer_database_is_preserved(tmp_path):
     store.initialize()
     with pytest.raises(DesktopSchemaError, match="版本较新"):
         DesktopStore(store.path).initialize()
-    assert store.status()["version"] == "003_failure.sql"
+    assert store.status()["version"] == "999_failure.sql"
 
 
 def test_startup_lock_local_boundary_and_explicit_unavailable_routes(desktop_config):
@@ -110,7 +110,7 @@ def test_startup_lock_local_boundary_and_explicit_unavailable_routes(desktop_con
         assert ready.json()["storage"] == "sqlite"
         assert ready.json()["externalServicesRequired"] == []
         assert ready.json()["businessRoutesEnabled"] is True
-        assert ready.json()["enabledBusinessModules"] == ["cards", "delivery-rules"]
+        assert ready.json()["enabledBusinessModules"] == ["cards", "delivery-rules", "orders-read", "delivery-records-read"]
         assert client.post("/api/delivery/send", json={}).status_code == 503
         assert client.get("/api/desktop/status", headers={"origin": "https://outside.example"}).status_code == 403
         assert client.get("/health", headers={"host": "outside.example"}).status_code == 400

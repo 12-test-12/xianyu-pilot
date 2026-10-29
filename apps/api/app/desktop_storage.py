@@ -3,6 +3,7 @@ import hashlib
 from contextlib import closing
 from pathlib import Path
 import sqlite3
+from app.core.paths import contained_data_path
 
 APPLICATION_ID = 0x58595044
 MIGRATIONS = Path(__file__).parent / "desktop_migrations"
@@ -38,13 +39,16 @@ class DesktopStore:
     def initialize(self):
         """Caller must hold the data directory's SingleInstance lock."""
         migrations = self.migrations()
+        for name in (self.path.name, self.path.name + "-wal", self.path.name + "-shm"):
+            contained_data_path(self.path.parent, name)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(self.path, timeout=5)
         try:
             connection.execute("PRAGMA foreign_keys=ON")
             connection.execute("PRAGMA busy_timeout=5000")
             connection.execute("PRAGMA journal_mode=WAL")
-            connection.execute("PRAGMA synchronous=NORMAL")
+            connection.execute("PRAGMA synchronous=FULL")
+            connection.execute("PRAGMA temp_store=MEMORY")
             tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
             if tables and "desktop_schema_history" not in tables:
                 raise DesktopSchemaError("目录包含其他应用或演示数据库，未修改已有数据")

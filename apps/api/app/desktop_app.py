@@ -20,6 +20,8 @@ from app.core.instance_lock import SingleInstance
 from app.core.response import ResultObject
 from app.desktop_storage import DesktopStore
 from app.desktop_inventory_api import router as inventory_router
+from app.desktop_delivery_api import router as delivery_router
+from app.services.desktop_delivery import DesktopDeliveryStore
 from app.services.desktop_inventory import InventoryError
 
 logger = logging.getLogger(__name__)
@@ -39,6 +41,7 @@ def create_desktop_app(config=None, *, web_dir=None):
         with SingleInstance(config.desktop_data_path):
             try:
                 await asyncio.to_thread(store.initialize)
+                await asyncio.to_thread(DesktopDeliveryStore(config.sqlite_path).recover_interrupted)
                 async with runtime.engine.connect() as connection:
                     await connection.execute(text("SELECT 1"))
                 app.state.ready = True
@@ -59,7 +62,7 @@ def create_desktop_app(config=None, *, web_dir=None):
         if (origin and origin not in origins) or request.headers.get("sec-fetch-site") == "cross-site":
             return JSONResponse({"detail": "只允许本机桌面工作区访问"}, status_code=403)
         response = await call_next(request)
-        if request.url.path.startswith(("/api/cards", "/api/auto-delivery/rules")):
+        if request.url.path.startswith(("/api/cards", "/api/auto-delivery/", "/api/orders")):
             response.headers["Cache-Control"] = "no-store"
             response.headers["X-Content-Type-Options"] = "nosniff"
         return response
@@ -84,9 +87,10 @@ def create_desktop_app(config=None, *, web_dir=None):
         async with runtime.engine.connect() as connection:
             await connection.execute(text("SELECT 1"))
         return {"mode": "desktop", "storage": "sqlite", "schema": schema,
-                "phase": "inventory-rules", "automaticDeliveryEnabled": False,
+                "phase": "local-delivery-state", "automaticDeliveryEnabled": False,
                 "realPlatformConnections": False, "businessRoutesEnabled": True,
-                "enabledBusinessModules": ["cards", "delivery-rules"],
+                "enabledBusinessModules": ["cards", "delivery-rules", "orders-read", "delivery-records-read"],
+                "deliveryExecutionMode": "offline-tests-only",
                 "externalServicesRequired": [], "uiBuilt": (web_dir / "index.html").is_file()}
 
     @app.get("/health/ready")
@@ -106,6 +110,7 @@ def create_desktop_app(config=None, *, web_dir=None):
         return ResultObject.success(await status())
 
     app.include_router(inventory_router)
+    app.include_router(delivery_router)
 
     @app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
     async def not_adapted(path: str):

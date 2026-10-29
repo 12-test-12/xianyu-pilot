@@ -22,6 +22,8 @@ def create_configured_engine(database_url, config=None):
             try:
                 cursor.execute("PRAGMA foreign_keys=ON")
                 cursor.execute("PRAGMA busy_timeout=5000")
+                cursor.execute("PRAGMA synchronous=FULL")
+                cursor.execute("PRAGMA temp_store=MEMORY")
             finally:
                 cursor.close()
 

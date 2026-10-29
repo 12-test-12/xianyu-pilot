@@ -17,6 +17,11 @@ def main():
         parser.error("端口须为 1024–65535")
     os.environ["RUNTIME_MODE"] = "desktop"
     os.environ["DESKTOP_PORT"] = str(args.port)
+    from app.core.portable_runtime import prepare_portable_runtime, startup_error
+    try:
+        prepare_portable_runtime()
+    except (OSError, ValueError) as exc:
+        startup_error(exc)
     import uvicorn
     uvicorn.run("app.main:app", host="127.0.0.1", port=args.port, workers=1, reload=False, app_dir=str(CURRENT_DIR))
 

@@ -80,6 +80,8 @@ class DesktopInventory:
         try:
             conn.execute("PRAGMA foreign_keys=ON")
             conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("PRAGMA synchronous=FULL")
+            conn.execute("PRAGMA temp_store=MEMORY")
             conn.execute("BEGIN IMMEDIATE" if write else "BEGIN")
             yield conn
             conn.commit()
