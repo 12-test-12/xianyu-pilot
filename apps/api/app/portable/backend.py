@@ -29,6 +29,8 @@ class DesktopBackend:
             asyncio.run(self._serve())
         except BaseException as exc:
             self.error=type(exc).__name__
+            if isinstance(exc,ImportError) and getattr(exc,'name',None):
+                self.error+=': '+exc.name
             logging.getLogger(__name__).error("Desktop API failed: %s",self.error)
 
     async def _serve(self):

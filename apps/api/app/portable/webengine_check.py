@@ -6,7 +6,7 @@ import time
 CONSOLE_PROBE=r"""(() => {
   const rendered = Boolean(document.querySelector('.app-shell .sidebar')) &&
     ['账号','自动发货','卡密','商品','订单','消息','日志'].every(text => document.body.innerText.includes(text));
-  if (!rendered) return JSON.stringify({rendered:false});
+  if (!rendered) return JSON.stringify({rendered:false,width:innerWidth,booting:Boolean(document.querySelector('.boot-screen'))});
   if (!window.__xianyuConsoleCheck) {
     window.__xianyuConsoleCheck = {pending:true};
     (async () => {
@@ -58,6 +58,10 @@ def check(root,paths,web,port):
         if profile is None:
             raise RuntimeError("cannot create portable profile")
         view=QWebEngineView()
+        # Match the real desktop window. The original app intentionally selects
+        # MobileLite below 900px; Qt's default 640px view is not a desktop probe.
+        view.resize(1180,820)
+        view.show()
         page=QWebEnginePage(profile,view)
         view.setPage(page)
         started=time.monotonic()
@@ -72,6 +76,7 @@ def check(root,paths,web,port):
                 probe=json.loads(title)
             except (ValueError,TypeError):
                 return
+            result['lastProbe']=probe
             if probe.get('rendered') and probe.get('pending') is False:
                 checks=probe.get('checks',{})
                 result.update(ok=bool(checks) and all(checks.values()),originalConsoleRendered=True,apiChecks=checks)
@@ -89,6 +94,10 @@ def check(root,paths,web,port):
                     app.quit()
                 return
             if backend.error or time.monotonic()-started>25:
+                result.update(reason='backend-error' if backend.error else 'console-timeout',
+                              backendError=backend.error,backendReady=backend.ready,pageLoaded=loaded_ok)
+                view.grab().save(str(root/'logs/webengine-check.png'))
+                view.setUrl(QUrl('about:blank'))
                 backend.stop();closing=True
             elif backend.ready and not requested:
                 requested=True

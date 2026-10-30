@@ -28,8 +28,21 @@ def run(bundle,workspace,*,webengine=True,standalone=None):
         else:
             shutil.copytree(bundle,first)
         def probe(folder,flag):
-            result=subprocess.run([str(folder/'XianyuPilot.exe'),flag,'--port','19177'],cwd=outside,env=env,timeout=90,check=False)
+            def diagnostics():
+                destination=Path('reports/windows-portable-diagnostics')/('standalone' if standalone else 'directory')
+                destination.mkdir(parents=True,exist_ok=True)
+                for name in ('portable-self-check.json','webengine-check.json','webengine-check.png','desktop.log'):
+                    source=folder/'data/logs'/name
+                    if source.is_file():shutil.copy2(source,destination/name)
+                report=folder/'data/logs/webengine-check.json'
+                if report.is_file():print(report.read_text(encoding='utf-8'),flush=True)
+            try:
+                result=subprocess.run([str(folder/'XianyuPilot.exe'),flag,'--port','19177'],cwd=outside,env=env,timeout=90,check=False)
+            except subprocess.TimeoutExpired:
+                diagnostics()
+                raise
             if result.returncode:
+                diagnostics()
                 raise RuntimeError(f'Frozen {flag} failed: {result.returncode}')
         probe(first,'--self-check')
         before=json.loads((first/'data/logs/portable-self-check.json').read_text(encoding='utf-8'))

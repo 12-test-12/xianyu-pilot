@@ -169,7 +169,12 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path .tmp, reports | Out-Null
           python -m pytest apps/api/tests/test_portable_qt.py -q --basetemp=.tmp/qt-contract --junitxml=reports/windows-qt-contract.xml
-      - name: Build directory-style EXE with embedded Python and Chromium
+      - name: Verify original console in embedded Chromium before freezing
+        env:
+          APP_ENV: test
+          PYTHONPATH: apps/api
+        run: python scripts/ci/desktop_webengine_source.py
+      - name: Build Windows EXEs with embedded Python and Chromium
         run: ./scripts/build-windows-portable.ps1 -SkipWebBuild
       - name: Record runtime inventory and source identity
         run: |
@@ -197,6 +202,7 @@ jobs:
             reports/windows-standalone-smoke.json
             reports/windows-build-dependencies.txt
             reports/windows-qt-contract.xml
+            reports/windows-portable-diagnostics/
             build/windows/**/warn-*.txt
           if-no-files-found: warn
           retention-days: 14
