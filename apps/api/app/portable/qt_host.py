@@ -7,7 +7,7 @@ import time
 from PySide6.QtCore import QTimer,QUrl,Qt,QEvent
 from PySide6.QtGui import QAction,QColor,QIcon,QPainter,QPixmap
 from PySide6.QtWidgets import QApplication,QMainWindow,QMenu,QMessageBox,QSystemTrayIcon
-from PySide6.QtWebEngineCore import QWebEnginePage,QWebEngineProfile,QWebEngineProfileBuilder,QWebEngineSettings,QWebEngineUrlRequestInterceptor,QWebEnginePermission
+from PySide6.QtWebEngineCore import QWebEnginePage,QWebEngineProfile,QWebEngineProfileBuilder,QWebEngineSettings,QWebEngineUrlRequestInterceptor,QWebEngineUrlRequestInfo,QWebEnginePermission
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
 from app.portable.windows_events import power_event,network_connected
@@ -44,7 +44,13 @@ class LocalRequests(QWebEngineUrlRequestInterceptor):
 
     def interceptRequest(self,info):
         url=info.requestUrl()
-        if not local_request(url,self.port) and url.scheme() not in ("data","blob","about"):
+        # The original goods/account/message views use HTTPS platform images.
+        # Permit passive image loads from our page, retaining local-only APIs,
+        # scripts, frames and navigation.
+        image=(info.resourceType()==QWebEngineUrlRequestInfo.ResourceType.ResourceTypeImage
+               and local_url(info.firstPartyUrl(),self.port)
+               and url.scheme()=='https' and bool(url.host()) and not url.userInfo())
+        if not image and not local_request(url,self.port) and url.scheme() not in ("data","blob","about"):
             info.block(True)
 
 

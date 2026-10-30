@@ -72,3 +72,24 @@ def test_native_power_bridge_pauses_and_requests_resume(console):
     msg.wParam=18
     c.window.nativeEvent('windows_generic_MSG',ctypes.addressof(msg))
     assert 'suspend' not in c.backend.gate.reasons
+
+
+def test_original_platform_images_load_but_external_active_requests_are_blocked(console):
+    from PySide6.QtCore import QUrl
+    from PySide6.QtWebEngineCore import QWebEngineUrlRequestInfo
+    c,_=console
+    resource=QWebEngineUrlRequestInfo.ResourceType
+    class Request:
+        blocked=False
+        def __init__(self,url,kind):self.url,self.kind=url,kind
+        def requestUrl(self):return QUrl(self.url)
+        def firstPartyUrl(self):return QUrl('http://127.0.0.1:19177/')
+        def resourceType(self):return self.kind
+        def block(self,value):self.blocked=value
+    image=Request('https://example.com/goods.jpg',resource.ResourceTypeImage)
+    script=Request('https://example.com/script.js',resource.ResourceTypeScript)
+    api=Request('https://example.com/api',resource.ResourceTypeXhr)
+    local=Request('http://127.0.0.1:19177/api/goods',resource.ResourceTypeXhr)
+    for request in (image,script,api,local):c.interceptor.interceptRequest(request)
+    assert not image.blocked and not local.blocked
+    assert script.blocked and api.blocked
