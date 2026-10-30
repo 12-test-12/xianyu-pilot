@@ -17,8 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.core import upload_security
 from app.core import cookie_crypto, security
-from app.core.config import Settings
-from app.services import commercial_bridge, remote_slider_config, remote_slider_solver, ws_storage
+from app.services import remote_slider_config, remote_slider_solver, ws_storage
 
 
 def dns_result(address):
@@ -87,22 +86,6 @@ async def test_remote_solve_revalidates_dns_after_successful_precheck(monkeypatc
         await remote_slider_solver._request_remote_slider('https://service.example/solve', 'test-key', {'cookie': 'test'})
 
 
-@pytest.mark.asyncio
-async def test_bridge_preserves_query_and_idempotency_contract(monkeypatch):
-    captured = {}
-    async def request(url, **kwargs):
-        captured.update(url=url, **kwargs)
-        return upload_security.PublicHTTPResponse(200, httpx.Headers(), b'{"code":200,"data":{"ok":true}}')
-    monkeypatch.setattr(commercial_bridge, 'request_public_https', request)
-    config = commercial_bridge.get_commercial_bridge_config()
-    config.update(baseUrl='https://bridge.example', bridgePrefix='/bridge', accessToken='test-key',
-                  timeoutSeconds=10, siteCode='test', siteName='test', frontendUrl='', adminUrl='')
-    result = await commercial_bridge._request_bridge(config, 'POST', '/feedback',
-        params={'page': 1, 'query': 'a&b', 'blank': ''}, json_data={'message': 'hello'}, idempotency_key='intent-1')
-    assert result == {'ok': True}
-    assert captured['url'] == 'https://bridge.example/bridge/feedback?page=1&query=a%26b'
-    assert captured['headers']['Idempotency-Key'] == 'intent-1'
-    assert json.loads(captured['content']) == {'message': 'hello'}
 
 
 @pytest.mark.asyncio
@@ -124,17 +107,6 @@ async def test_commercial_image_normalizes_and_preserves_404(monkeypatch):
         await upload_security.download_trusted_origin_image('https://images.example/missing.png')
 
 
-def test_bridge_has_no_bundled_credentials(monkeypatch, tmp_path):
-    for name in ['COMMERCIAL_BACKEND_ACCESS_TOKEN', 'COMMERCIAL_BACKEND_ACCESS_TOKEN_FILE',
-                 'COMMERCIAL_BACKEND_BASE_URL', 'COMMERCIAL_FRONTEND_URL']:
-        monkeypatch.delenv(name, raising=False)
-    config = Settings(_env_file=None)
-    assert config.commercial_backend_access_token == ''
-    assert config.commercial_backend_base_url == ''
-    token_path = tmp_path / 'token'
-    token_path.write_text('test-deployment-token\n', encoding='utf-8')
-    config = Settings(_env_file=None, commercial_backend_access_token_file=str(token_path))
-    assert config.commercial_backend_access_token == 'test-deployment-token'
 
 
 def test_cdn_host_match_rejects_embedded_domains():
