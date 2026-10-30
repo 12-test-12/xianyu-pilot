@@ -117,6 +117,9 @@ def configure_functions(connection):
     connection.create_function('VERSION',0,lambda:'SQLite '+sqlite3.sqlite_version)
     connection.create_function('CONCAT',-1,lambda *values:None if None in values else ''.join(map(str,values)))
     connection.create_function('IF',3,lambda condition,yes,no:yes if condition else no)
+    # SQLite JSON_EXTRACT already decodes JSON strings. The original source
+    # binding query compares both numeric and string IDs as unquoted text.
+    connection.create_function('JSON_UNQUOTE',1,lambda value:None if value is None else str(value))
     connection.create_function('GREATEST',-1,lambda *values:None if None in values else max(values))
     connection.create_function('LEAST',-1,lambda *values:None if None in values else min(values))
     connection.create_function('DATE_FORMAT',2,lambda value,format:dt.datetime.fromisoformat(str(value)).strftime(format.replace('%i','%M').replace('%s','%S')) if value else None)

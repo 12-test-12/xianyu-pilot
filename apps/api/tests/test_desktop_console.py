@@ -1,5 +1,6 @@
 """Run the original console contracts against a real local SQLite database."""
 import asyncio
+import json
 from pathlib import Path
 import re
 import sqlite3
@@ -138,6 +139,21 @@ def test_sse_ticket_is_real_single_use_and_session_is_revoked(console):
     assert _consume_ticket(ticket) and not _consume_ticket(ticket)
     assert client.post('/api/auth/logout').json()['code']==200
     assert client.get('/api/xianyu/accounts').status_code==401
+
+
+def test_source_goods_binding_uses_original_json_query(console):
+    client,config,_=console
+    response=client.post('/api/auto-delivery/sources',json={'title':'本机货源','content':'原项目发货内容'})
+    assert response.json()['code']==200,response.text
+    with sqlite3.connect(config.sqlite_path) as db:
+        source_id=db.execute('SELECT id FROM delivery_text_source').fetchone()[0]
+        db.execute("INSERT INTO xianyu_account(id,external_uid,deleted) VALUES(11,'fixture-seller',0)")
+        db.execute("INSERT INTO xianyu_goods(id,account_id,external_goods_id,title,deleted,status,auto_relist_enabled,has_snapshot) VALUES(21,11,'fixture-item','已绑定商品',0,1,0,0)")
+        db.execute('INSERT INTO delivery_goods_config(goods_id,config_json,deleted) VALUES(21,?,0)',
+                   (json.dumps({'payDelivery':{'sourceId':source_id}}),))
+    response=client.get(f'/api/auto-delivery/sources/{source_id}/goods')
+    assert response.status_code==200 and response.json()['code']==200,response.text
+    assert response.json()['data']['configuredGoodsPage']['total']==1,response.text
 
 
 def test_sql_translation_never_rewrites_literal_values():
