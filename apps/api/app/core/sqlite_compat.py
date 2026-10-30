@@ -87,6 +87,9 @@ def translate_sql(statement):
         sql=sql[:marker.start()]+' ON CONFLICT DO UPDATE SET '+updates
     sql=re.sub(r'\bCOLLATE\s+utf8mb4_\w+', 'COLLATE NOCASE',sql,flags=re.I)
     sql=re.sub(r'\bAS\s+UNSIGNED\b','AS INTEGER',sql,flags=re.I)
+    # SQLite text equality already uses binary collation by default. These
+    # original record/recovery joins use MySQL's unary BINARY cast on strings.
+    sql=re.sub(r'\bBINARY\s+(?=(?:COALESCE|CAST)\s*\()','',sql,flags=re.I)
     offset=0
     while match:=re.search(r'\bGROUP_CONCAT\s*\(',sql[offset:],re.I):
         start=offset+match.start()

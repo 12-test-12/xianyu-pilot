@@ -14,7 +14,7 @@ CONSOLE_PROBE=r"""(() => {
       const headers = {Authorization:'Bearer '+token};
       const checks = {};
       for (const path of ['/xianyu/accounts','/goods','/orders','/orders/today-amount','/cards',
-                          '/auto-delivery/sources','/auto-reply/rules','/conversations',
+                          '/auto-delivery/sources','/auto-delivery/records','/auto-reply/rules','/conversations',
                           '/operation-logs','/business-settings/ai-customer-service','/system/open-source-config']) {
         try { const response=await fetch('/api'+path,{headers}); const body=await response.json();
           checks[path]=response.ok && body.code===200; } catch { checks[path]=false; }

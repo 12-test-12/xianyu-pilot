@@ -1,8 +1,4 @@
-"""Desktop startup foundation using the original API's storage and model schema.
-
-No platform clients, server migration runner, Redis or automatic send loops are
-loaded here. Original business routes are enabled only as they are adapted.
-"""
+"""Run the original console and business services with local desktop storage."""
 import asyncio
 import logging
 import sqlite3
@@ -87,7 +83,7 @@ def create_desktop_app(config=None, *, web_dir=None, platform_runtime=None, inst
             return JSONResponse({"detail": "只允许本机桌面工作区访问"}, status_code=403)
         with use_database_runtime(runtime):
             response = await call_next(request)
-        if request.url.path.startswith(("/api/cards", "/api/auto-delivery/", "/api/orders","/api/desktop/safety")):
+        if request.url.path.startswith(("/api/cards", "/api/auto-delivery/", "/api/orders","/api/desktop")):
             response.headers["Cache-Control"] = "no-store"
             response.headers["X-Content-Type-Options"] = "nosniff"
         return response
@@ -117,7 +113,7 @@ def create_desktop_app(config=None, *, web_dir=None, platform_runtime=None, inst
                 "deliveryLifecycle":lifecycle,
                 "realPlatformConnections":bool(lifecycle.get('connectedCount',0) or (platform_runtime and any(c.is_connected for c in platform_runtime.clients.values()))), "businessRoutesEnabled": True,
                 "enabledBusinessModules": ["accounts","goods","orders","messages","cards","delivery-rules","goods-config","ai-auto-reply","logs","orders-read","delivery-records-read"],
-                "deliveryExecutionMode": "official-verification" if platform_runtime else "offline-tests-only",
+                "deliveryExecutionMode": "official-verification" if platform_runtime else "original-platform-services",
                 "externalServicesRequired": [], "uiBuilt": (web_dir / "index.html").is_file(),
                 "safetyUiBuilt":(web_dir/"desktop-safety.html").is_file(),"safetyPage":"/desktop/safety"}
 

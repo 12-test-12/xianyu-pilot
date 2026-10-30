@@ -89,10 +89,10 @@ def test_original_business_modules_use_real_persistent_storage(console):
         db.execute("INSERT INTO xianyu_account(id,external_uid,nickname,deleted,status) VALUES(11,'fixture-seller','本机账号',0,1)")
         db.execute("INSERT INTO xianyu_goods(id,account_id,external_goods_id,title,deleted,status,auto_relist_enabled,has_snapshot) VALUES(21,11,'fixture-item','本机商品',0,1,0,0)")
         db.execute("INSERT INTO operation_log(operator,operation_type,operation_desc) VALUES('本机管理员','fixture','真实数据库记录')")
-        db.execute("INSERT INTO xianyu_trade_order(id,account_id,external_order_id,total_amount,order_status,deleted,created_time) VALUES(31,11,'fixture-order','10.50',2,0,'2030-01-02 12:00:00')")
+        db.execute("INSERT INTO xianyu_trade_order(id,account_id,external_order_id,buyer_name,total_amount,order_status,deleted,created_time) VALUES(31,11,'fixture-order','买家甲','10.50',2,0,'2030-01-02 12:00:00')")
     for endpoint in ('/api/xianyu/accounts','/api/xianyu/accounts/summary','/api/goods','/api/orders',
                      '/api/cards','/api/auto-delivery/rules','/api/auto-delivery/stats','/api/conversations',
-                     '/api/auto-delivery/sources','/api/orders/today-amount',
+                     '/api/auto-delivery/sources','/api/orders/today-amount','/api/auto-delivery/records',
                      '/api/operation-logs','/api/system/open-source-config','/api/system/runtime-status',
                      '/api/business-settings/ai-customer-service','/api/dashboard/summary'):
         response=client.get(endpoint)
@@ -100,6 +100,11 @@ def test_original_business_modules_use_real_persistent_storage(console):
         assert response.json()['code']==200,(endpoint,response.text)
     assert client.get('/api/xianyu/accounts').json()['data']['records'][0]['nickname']=='本机账号'
     assert client.get('/api/goods').json()['data']['records'][0]['title']=='本机商品'
+    order=client.get('/api/orders').json()['data']['records'][0]
+    assert order['buyerName']=='买家甲' and 'items' in order and 'manualDeliveryAttempt' in order
+    assert client.get('/api/orders?status=3').json()['data']['total']==0
+    assert client.get('/api/orders?keyword=买家甲').json()['data']['total']==1
+    assert client.get('/api/orders/31').json()['data']['buyerName']=='买家甲'
     body={'ruleName':'本机自动回复','matchKeywords':'你好','replyContent':'欢迎咨询','status':1}
     response=client.post('/api/auto-reply/rules',json=body)
     assert response.status_code==200 and response.json()['code']==200,response.text

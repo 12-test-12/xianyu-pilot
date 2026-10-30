@@ -6,7 +6,9 @@ from app.desktop_inventory_api import Inventory, Id, Current, Size
 from app.services.desktop_delivery import DesktopDeliveryStore
 from app.services.desktop_inventory import InventoryError, page
 
-router = APIRouter(prefix="/api")
+# Keep the diagnostic/mock delivery view separate from the original console's
+# complete /orders and /auto-delivery/records handlers.
+router = APIRouter(prefix="/api/desktop")
 
 
 @router.get("/orders")

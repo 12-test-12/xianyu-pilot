@@ -12,6 +12,7 @@
 - SQLite 会话适配原业务 SQL 的 upsert、日期、聚合和写锁语义；读写仍落在同一个 `data/app.sqlite3`，不返回模拟业务数据。
 - 原 Vue 入口仅在桌面宿主注入启动凭证时交换本机管理会话。普通服务端页面保留原登录流程。跨站来源被拒绝，会话不写入 Release 包。
 - 完整提供 `/assets`、`/xya` 和 `/uploads`，保持原 `/api` 合约及 SSE 单次票据机制；Uvicorn 保留 WebSocket 协议支持。
+- 订单和发货记录使用原完整查询，保留筛选、买家、商品明细及执行状态；旧桌面诊断读接口位于 `/api/desktop/orders` 和 `/api/desktop/auto-delivery/records`，不覆盖主控制台接口。
 - 原消息/AI 工作器、凭据刷新、评价与上架服务随桌面生命周期启动和停止。托盘暂停闸门也用于原自动发货网关。
 - 原生文件选择可用于导入，下载写入程序旁 `data/tmp/downloads`；控制台仅允许连接自己的本机服务。
 - 桌面加密使用每个安装独立的 `data/profiles/credentials.key`，不复用服务端默认开发密钥。备份和移动时必须保留完整 `data/`。

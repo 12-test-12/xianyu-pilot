@@ -368,13 +368,13 @@ def test_read_only_apis_and_startup_recovery_never_enable_real_sending(store, mo
         ready = client.get("/health/ready").json()
         assert ready["phase"] == "original-web-console"
         assert ready["automaticDeliveryEnabled"] is ready["realPlatformConnections"] is False
-        assert client.get("/api/orders").json()["data"]["total"] == 1
-        assert client.get("/api/orders/1").json()["data"]["verificationSource"] == "mock"
-        detail = client.get(f"/api/auto-delivery/records/{did}")
+        assert client.get("/api/desktop/orders").json()["data"]["total"] == 1
+        assert client.get("/api/desktop/orders/1").json()["data"]["verificationSource"] == "mock"
+        detail = client.get(f"/api/desktop/auto-delivery/records/{did}")
         assert detail.json()["data"]["workflowState"] == "needs_review"
         assert "password-" not in detail.text
         assert detail.headers["cache-control"] == "no-store"
-        assert client.get("/api/auto-delivery/records?needsReview=true").json()["data"]["total"] == 1
+        assert client.get("/api/desktop/auto-delivery/records?needsReview=true").json()["data"]["total"] == 1
         for path in ("/api/desktop/orders/mock", "/api/orders/1/manual-delivery", "/api/auto-delivery/trigger"):
             assert client.post(path, json={}).status_code in (401,404)
 
