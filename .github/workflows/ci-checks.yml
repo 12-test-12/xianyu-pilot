@@ -166,7 +166,9 @@ jobs:
           APP_ENV: test
           PYTHONPATH: apps/api
           QT_QPA_PLATFORM: offscreen
-        run: python -m pytest apps/api/tests/test_portable_qt.py -q --basetemp=.tmp/qt-contract --junitxml=reports/windows-qt-contract.xml
+        run: |
+          New-Item -ItemType Directory -Force -Path .tmp, reports | Out-Null
+          python -m pytest apps/api/tests/test_portable_qt.py -q --basetemp=.tmp/qt-contract --junitxml=reports/windows-qt-contract.xml
       - name: Build directory-style EXE with embedded Python and Chromium
         run: ./scripts/build-windows-portable.ps1 -SkipWebBuild
       - name: Record runtime inventory and source identity

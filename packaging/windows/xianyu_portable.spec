@@ -6,10 +6,13 @@ root=Path(SPECPATH).resolve().parents[1]
 web=root/'apps/web/dist'
 if not (web/'desktop-safety.html').is_file():
     raise SystemExit('Build the original Vue project before packaging')
+project_notices=[(str(root/'LICENSE'),'licenses/project')]
+if (root/'NOTICE').is_file():
+    project_notices.append((str(root/'NOTICE'),'licenses/project'))
 a=Analysis(
     [str(root/'apps/api/run_portable.py')],pathex=[str(root/'apps/api')],
     binaries=[],datas=[(str(web),'web'),(str(root/'apps/api/app/desktop_migrations'),'app/desktop_migrations'),
-        (str(root/'LICENSE'),'licenses/project'),(str(root/'NOTICE'),'licenses/project')]+copy_metadata('PySide6',recursive=True),
+        *project_notices]+copy_metadata('PySide6',recursive=True),
     hiddenimports=['app.portable.qt_host','app.portable.webengine_check','sqlalchemy.dialects.sqlite.aiosqlite',
         'aiosqlite','uvicorn.protocols.http.h11_impl','uvicorn.lifespan.on','uvicorn.loops.asyncio'],
     hookspath=[],runtime_hooks=[str(root/'packaging/windows/portable_runtime_hook.py')],
