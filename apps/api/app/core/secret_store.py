@@ -23,6 +23,9 @@ def _purpose(value: str) -> str:
 
 
 def _key() -> bytes:
+    if settings.is_desktop:
+        from .desktop_secrets import encryption_secret
+        return hashlib.sha256(encryption_secret().encode('utf-8')).digest()
     return hashlib.sha256(settings.cookie_crypto_secret.encode("utf-8")).digest()
 
 

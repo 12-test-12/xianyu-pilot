@@ -2,5 +2,6 @@ import { createApp } from 'vue'
 import App from './App.vue'
 import './styles.css'
 import './auth-pages.css'
+import { initializeDesktopSession } from './utils/desktopSession.js'
 
-createApp(App).mount('#app')
+initializeDesktopSession().catch(error => console.error(error.message)).finally(() => createApp(App).mount('#app'))

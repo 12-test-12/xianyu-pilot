@@ -1,5 +1,7 @@
 # Windows 绿色便携宿主与 GitHub 打包
 
+2026-10-30 更新：当前修复恢复原项目主控制台 `/`，提供目录 ZIP 和独立单文件 EXE，并发布正式 Latest Release。当前数据、会话、通信、打包和验收方式见 [完整控制台与 Windows Release](desktop-console-release.md)。下文为早期仅安全工作台、仅目录包阶段记录；其中页面入口、禁用导入及预览发布约束已由当前修复替代。
+
 本轮增加 Windows 桌面宿主、系统托盘、原生电源事件桥接和 EXE 打包作业。依赖下载只在 GitHub Windows runner 执行，本机不安装 Qt 或 PyInstaller。合并提交 `5302e3f` 的 [GitHub EXE 构建与自检已通过](https://github.com/12-test-12/xianyu-pilot/actions/runs/41022405007)；真实 Windows 实机验收仍待完成。
 
 普通程序仍未装配真实闲鱼账号、扫码登录和已验证的生产适配器，因此显示“未连接闲鱼 · 自动发货未启用”。绿色仅在实际运行时、全部账号已连接、无暂停原因且已完成核验时出现。不能把窗口、托盘或打包成功当作真实发货验收成功。

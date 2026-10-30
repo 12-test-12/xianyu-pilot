@@ -18,7 +18,7 @@ from sqlalchemy import text
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.core.config import settings
-from app.core.database import DatabaseRuntime
+from app.core.database import DatabaseRuntime, use_database_runtime
 from app.core.instance_lock import SingleInstance
 from app.core.response import ResultObject
 from app.desktop_storage import DesktopStore
@@ -31,33 +31,43 @@ from app.desktop_safety_api import router as safety_router
 logger = logging.getLogger(__name__)
 
 
-def create_desktop_app(config=None, *, web_dir=None, platform_runtime=None, instance_lock=None):
+def create_desktop_app(config=None, *, web_dir=None, platform_runtime=None, instance_lock=None, host_gate=None):
     config = config or settings
     if not config.is_desktop:
         raise ValueError("桌面应用需要显式选择 desktop 模式")
     if instance_lock is not None and (instance_lock.file is None or instance_lock.path.parent!=config.desktop_data_path):
         raise ValueError("桌面宿主必须已持有同一 data 目录的实例锁")
     runtime = DatabaseRuntime(config)
+    from app.desktop_console import ConsoleServices
+    from app.services.delivery_gate import DeliveryGate
+    runtime.delivery_gate=host_gate if host_gate is not None else DeliveryGate()
+    console_services=ConsoleServices(runtime.delivery_gate) if platform_runtime is None else None
     store = DesktopStore(config.sqlite_path)
     web_dir = Path(web_dir) if web_dir is not None else Path(__file__).resolve().parents[2] / "web" / "dist"
     origins = {f"http://127.0.0.1:{config.desktop_port}", f"http://localhost:{config.desktop_port}"}
 
     @asynccontextmanager
     async def lifespan(app):
-        with nullcontext() if instance_lock is not None else SingleInstance(config.desktop_data_path):
+        with use_database_runtime(runtime), nullcontext() if instance_lock is not None else SingleInstance(config.desktop_data_path):
             try:
                 await asyncio.to_thread(store.initialize)
+                from app.core.desktop_secrets import encryption_secret
+                await asyncio.to_thread(encryption_secret)
                 await asyncio.to_thread(DesktopDeliveryStore(config.sqlite_path).recover_interrupted)
                 async with runtime.engine.connect() as connection:
                     await connection.execute(text("SELECT 1"))
                 if platform_runtime is not None:
                     await platform_runtime.start()
+                elif console_services is not None:
+                    await console_services.start()
                 app.state.ready = True
                 yield
             finally:
                 app.state.ready = False
                 if platform_runtime is not None:
                     await platform_runtime.stop()
+                elif console_services is not None:
+                    await console_services.stop()
                 await runtime.dispose()
 
     app = FastAPI(title="闲鱼助手 · 个人桌面端", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -65,6 +75,7 @@ def create_desktop_app(config=None, *, web_dir=None, platform_runtime=None, inst
     app.state.database = runtime
     app.state.desktop_store = store
     app.state.platform_runtime=platform_runtime
+    app.state.console_services=console_services
     app.state.safety_action_token=secrets.token_urlsafe(32)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
 
@@ -73,7 +84,8 @@ def create_desktop_app(config=None, *, web_dir=None, platform_runtime=None, inst
         origin = request.headers.get("origin")
         if (origin and origin not in origins) or request.headers.get("sec-fetch-site") == "cross-site":
             return JSONResponse({"detail": "只允许本机桌面工作区访问"}, status_code=403)
-        response = await call_next(request)
+        with use_database_runtime(runtime):
+            response = await call_next(request)
         if request.url.path.startswith(("/api/cards", "/api/auto-delivery/", "/api/orders","/api/desktop/safety")):
             response.headers["Cache-Control"] = "no-store"
             response.headers["X-Content-Type-Options"] = "nosniff"
@@ -100,10 +112,10 @@ def create_desktop_app(config=None, *, web_dir=None, platform_runtime=None, inst
             await connection.execute(text("SELECT 1"))
         lifecycle=await lifecycle_status()
         return {"mode": "desktop", "storage": "sqlite", "schema": schema,
-                "phase": "verified-delivery-config", "automaticDeliveryEnabled": lifecycle["state"]=="running",
+                "phase": "original-web-console", "automaticDeliveryEnabled": lifecycle["state"]=="running",
                 "deliveryLifecycle":lifecycle,
-                "realPlatformConnections": bool(platform_runtime and any(c.is_connected for c in platform_runtime.clients.values())), "businessRoutesEnabled": True,
-                "enabledBusinessModules": ["cards", "delivery-rules", "goods-config", "orders-read", "delivery-records-read"],
+                "realPlatformConnections":bool(lifecycle.get('connectedCount',0) or (platform_runtime and any(c.is_connected for c in platform_runtime.clients.values()))), "businessRoutesEnabled": True,
+                "enabledBusinessModules": ["accounts","goods","orders","messages","cards","delivery-rules","goods-config","ai-auto-reply","logs","orders-read","delivery-records-read"],
                 "deliveryExecutionMode": "official-verification" if platform_runtime else "offline-tests-only",
                 "externalServicesRequired": [], "uiBuilt": (web_dir / "index.html").is_file(),
                 "safetyUiBuilt":(web_dir/"desktop-safety.html").is_file(),"safetyPage":"/desktop/safety"}
@@ -127,6 +139,8 @@ def create_desktop_app(config=None, *, web_dir=None, platform_runtime=None, inst
     async def lifecycle_status():
         if platform_runtime and hasattr(platform_runtime,"desktop_status"):
             return await platform_runtime.desktop_status()
+        if console_services is not None:
+            return await console_services.desktop_status()
         return {"state":"offline","pauseReasons":[],"accountCount":0}
 
     @app.get("/api/desktop/lifecycle")
@@ -159,14 +173,7 @@ def create_desktop_app(config=None, *, web_dir=None, platform_runtime=None, inst
     if (web_dir/"assets").is_dir():
         app.mount("/assets",StaticFiles(directory=web_dir/"assets"),name="desktop-ui-assets")
 
-    @app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
-    async def not_adapted(path: str):
-        del path
-        return JSONResponse(ResultObject(code=503, msg="原业务接口正在适配 SQLite，当前尚未启用",
-            data={"reason": "desktop_feature_not_adapted", "retrySafe": False}).model_dump(by_alias=True), status_code=503)
-
-    @app.get("/")
-    async def index():
-        return ResultObject.success(await status())
+    from app.desktop_console import register_console
+    register_console(app,config,runtime,web_dir)
 
     return app

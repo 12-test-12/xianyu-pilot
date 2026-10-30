@@ -110,8 +110,8 @@ def test_startup_lock_local_boundary_and_explicit_unavailable_routes(desktop_con
         assert ready.json()["storage"] == "sqlite"
         assert ready.json()["externalServicesRequired"] == []
         assert ready.json()["businessRoutesEnabled"] is True
-        assert ready.json()["enabledBusinessModules"] == ["cards", "delivery-rules", "goods-config", "orders-read", "delivery-records-read"]
-        assert client.post("/api/delivery/send", json={}).status_code == 503
+        assert {'accounts','goods','orders','messages','cards','delivery-rules','ai-auto-reply','logs'} <= set(ready.json()["enabledBusinessModules"])
+        assert client.post("/api/delivery/send", json={}).status_code == 404
         assert client.get("/api/desktop/status", headers={"origin": "https://outside.example"}).status_code == 403
         assert client.get("/health", headers={"host": "outside.example"}).status_code == 400
         with pytest.raises(RuntimeError, match="已有应用"):
@@ -135,7 +135,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 with TestClient(app, base_url='http://127.0.0.1:15177') as client:
     assert client.get('/health/ready').status_code == 200
-assert not any(name in sys.modules for name in ('app.server_app', 'aiomysql', 'redis', 'app.migrations.runner'))
+assert not any(name in sys.modules for name in ('app.server_app', 'aiomysql', 'app.migrations.runner'))
 """
     result = subprocess.run([sys.executable, "-c", script, str(tmp_path)], env=env, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr

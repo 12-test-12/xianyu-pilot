@@ -13,8 +13,8 @@ class PortablePackageTests(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name)/'XianyuPilot'
-        for name in ['XianyuPilot.exe','_internal/web/desktop-safety.html','_internal/web/assets/safety.js',
-                     '_internal/app/desktop_migrations/005_delivery_safety.sql','_internal/python311.dll',
+        for name in ['XianyuPilot.exe','_internal/web/index.html','_internal/web/assets/safety.js',
+                     '_internal/app/desktop_migrations/006_full_console.sql','_internal/python311.dll',
                      '_internal/PySide6/QtWebEngineProcess.exe','_internal/PySide6/Qt6WebEngineCore.dll',
                      '_internal/PySide6/resources/qtwebengine_resources.pak','_internal/PySide6/resources/icudtl.dat',
                      '_internal/PySide6/translations/qtwebengine_locales/en-US.pak','_internal/vcruntime140.dll','_internal/msvcp140.dll']:
@@ -54,6 +54,22 @@ class PortablePackageTests(unittest.TestCase):
         self.assertEqual(archive,output)
         self.assertEqual(data['revision'],'a'*40)
         self.assertFalse((output.parent/'XianyuPilot').exists())
+
+    def test_standalone_asset_is_bound_to_the_verified_build(self):
+        standalone=Path(self.temp.name)/'standalone.exe'
+        standalone.write_bytes(b'fixture standalone executable')
+        output=package.package(self.root,Path(self.temp.name)/'release',standalone)
+        archive,exe,data=package.verify_release(output.parent,'a'*40)
+        self.assertEqual(exe.name,'XianyuPilot.exe')
+        self.assertEqual(archive.name,'XianyuPilot-Windows-x64.zip')
+        self.assertEqual(exe.read_bytes(),standalone.read_bytes())
+        exe.write_bytes(b'changed executable')
+        with self.assertRaises(ValueError):package.verify_release(output.parent,'a'*40)
+        package.package(self.root,output.parent,standalone)
+        build_info=output.parent/'windows-build-info.json'
+        value=json.loads(build_info.read_text());value['revision']='b'*40
+        build_info.write_text(json.dumps(value))
+        with self.assertRaises(ValueError):package.verify_release(output.parent,'a'*40)
 
     def test_release_rejects_changed_zip_checksum_or_inner_file(self):
         output=package.package(self.root,Path(self.temp.name)/'release')

@@ -178,8 +178,10 @@ jobs:
           python -m pip freeze | Set-Content -Encoding utf8 reports/windows-build-dependencies.txt
       - name: Verify frozen startup, relocated data and embedded Vue
         run: python scripts/ci/windows_portable_smoke.py --directory dist/windows/XianyuPilot
+      - name: Verify standalone EXE startup and original Web console
+        run: python scripts/ci/windows_portable_smoke.py --standalone-exe dist/windows/XianyuPilot-Standalone.exe --report reports/windows-standalone-smoke.json
       - name: Package and reverify every ZIP file checksum
-        run: python scripts/ci/windows_portable.py package --directory dist/windows/XianyuPilot --output release/windows
+        run: python scripts/ci/windows_portable.py package --directory dist/windows/XianyuPilot --output release/windows --standalone-exe dist/windows/XianyuPilot-Standalone.exe
       - uses: actions/upload-artifact@v4
         with:
           name: xianyu-pilot-windows-portable
@@ -192,6 +194,7 @@ jobs:
           name: windows-portable-validation
           path: |
             reports/windows-portable-smoke.json
+            reports/windows-standalone-smoke.json
             reports/windows-build-dependencies.txt
             reports/windows-qt-contract.xml
             build/windows/**/warn-*.txt

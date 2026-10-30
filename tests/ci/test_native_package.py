@@ -31,8 +31,8 @@ class NativePackageTests(unittest.TestCase):
         self.sources[".env.development.example"] = b"# public example, not a real credential"
         self.path = package.create(self.output, self.web, self.crawler, ENV, self.sources)
         portable = self.root / "XianyuPilot"
-        for name in ['XianyuPilot.exe','_internal/web/desktop-safety.html','_internal/web/assets/safety.js',
-                     '_internal/app/desktop_migrations/005_delivery_safety.sql','_internal/python311.dll',
+        for name in ['XianyuPilot.exe','_internal/web/index.html','_internal/web/assets/safety.js',
+                     '_internal/app/desktop_migrations/006_full_console.sql','_internal/python311.dll',
                      '_internal/QtWebEngineProcess.exe','_internal/Qt6WebEngineCore.dll',
                      '_internal/qtwebengine_resources.pak','_internal/icudtl.dat','_internal/en-US.pak',
                      '_internal/vcruntime140.dll','_internal/msvcp140.dll']:
@@ -41,7 +41,9 @@ class NativePackageTests(unittest.TestCase):
             target.write_bytes(b"test runtime")
         windows_portable.record(portable, ENV["GITHUB_SHA"])
         self.windows = self.root / "windows"
-        self.windows_path = windows_portable.package(portable, self.windows)
+        self.standalone = self.root/'standalone.exe'
+        self.standalone.write_bytes(b'test standalone runtime')
+        self.windows_path = windows_portable.package(portable, self.windows, self.standalone)
 
     def rewrite(self, change):
         with zipfile.ZipFile(self.path) as archive:
@@ -109,10 +111,11 @@ class NativePackageTests(unittest.TestCase):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 package.release_target(ENV | changes)
         self.assertEqual(package.release_target(ENV), ("v1.2.3", False))
-        self.assertEqual(package.release_target(ENV | {"GITHUB_REF": "refs/tags/v1.2.3-rc.1"}), ("v1.2.3-rc.1", True))
+        self.assertEqual(package.release_target(ENV | {"GITHUB_REF": "refs/tags/v1.2.3-rc.1"}), ("v1.2.3-rc.1", False))
         for event in ("push", "workflow_dispatch"):
-            self.assertEqual(package.release_target(ENV | {"GITHUB_REF": "refs/heads/main", "GITHUB_EVENT_NAME": event}), ("preview-123-1", True))
-        self.assertEqual(package.release_target(ENV | {"GITHUB_REF": "refs/heads/main", "GITHUB_RUN_ATTEMPT": "2"}), ("preview-123-2", True))
+            self.assertEqual(package.release_target(ENV | {"GITHUB_REF": "refs/heads/main", "GITHUB_EVENT_NAME": event}), ("desktop-123-1", False))
+        self.assertEqual(package.release_target(ENV | {"GITHUB_REF": "refs/heads/main", "GITHUB_RUN_ATTEMPT": "2"}), ("desktop-123-2", False))
+        self.assertEqual(package.release_target(ENV | {"GITHUB_REF": "refs/heads/codex/work", "GITHUB_EVENT_NAME": "workflow_dispatch"}), ("desktop-123-1", False))
         with self.assertRaises(ValueError):
             package.release_target(ENV | {"GITHUB_REF": "refs/heads/main", "GITHUB_RUN_ATTEMPT": "invalid"})
 
@@ -137,26 +140,29 @@ class NativePackageTests(unittest.TestCase):
             self.assertEqual(command[:4], ["gh", "release", "create", "v1.2.3"])
             self.assertIn(str(self.path), command)
             self.assertIn(str(self.windows_path), command)
+            self.assertIn(str(self.windows/'XianyuPilot.exe'), command)
             checksums = self.output / "publish/SHA256SUMS.txt"
             self.assertIn(str(checksums), command)
             self.assertEqual(checksums.read_text(), (self.windows / "SHA256SUMS.txt").read_text()
                              + (self.output / "SHA256SUMS.txt").read_text())
             self.assertIn("--verify-tag", command)
             self.assertNotIn("--prerelease", command)
+            self.assertIn('--latest',command)
             self.assertNotIn("--clobber", command)
             self.assertIn(ENV["GITHUB_SHA"], command)
 
-    def test_main_push_creates_a_preview_with_both_zips_without_changing_latest(self):
+    def test_main_push_creates_a_latest_release_with_exe_and_both_zips(self):
         summary = self.root / "step-summary.md"
         with patch.object(package.subprocess, "run") as run:
             package.publish(self.output, ENV | {"GITHUB_REF": "refs/heads/main", "GITHUB_STEP_SUMMARY": str(summary)}, self.windows)
             run.assert_called_once()
             command = run.call_args.args[0]
-            self.assertEqual(command[:4], ["gh", "release", "create", "preview-123-1"])
-            self.assertIn("--prerelease", command)
-            self.assertIn("--latest=false", command)
+            self.assertEqual(command[:4], ["gh", "release", "create", "desktop-123-1"])
+            self.assertNotIn("--prerelease", command)
+            self.assertIn("--latest", command)
+            self.assertNotIn('--draft',command)
             self.assertIn(str(self.windows_path), command)
-        self.assertIn("https://github.com/owner/project/releases/tag/preview-123-1", summary.read_text(encoding="utf-8"))
+        self.assertIn("https://github.com/owner/project/releases/tag/desktop-123-1", summary.read_text(encoding="utf-8"))
         self.assertIn(self.windows_path.name, summary.read_text(encoding="utf-8"))
 
     def test_bad_or_missing_windows_zip_never_creates_even_a_source_only_release(self):
@@ -171,12 +177,25 @@ class NativePackageTests(unittest.TestCase):
                 package.publish(self.output, ENV, self.windows)
             run.assert_not_called()
 
-    def test_prerelease_version_tag_stays_a_prerelease(self):
+    def test_version_tag_also_publishes_a_latest_release(self):
         with patch.object(package.subprocess, "run") as run:
             run.return_value.stdout = ENV["GITHUB_SHA"]
             package.publish(self.output, ENV | {"GITHUB_REF": "refs/tags/v1.2.3-rc.1"}, self.windows)
-            self.assertIn("--prerelease", run.call_args.args[0])
-            self.assertIn("--latest=false", run.call_args.args[0])
+            self.assertNotIn("--prerelease", run.call_args.args[0])
+            self.assertIn("--latest", run.call_args.args[0])
+
+    def test_manual_development_branch_release_is_explicitly_supported(self):
+        with patch.object(package.subprocess,'run') as run:
+            package.publish(self.output,ENV|{'GITHUB_EVENT_NAME':'workflow_dispatch','GITHUB_REF':'refs/heads/codex/test'},self.windows)
+            command=run.call_args.args[0]
+            self.assertIn('--latest',command)
+            self.assertNotIn('--prerelease',command)
+
+    def test_missing_standalone_exe_never_publishes_a_partial_release(self):
+        (self.windows/'XianyuPilot.exe').unlink()
+        with patch.object(package.subprocess,'run') as run:
+            with self.assertRaises(FileNotFoundError):package.publish(self.output,ENV,self.windows)
+            run.assert_not_called()
 
 
 class ContainerFreeWorkflowTests(unittest.TestCase):

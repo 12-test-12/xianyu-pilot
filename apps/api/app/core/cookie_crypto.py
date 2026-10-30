@@ -31,6 +31,9 @@ def _get_secret() -> str:
     other environment, raises RuntimeError to prevent silently using a weak key.
     """
     global _dev_secret_warned
+    if settings.is_desktop:
+        from .desktop_secrets import encryption_secret
+        return encryption_secret()
     app_env = getattr(settings, "app_env", "dev").strip().lower()
     secret = getattr(settings, "cookie_crypto_secret", "") or ""
     if not secret or secret == DEV_SECRET:

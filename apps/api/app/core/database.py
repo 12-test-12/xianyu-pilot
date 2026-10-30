@@ -1,4 +1,6 @@
 import logging
+from contextlib import contextmanager
+from contextvars import ContextVar
 from sqlalchemy import event
 from sqlalchemy.engine import make_url
 
@@ -18,6 +20,8 @@ def create_configured_engine(database_url, config=None):
 
         @event.listens_for(database_engine.sync_engine, "connect")
         def configure_sqlite(connection, _record):
+            from .sqlite_compat import configure_functions
+            configure_functions(connection)
             cursor = connection.cursor()
             try:
                 cursor.execute("PRAGMA foreign_keys=ON")
@@ -26,6 +30,11 @@ def create_configured_engine(database_url, config=None):
                 cursor.execute("PRAGMA temp_store=MEMORY")
             finally:
                 cursor.close()
+
+        @event.listens_for(database_engine.sync_engine, "before_cursor_execute", retval=True)
+        def sqlite_business_sql(connection, cursor, statement, parameters, context, executemany):
+            from .sqlite_compat import translate_sql
+            return translate_sql(statement), parameters
 
         return database_engine
     if url.get_backend_name() != "mysql":
@@ -69,7 +78,11 @@ class DatabaseRuntime:
 
     def session(self, **kwargs):
         if self._sessions is None:
-            self._sessions = async_sessionmaker(self.engine, class_=AsyncSession, expire_on_commit=False)
+            session_class=AsyncSession
+            if self.engine.dialect.name=='sqlite':
+                from .sqlite_compat import SQLiteBusinessSession
+                session_class=SQLiteBusinessSession
+            self._sessions = async_sessionmaker(self.engine, class_=session_class, expire_on_commit=False)
         return self._sessions(**kwargs)
 
     async def dispose(self):
@@ -79,12 +92,22 @@ class DatabaseRuntime:
 
 
 database = DatabaseRuntime(settings)
+_active_database=ContextVar('active_desktop_database',default=None)
+
+
+@contextmanager
+def use_database_runtime(runtime):
+    token=_active_database.set(runtime)
+    try:
+        yield
+    finally:
+        _active_database.reset(token)
 DATABASE_URL = settings.database_url
 
 
 class LazyEngine:
     def __getattr__(self, name):
-        return getattr(database.engine, name)
+        return getattr((_active_database.get() or database).engine, name)
 
     async def dispose(self):
         await database.dispose()
@@ -93,7 +116,11 @@ class LazyEngine:
 engine = LazyEngine()
 
 def async_session(**kwargs):
-    return database.session(**kwargs)
+    return (_active_database.get() or database).session(**kwargs)
+
+
+def current_delivery_gate():
+    return getattr(_active_database.get(),'delivery_gate',None)
 
 
 class Base(DeclarativeBase):

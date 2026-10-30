@@ -924,6 +924,10 @@ class XianyuRealtimeDeliveryGateway:
         content: str,
         segments: list | None = None,
     ) -> ExternalDeliveryResult:
+        from ..core.database import current_delivery_gate
+        gate=current_delivery_gate()
+        if gate is not None and gate.blocked:
+            return ExternalDeliveryResult.failed('desktop_paused','本机发货已暂停，尚未发送',retry_safe=True)
         from .ws_delivery_handler import send_delivery_message_result
 
         result = await send_delivery_message_result(
@@ -954,6 +958,10 @@ class XianyuRealtimeDeliveryGateway:
         self,
         lease: RealtimeDeliveryAttemptLease,
     ) -> ExternalDeliveryResult:
+        from ..core.database import current_delivery_gate
+        gate=current_delivery_gate()
+        if gate is not None and gate.blocked:
+            return ExternalDeliveryResult.failed('desktop_paused','本机发货已暂停，尚未确认',retry_safe=True)
         external_order_id = str(lease.external_order_id or "")
 
         # 小刀订单需调用免拼发货接口，普通订单调用确认发货接口

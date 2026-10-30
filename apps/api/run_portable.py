@@ -35,7 +35,7 @@ def main():
             return check(root,paths,web,args.port)
         if sys.platform!="win32":
             raise RuntimeError("桌面宿主仅支持 Windows")
-        if not (web/"desktop-safety.html").is_file():
+        if not (web/"index.html").is_file():
             raise RuntimeError("缺少内嵌前端，请使用完整便携包")
         from app.core.instance_lock import SingleInstance
         # Hold before importing Chromium or starting threads. Backend borrows it.

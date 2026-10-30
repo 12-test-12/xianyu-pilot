@@ -32,7 +32,7 @@ LOCAL_SCRIPTS = {
     "scripts/verify-local.ps1", "scripts/read_only_smoke.py",
     "scripts/build-windows-portable.ps1", "scripts/ci/windows_portable.py", "scripts/ci/windows_portable_smoke.py",
 }
-LOCAL_DOCS = {"docs/local-dev-runbook.md", "docs/native-deployment.md", "docs/desktop-sqlite-foundation.md", "docs/desktop-delivery-design.md", "docs/official-order-delivery.md", "docs/delivery-safety-recovery.md", "docs/windows-portable.md"}
+LOCAL_DOCS = {"docs/local-dev-runbook.md", "docs/native-deployment.md", "docs/desktop-sqlite-foundation.md", "docs/desktop-delivery-design.md", "docs/official-order-delivery.md", "docs/delivery-safety-recovery.md", "docs/windows-portable.md", "docs/desktop-console-release.md"}
 PORTABLE_BUILD_FILES={"packaging/windows/requirements-build.txt","packaging/windows/xianyu_portable.spec","packaging/windows/portable_runtime_hook.py"}
 REQUIRED = {
     "LICENSE", "start-local.bat", "start-local.sh", "scripts/setup-local.ps1",
@@ -57,6 +57,7 @@ REQUIRED = {
     "apps/api/run_portable.py", "apps/api/app/portable/backend.py", "apps/api/app/portable/bootstrap.py",
     "apps/api/app/portable/qt_host.py", "apps/api/app/portable/windows_events.py", "apps/api/app/portable/webengine_check.py",
     "apps/api/app/services/delivery_gate.py", "docs/windows-portable.md", "scripts/build-windows-portable.ps1",
+    "apps/api/app/desktop_console.py", "apps/api/app/desktop_migrations/006_full_console.sql",
     *PORTABLE_BUILD_FILES,
 }
 README = """Xianyu Pilot - original system, native source distribution
@@ -213,18 +214,18 @@ def release_target(env: dict) -> tuple[str, bool]:
     if ref.startswith("refs/tags/"):
         tag = ref.removeprefix("refs/tags/")
         if re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9][A-Za-z0-9.-]*)?", tag):
-            return tag, "-" in tag
-    elif ref == "refs/heads/main":
+            return tag, False
+    elif ref == "refs/heads/main" or (env['GITHUB_EVENT_NAME']=='workflow_dispatch' and ref.startswith('refs/heads/')):
         attempt = env.get("GITHUB_RUN_ATTEMPT", "")
         if re.fullmatch(r"[1-9][0-9]*", attempt):
-            return f"preview-{env['GITHUB_RUN_ID']}-{attempt}", True
+            return f"desktop-{env['GITHUB_RUN_ID']}-{attempt}", False
     raise ValueError("Publication is restricted to version tags or main snapshots")
 
 
 def publish(directory: Path, env: dict, windows_directory: Path):
-    tag, prerelease = release_target(env)
+    tag, _ = release_target(env)
     path, info = verify(directory, env)
-    windows_path, _ = windows_portable.verify_archive(windows_directory, info["revision"])
+    windows_path, exe_path, _ = windows_portable.verify_release(windows_directory, info["revision"])
     repo = env.get("GH_REPO", "")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
         raise ValueError("Invalid release repository")
@@ -236,14 +237,14 @@ def publish(directory: Path, env: dict, windows_directory: Path):
     notes = directory / "release-notes.md"
     notes.write_text(
         "## Windows x64 绿色便携版\n\n"
-        f"下载 `{windows_path.name}`，解压完整 XianyuPilot 文件夹，双击 XianyuPilot.exe。"
-        "无需安装 Python、Node.js、Git 或浏览器运行时；不要单独移动 EXE。\n\n"
-        "当前为桌面预览程序，普通启动未接入真实闲鱼账号，自动发货默认关闭。"
-        "真实订单、干净 Windows 虚拟机和完整文件 I/O 隔离仍待验收。\n\n"
+        f"下载 `{exe_path.name}` 可直接运行，或下载 `{windows_path.name}` 完整解压后运行其中的 XianyuPilot.exe。"
+        "无需安装 Python、Node.js、Git 或浏览器运行时。ZIP 中的 EXE 必须与 _internal 一起保留。\n\n"
+        "程序启动后展示原项目完整后台；首次使用请添加并授权闲鱼账号，再配置商品、库存和自动化规则。"
+        "本版本保留原业务模块，真实订单、干净 Windows 虚拟机和完整文件 I/O 隔离仍待实机验收。\n\n"
         "## 本机部署源码包\n\n"
         f"`{path.name}` 包含后端源码、已验证的 Web/Crawler 构建和本机启动脚本。"
         "源码开发需要自行安装依赖，详见包内 NATIVE-README.txt。\n\n"
-        "两个 ZIP 的 SHA256 均列于附件 SHA256SUMS.txt。\n\n"
+        "EXE 与两个 ZIP 的 SHA256 均列于附件 SHA256SUMS.txt。\n\n"
         f"Source revision: {info['revision']}\nBuild run: {info['run']}\n", encoding="utf-8")
     checksums = directory / "publish" / "SHA256SUMS.txt"
     if checksums.parent.is_symlink() or checksums.is_symlink():
@@ -251,12 +252,11 @@ def publish(directory: Path, env: dict, windows_directory: Path):
     checksums.parent.mkdir(exist_ok=True)
     checksums.write_text((windows_directory / "SHA256SUMS.txt").read_text(encoding="utf-8")
                          + (directory / "SHA256SUMS.txt").read_text(encoding="utf-8"), encoding="utf-8")
-    command = ["gh", "release", "create", tag, str(windows_path), str(path), str(checksums),
+    command = ["gh", "release", "create", tag, str(exe_path), str(windows_path), str(path), str(checksums), str(windows_directory/'windows-build-info.json'),
                "--repo", repo, "--target", info["revision"], "--title", f"Windows 便携版与源码 · {tag}",
                "--notes-file", str(notes)]
-    if prerelease:
-        command += ["--prerelease", "--latest=false"]
-    else:
+    command += ['--latest']
+    if env['GITHUB_REF'].startswith('refs/tags/'):
         command += ["--verify-tag"]
     # An existing release is not overwritten on rerun.
     subprocess.run(command, check=True)
@@ -264,7 +264,7 @@ def publish(directory: Path, env: dict, windows_directory: Path):
         with open(env["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
             summary.write(f"## Windows 便携版下载\n\n"
                           f"[打开 GitHub Release](https://github.com/{repo}/releases/tag/{tag})\n\n"
-                          f"Windows 程序包：`{windows_path.name}`（完整解压后运行）。\n\n"
+                          f"直接运行：`{exe_path.name}`；Windows 程序包：`{windows_path.name}`（完整解压后运行）。\n\n"
                           f"源码包：`{path.name}`。两个包的校验和见附件 `SHA256SUMS.txt`。\n")
 
 

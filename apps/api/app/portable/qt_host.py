@@ -1,12 +1,13 @@
 """Qt window + Chromium + tray. Imported only after portable bootstrap."""
 import ctypes
 from ctypes import wintypes
+from pathlib import Path
 import time
 
 from PySide6.QtCore import QTimer,QUrl,Qt,QEvent
 from PySide6.QtGui import QAction,QColor,QIcon,QPainter,QPixmap
 from PySide6.QtWidgets import QApplication,QMainWindow,QMenu,QMessageBox,QSystemTrayIcon
-from PySide6.QtWebEngineCore import QWebEnginePage,QWebEngineProfile,QWebEngineProfileBuilder,QWebEngineSettings,QWebEngineUrlRequestInterceptor
+from PySide6.QtWebEngineCore import QWebEnginePage,QWebEngineProfile,QWebEngineProfileBuilder,QWebEngineSettings,QWebEngineUrlRequestInterceptor,QWebEnginePermission
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
 from app.portable.windows_events import power_event,network_connected
@@ -32,6 +33,10 @@ def local_url(url,port):
     return url.scheme()=="http" and url.host()=="127.0.0.1" and url.port()==port and not url.userInfo()
 
 
+def local_request(url,port):
+    return url.scheme() in ('http','ws') and url.host()=='127.0.0.1' and url.port()==port and not url.userInfo()
+
+
 class LocalRequests(QWebEngineUrlRequestInterceptor):
     def __init__(self,port,parent):
         super().__init__(parent)
@@ -39,7 +44,7 @@ class LocalRequests(QWebEngineUrlRequestInterceptor):
 
     def interceptRequest(self,info):
         url=info.requestUrl()
-        if not local_url(url,self.port) and url.scheme() not in ("data","blob","about"):
+        if not local_request(url,self.port) and url.scheme() not in ("data","blob","about"):
             info.block(True)
 
 
@@ -47,7 +52,12 @@ class ConsolePage(QWebEnginePage):
     def __init__(self,profile,port,parent):
         super().__init__(profile,parent)
         self.port=port
-        self.permissionRequested.connect(lambda permission:permission.deny())
+        def permission_requested(permission):
+            if local_url(permission.origin(),port) and permission.permissionType()==QWebEnginePermission.PermissionType.ClipboardReadWrite:
+                permission.grant()
+            else:
+                permission.deny()
+        self.permissionRequested.connect(permission_requested)
 
     def acceptNavigationRequest(self,url,kind,is_main_frame):
         return local_url(url,self.port) or url.toString()=="about:blank"
@@ -56,7 +66,7 @@ class ConsolePage(QWebEnginePage):
         return None
 
     def chooseFiles(self,*_args):
-        return []
+        return super().chooseFiles(*_args)
 
     def javaScriptConsoleMessage(self,*_args):
         pass  # Never write page contents or secrets to native logs.
@@ -66,7 +76,7 @@ class ConsoleWindow(QMainWindow):
     def __init__(self,controller):
         super().__init__()
         self.controller=controller
-        self.setWindowTitle("闲鱼助手 · 发货安全工作台")
+        self.setWindowTitle("闲鱼助手 · 管理控制台")
         self.resize(1180,820)
         self.setMinimumSize(780,560)
 
@@ -118,15 +128,19 @@ class DesktopConsole:
         if self.profile is None:
             raise RuntimeError("本地浏览器资料目录已占用，程序停止")
         self.profile.setDownloadPath(str(paths["downloads"]))
-        self.profile.downloadRequested.connect(lambda download:download.cancel())
+        def download_requested(download):
+            download.setDownloadDirectory(str(paths['downloads']))
+            download.setDownloadFileName(Path(download.downloadFileName()).name)
+            download.accept()
+        self.profile.downloadRequested.connect(download_requested)
         self.interceptor=LocalRequests(backend.config.desktop_port,self.profile)
         self.profile.setUrlRequestInterceptor(self.interceptor)
         self.view=QWebEngineView(self.window)
         self.page=ConsolePage(self.profile,backend.config.desktop_port,self.view)
         for option in (QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls,
-                       QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls,
-                       QWebEngineSettings.WebAttribute.JavascriptCanAccessClipboard):
+                       QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls):
             self.page.settings().setAttribute(option,False)
+        self.page.settings().setAttribute(QWebEngineSettings.WebAttribute.JavascriptCanAccessClipboard,True)
         self.view.setPage(self.page)
         self.view.loadFinished.connect(self.on_load)
         self.window.setCentralWidget(self.view)
@@ -229,16 +243,19 @@ class DesktopConsole:
         status=self.backend.poll()
         self.render(status["state"])
         if self.backend.ready and self.view.url().isEmpty():
-            self.view.setUrl(QUrl(f"http://127.0.0.1:{self.backend.config.desktop_port}/desktop/safety"))
+            self.view.setUrl(QUrl(f"http://127.0.0.1:{self.backend.config.desktop_port}/"))
         if self.smoke and self.loaded and not self.smoke_started:
             self.smoke_started=True
-            self.page.runJavaScript("document.querySelector('h1')?.textContent",self.smoke_result)
+            self.page.runJavaScript("Boolean(document.querySelector('.app-shell') && document.querySelector('.sidebar'))",self.smoke_result)
         if self.smoke and time.monotonic()-self.started>25:
             self.begin_shutdown()
 
     def smoke_result(self,title):
+        if title is not True:
+            self.smoke_started=False
+            return
         self.window.close()
-        self.smoke_ok=title=="发货安全工作台" and not self.window.isVisible() and self.backend.ready and self.tray.isVisible()
+        self.smoke_ok=title is True and not self.window.isVisible() and self.backend.ready and self.tray.isVisible()
         self.begin_shutdown()
 
     def run(self):

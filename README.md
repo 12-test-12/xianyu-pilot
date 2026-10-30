@@ -6,6 +6,8 @@
 
 ## 当前进度
 
+2026-10-30 修复：桌面入口恢复原项目完整 Vue 后台，接入原业务 API 与 SQLite，并提供独立 EXE/完整目录 ZIP 的正式 Latest Release 发布流程。当前入口、触发方式与验收边界见 [完整控制台与 Windows Release](docs/desktop-console-release.md)。下列早期阶段记录中的“仅安全工作台”“业务页面未接入”和“只发布预览版”不再代表该修复后的入口与规则。
+
 当前尚未完成的开发、联调和实机验收，统一见 [项目进度与未完成清单](docs/project-status-and-remaining-work.md)。
 
 - 原有自动发货和卡密操作继续沿用原业务设计。
@@ -25,7 +27,7 @@ SQLite 存储基础的安装、启动和后续顺序见 [桌面改造说明](doc
 
 ## 开发与发布
 
-- [下载 Windows 便携预览版](https://github.com/12-test-12/xianyu-pilot/releases)：发布流程合并后，main 检查通过即自动发布。选择 `xianyu-pilot-windows-x64-提交号.zip`，核对 `SHA256SUMS.txt`，完整解压后运行 `XianyuPilot.exe`；无需安装 Python 或 Node.js。当前真实账号接入与真实自动发货仍未完成。
+- [下载 Windows 桌面版](https://github.com/12-test-12/xianyu-pilot/releases)：修复发布后，可直接下载独立 `XianyuPilot.exe`，或下载 `XianyuPilot-Windows-x64.zip` 完整解压运行。核对 `SHA256SUMS.txt`；无需安装 Python 或 Node.js。真实账号和订单仍需实际授权与联调验收。
 - [原本机开发流程](docs/local-dev-runbook.md)：`start-local.bat` / `start-local.sh`，适用于迁移中的原服务端。
 - [本机源码部署包](docs/native-deployment.md)：包含原源码和本次验证的 Web/Crawler 构建，尚非 EXE 安装包。
 - [流水线规则](docs/ci-pipeline.md)：检查、构建、安全审计和受限的版本发布。

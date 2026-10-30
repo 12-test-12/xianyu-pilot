@@ -39,8 +39,6 @@ def bundled_web_dir():
     if getattr(sys,"frozen",False):
         # This is read-only package content, never a writable data root.
         internal=Path(sys._MEIPASS).resolve()
-        if internal!=(program_root()/"_internal").resolve():
-            raise ValueError("便携版必须使用完整的目录式运行包")
         return internal/"web"
     return program_root()/"apps/web/dist"
 
@@ -61,7 +59,7 @@ def portable_self_check(root,web):
     from app.core.instance_lock import SingleInstance
     from app.desktop_storage import DesktopStore
     from app.services.desktop_delivery import DesktopDeliveryStore
-    if not (web/"desktop-safety.html").is_file() or not (web/"assets").is_dir():
+    if not (web/"index.html").is_file() or not (web/"assets").is_dir():
         raise RuntimeError("便携包缺少内嵌前端")
     with SingleInstance(root):
         schema=DesktopStore(root/"app.sqlite3").initialize()

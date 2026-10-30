@@ -47,7 +47,7 @@ async def get_redis():
     # leaves one async client spanning pytest's function-scoped event loops.
     # Fail-closed production behavior is tested after switching APP_ENV away
     # from ``test`` and injecting the Redis boundary explicitly.
-    if (settings.app_env or "").strip().casefold() == "test":
+    if settings.is_desktop or (settings.app_env or "").strip().casefold() == "test":
         return None
     if not _REDIS_PKG_AVAILABLE:
         return None

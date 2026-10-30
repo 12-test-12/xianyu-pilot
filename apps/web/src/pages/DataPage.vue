@@ -221,6 +221,7 @@ import Icon from '../components/Icon.vue'
 import { getDashboardSummary, getDashboardSalesTrend } from '../api/dashboard.js'
 import { getAccounts } from '../api/accounts.js'
 import { shortText } from '../utils/format.js'
+import { getSseStatus } from '../utils/sse.js'
 import * as echarts from 'echarts/core'
 import { LineChart, PieChart, BarChart } from 'echarts/charts'
 import {
@@ -268,7 +269,7 @@ const summaryAvailable = ref(false)
 const trendAvailable = ref(false)
 const loading = ref(false)
 const logs = ref([])
-const sseStatus = ref('disconnected')
+const sseStatus = ref(getSseStatus())
 const date = ref('')
 const accountId = ref('all')
 const accounts = ref([])

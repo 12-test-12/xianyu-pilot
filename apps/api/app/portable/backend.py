@@ -35,9 +35,11 @@ class DesktopBackend:
         import uvicorn
         from app.desktop_app import create_desktop_app
         self.loop=asyncio.get_running_loop()
-        self.app=create_desktop_app(self.config,web_dir=self.web_dir,platform_runtime=self.runtime,instance_lock=self.instance_lock)
+        self.app=create_desktop_app(self.config,web_dir=self.web_dir,platform_runtime=self.runtime,instance_lock=self.instance_lock,host_gate=self.gate)
+        if self.runtime is None:
+            self.runtime=self.app.state.console_services
         self.server=uvicorn.Server(uvicorn.Config(self.app,host="127.0.0.1",port=self.config.desktop_port,
-            loop="asyncio",http="h11",ws="none",log_config=None,access_log=False,lifespan="on"))
+            loop="asyncio",http="h11",ws="websockets",log_config=None,access_log=False,lifespan="on"))
         if "shutdown" in self.gate.reasons:
             return
         # Never silently open the console of another process occupying the port.

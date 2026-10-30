@@ -70,7 +70,7 @@ def test_resource_bundle_is_read_only_meipass_but_data_is_always_next_to_exe(por
 
 def test_portable_self_check_survives_source_directory_relocation(portable,monkeypatch):
     root,_=configure_environment()
-    web=portable/'web';web.mkdir();(web/'desktop-safety.html').write_text('<html/>');(web/'assets').mkdir()
+    web=portable/'web';web.mkdir();(web/'index.html').write_text('<html/>');(web/'assets').mkdir()
     first=portable_self_check(root,web)
     moved=portable.parent/'移动后的程序'
     shutil.copytree(portable,moved)

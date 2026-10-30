@@ -6,6 +6,15 @@ let reconnectAttempts = 0
 let keepAliveTimer = null
 let lastMessageTime = 0
 let connectionGeneration = 0
+let connectionStatus = 'disconnected'
+
+export function getSseStatus() { return connectionStatus }
+
+function reportStatus(status, listener) {
+  connectionStatus = status
+  listener?.(status)
+  window.dispatchEvent(new CustomEvent('xya-sse-status', { detail: status }))
+}
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE || '/api'
 const MAX_RECONNECT_DELAY = 10000      // 最大重连间隔 10s
@@ -38,7 +47,7 @@ function scheduleReconnect(onEvent, onStatus, generation, token) {
     reconnectTimer = null
   }
   if (!token) {
-    onStatus?.('disconnected')
+    reportStatus('disconnected', onStatus)
     return
   }
   // 超过最大重连次数则停止重连，避免控制台无限堆积错误日志
@@ -46,7 +55,7 @@ function scheduleReconnect(onEvent, onStatus, generation, token) {
     if (import.meta.env.DEV) {
       console.warn(`[SSE] 已达最大重连次数(${MAX_RECONNECT_ATTEMPTS})，停止重连`)
     }
-    onStatus?.('failed')
+    reportStatus('failed', onStatus)
     return
   }
   const delay = Math.min(MAX_RECONNECT_DELAY, 1000 * Math.pow(2, reconnectAttempts))
@@ -69,7 +78,7 @@ function startKeepAlive(onEvent, onStatus, generation, token, source) {
       if (import.meta.env.DEV) {
         console.warn('[SSE] 连接疑似断连（最后一次消息在', Math.round((now - lastMessageTime) / 1000), '秒前），主动重连')
       }
-      onStatus?.('reconnecting')
+      reportStatus('reconnecting', onStatus)
       stopKeepAlive()
       if (eventSource === source) eventSource = null
       source.close()
@@ -130,7 +139,7 @@ export async function connectSse(onEvent, onStatus) {
   if (!token) return null
 
   lastMessageTime = Date.now()
-  onStatus?.('connecting')
+  reportStatus('connecting', onStatus)
   try {
     const ticket = await createSseTicket(token, generation)
     // 竞态保护：ticket 请求期间用户可能已登出或重新登录
@@ -152,7 +161,7 @@ export async function connectSse(onEvent, onStatus) {
       if (!isCurrentSource()) return
       reconnectAttempts = 0
       lastMessageTime = Date.now()
-      onStatus?.('connected')
+      reportStatus('connected', onStatus)
       startKeepAlive(onEvent, onStatus, generation, token, source)
     }
 
@@ -169,7 +178,7 @@ export async function connectSse(onEvent, onStatus) {
 
     source.onerror = () => {
       if (!isCurrentSource()) return
-      onStatus?.('reconnecting')
+      reportStatus('reconnecting', onStatus)
       stopKeepAlive()
       if (eventSource === source) eventSource = null
       source.close()
@@ -181,16 +190,17 @@ export async function connectSse(onEvent, onStatus) {
     if (!isCurrentSession(generation, token)) return null
     // 401 已在 createSseTicket 中处理，不再无限重连
     if (e?.message?.includes('HTTP 401')) {
-      onStatus?.('disconnected')
+      reportStatus('disconnected', onStatus)
       return null
     }
-    onStatus?.('reconnecting')
+    reportStatus('reconnecting', onStatus)
     scheduleReconnect(onEvent, onStatus, generation, token)
     return null
   }
 }
 
 export function closeSse(clearTimer = true) {
+  reportStatus('disconnected')
   connectionGeneration += 1
   stopKeepAlive()
   if (clearTimer && reconnectTimer) {

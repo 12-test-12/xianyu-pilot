@@ -366,7 +366,7 @@ def test_read_only_apis_and_startup_recovery_never_enable_real_sending(store, mo
     store.claim_next(did)
     with TestClient(create_desktop_app(Settings(runtime_mode="desktop")), base_url="http://127.0.0.1:15177") as client:
         ready = client.get("/health/ready").json()
-        assert ready["phase"] == "verified-delivery-config"
+        assert ready["phase"] == "original-web-console"
         assert ready["automaticDeliveryEnabled"] is ready["realPlatformConnections"] is False
         assert client.get("/api/orders").json()["data"]["total"] == 1
         assert client.get("/api/orders/1").json()["data"]["verificationSource"] == "mock"
@@ -376,7 +376,7 @@ def test_read_only_apis_and_startup_recovery_never_enable_real_sending(store, mo
         assert detail.headers["cache-control"] == "no-store"
         assert client.get("/api/auto-delivery/records?needsReview=true").json()["data"]["total"] == 1
         for path in ("/api/desktop/orders/mock", "/api/orders/1/manual-delivery", "/api/auto-delivery/trigger"):
-            assert client.post(path, json={}).status_code == 503
+            assert client.post(path, json={}).status_code in (401,404)
 
 
 @pytest.mark.asyncio
@@ -386,9 +386,8 @@ async def test_legacy_healing_and_aging_preserve_every_ambiguous_card(store, mon
     from app.services.delivery_recovery import _resurrect_dead_letter_attempts
     monkeypatch.setattr(paths, "SOURCE_ROOT", store.path.parent.parent)
     with store.connection(write=True) as conn:
-        conn.execute("CREATE TABLE realtime_delivery_attempt(id INTEGER PRIMARY KEY,state TEXT,created_time TEXT,retry_safe INTEGER)")
         for i, state in enumerate(("success", "failed", "unknown"), 1):
-            conn.execute("INSERT INTO realtime_delivery_attempt VALUES(?,?, '2000-01-01',0)", (i, state))
+            conn.execute("INSERT INTO realtime_delivery_attempt(id,event_key,account_id,source_event_id,session_id,peer_id,item_id,delivery_mode,content_digest,state,created_time,retry_safe) VALUES(?,?,1,?,'session','peer','item','card','digest',?,'2000-01-01',0)", (i,f'event-{i}',f'source-{i}',state))
             conn.execute("UPDATE card_item SET status=1,realtime_attempt_id=?,claim_token='old-claim' WHERE id=?", (i, i))
     before = rows(store, "SELECT * FROM card_item")
     runtime = DatabaseRuntime(Settings(runtime_mode="desktop"))

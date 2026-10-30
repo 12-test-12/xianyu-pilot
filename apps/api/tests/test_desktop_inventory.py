@@ -165,7 +165,7 @@ def test_rule_crud_references_and_restart(config):
         assert records[0]["cardGroupId"] is None
         assert records[0]["matchKeywords"] == ""
         ready = restarted.get("/health/ready").json()
-        assert ready["phase"] == "verified-delivery-config"
+        assert ready["phase"] == "original-web-console"
         assert ready["automaticDeliveryEnabled"] is ready["realPlatformConnections"] is False
         data(restarted.delete(f"/api/auto-delivery/rules/{rid}"))
         assert data(restarted.get("/api/auto-delivery/rules"))["total"] == 0
@@ -181,7 +181,7 @@ def test_local_boundary_validation_and_unadapted_routes(client):
     assert client.post("/api/cards/999/items", json={"content": "x"}).status_code == 404
     assert client.post("/api/cards/999/items/batch", json={"items": []}).status_code == 422
     for path in ("/api/auto-delivery/trigger", "/api/auto-delivery/recover", "/api/auto-delivery/rules/batch"):
-        assert client.post(path, json={}).status_code == 503
+        assert client.post(path, json={}).status_code in (401,404)
     preview = data(client.post("/api/cards/import/validate", json={"items": [{"content": "x"}, {"content": ""}, {"content": "x"}]}))
     assert preview == {"total": 3, "valid": 2, "invalid": 1, "duplicateCount": 1}
     gid = group(client)
@@ -201,7 +201,7 @@ def test_upgrade_keeps_existing_stock_and_rejects_duplicates_without_data_loss(t
     with sqlite3.connect(path) as conn:
         conn.execute("INSERT INTO card_group(id,group_name,deleted) VALUES(1,'old',0)")
         conn.execute("INSERT INTO card_item(group_id,card_key,deleted) VALUES(1,'existing',0)")
-    assert DesktopStore(path).initialize()["version"] == "005_delivery_safety.sql"
+    assert DesktopStore(path).initialize()["version"] == "006_full_console.sql"
     assert DesktopStore(path).initialize()["current"]
     with sqlite3.connect(path) as conn:
         assert conn.execute("SELECT card_key FROM card_item").fetchall() == [("existing",)]

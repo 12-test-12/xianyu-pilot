@@ -2,6 +2,8 @@
 
 更新日期：2026-10-30（北京时间）。
 
+当前修复将发布改为正式 Latest Release，增加可独立运行的 `XianyuPilot.exe`，并分别检查目录包和独立 EXE 的原项目主控制台。主分支推送、合法版本标签和显式手动发布均支持；以 [完整控制台与 Windows Release](desktop-console-release.md) 为当前发布规则，下文保留此前预览发布阶段的设计记录。
+
 本次参考 [12-test-12/ai-goofish-monitor 的流水线](https://github.com/12-test-12/ai-goofish-monitor/blob/master/.github/workflows/docker-image.yml)，核对文件 blob：`dfba3bd433cc85888fe15fa2920ba3738d2f1484`。采用其独立检查、安全审计、测试产物复用、源码与文件校验、统一质量门禁和下载摘要等做法。
 
 按本项目已确认要求，所有检查、构建和发布均直接在宿主运行，不使用 Docker、容器作业或容器服务。原源码部署包继续保留；Windows x64 目录式 EXE 预览构建的依赖在 GitHub 下载，范围见 [Windows 便携说明](windows-portable.md)。合并提交 `5302e3f` 的 [main 构建已通过](https://github.com/12-test-12/xianyu-pilot/actions/runs/41022405007)；新增的 Release 发布流程仍需合并后运行验证。

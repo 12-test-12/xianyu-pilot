@@ -116,6 +116,15 @@ async def get_navigation_system_status(
     except Exception:
         logger.warning("Navigation database health probe failed")
 
+    if db.bind.dialect.name=='sqlite':
+        from app.services.ws_sse import broadcaster
+        return ResultObject.success([
+            {'id':'api','nodeName':'API 服务','status':1,'message':'原后台 API 已连接'},
+            {'id':'db','nodeName':'SQLite 数据库','status':db_status,'message':db_message},
+            {'id':'cache','nodeName':'本机缓存','status':1,'message':'单实例本机运行，无需 Redis 服务'},
+            {'id':'events','nodeName':'实时事件流','status':1 if broadcaster.subscriber_count else None,'message':'SSE 已连接' if broadcaster.subscriber_count else '等待客户端订阅'},
+        ])
+
     redis_status = 0
     redis_message = "Redis 不可用，当前为单实例内存回退；不满足多实例生产要求"
     try:

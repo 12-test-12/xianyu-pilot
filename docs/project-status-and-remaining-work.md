@@ -2,6 +2,8 @@
 
 更新日期：2026-10-29（北京时间）
 
+2026-10-30 后续修复：桌面主窗口已恢复原项目完整 Vue 控制台，补齐原业务 API、SQLite 表与 SQL 适配、本机会话和 SSE；发布增加独立 EXE、完整 ZIP 与正式 Latest Release。当前规则和新构建验收范围见 [完整控制台与 Windows Release](desktop-console-release.md)。本文件下文为旧阶段快照，不再作为“首页仅安全工作台”“主界面尚未接入”和“只发布预览版”的当前依据；真实平台订单与实机验收仍待完成。
+
 2026-10-30 补充：合并提交 `5302e3f` 的 [main CI、Windows EXE 构建及搬移/内嵌渲染自检已通过](https://github.com/12-test-12/xianyu-pilot/actions/runs/41022405007)，已生成可下载的 Actions 便携产物。新增 Release 发布流程在 main 推送通过门禁后发布 Windows ZIP、源码 ZIP 与统一校验文件，尚待该修复合并后运行验证。下文为此前基线快照，其中“未取得构建结果”已被本条更新；账号接入、真实订单和实机验收仍未完成。
 
 核对代码基线：`21d8749`，分支 `codex/windows-portable-host`。
