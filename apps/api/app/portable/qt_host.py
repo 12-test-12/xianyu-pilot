@@ -214,6 +214,7 @@ class DesktopConsole:
             return
         self.exiting=True
         self.quit_action.setEnabled(False)
+        self.view.setUrl(QUrl('about:blank'))
         self.backend.stop()
         self.render("stopping")
 

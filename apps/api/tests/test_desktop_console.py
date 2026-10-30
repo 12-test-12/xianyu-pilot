@@ -3,6 +3,9 @@ import asyncio
 from pathlib import Path
 import re
 import sqlite3
+import socket
+import time
+import httpx
 
 from fastapi.testclient import TestClient
 import pytest
@@ -12,6 +15,36 @@ from app.core.config import Settings
 from app.core.database import DatabaseRuntime
 from app.core.sqlite_compat import translate_sql
 from app.desktop_app import create_desktop_app
+
+
+def test_native_backend_shutdown_does_not_wait_forever_for_the_console_sse(tmp_path,monkeypatch):
+    from app.core import paths
+    from app.core.instance_lock import SingleInstance
+    from app.portable.backend import DesktopBackend
+    monkeypatch.setattr(paths,'SOURCE_ROOT',tmp_path)
+    with socket.socket() as socket_probe:
+        socket_probe.bind(('127.0.0.1',0))
+        port=socket_probe.getsockname()[1]
+    config=Settings(runtime_mode='desktop',desktop_port=port)
+    config.desktop_data_path.mkdir(parents=True)
+    with SingleInstance(config.desktop_data_path) as lock:
+        backend=DesktopBackend(config,tmp_path/'web',lock)
+        backend.start()
+        try:
+            deadline=time.monotonic()+10
+            while not backend.ready and time.monotonic()<deadline:time.sleep(0.02)
+            assert backend.ready,backend.error
+            with httpx.Client(base_url=f'http://127.0.0.1:{port}',trust_env=False,timeout=5) as client:
+                headers={'Authorization':'Bearer '+backend.app.state.desktop_token}
+                ticket=client.post('/api/sse/ticket',headers=headers).json()['data']['ticket']
+                with client.stream('GET','/api/sse/subscribe',params={'ticket':ticket}) as stream:
+                    assert 'connected' in next(stream.iter_lines())
+                    backend.stop()
+                    backend.thread.join(timeout=5)
+                    assert backend.stopped,'native shutdown is blocked by the browser SSE connection'
+        finally:
+            backend.stop()
+            backend.thread.join(timeout=5)
 
 
 @pytest.fixture

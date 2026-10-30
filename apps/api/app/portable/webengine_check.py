@@ -75,6 +75,7 @@ def check(root,paths,web,port):
             if probe.get('rendered') and probe.get('pending') is False:
                 checks=probe.get('checks',{})
                 result.update(ok=bool(checks) and all(checks.values()),originalConsoleRendered=True,apiChecks=checks)
+                view.setUrl(QUrl('about:blank'))
                 backend.stop()
                 closing=True
         def loaded(ok):

@@ -72,6 +72,7 @@ def create_desktop_app(config=None, *, web_dir=None, platform_runtime=None, inst
 
     app = FastAPI(title="闲鱼助手 · 个人桌面端", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.ready = False
+    app.state.desktop_stopping = False
     app.state.database = runtime
     app.state.desktop_store = store
     app.state.platform_runtime=platform_runtime

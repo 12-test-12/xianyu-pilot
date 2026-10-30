@@ -109,6 +109,8 @@ class DesktopBackend:
 
     def stop(self):
         self.pause("shutdown")
+        if self.app:
+            self.app.state.desktop_stopping=True
         if self.server:
             self.server.should_exit=True
 

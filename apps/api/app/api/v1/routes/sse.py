@@ -87,14 +87,17 @@ async def subscribe_sse(
         try:
             queue = await broadcaster.subscribe(subscriber_id)
             yield f"data: {json.dumps({'type': 'connected', 'message': 'connected'})}\n\n"
+            last_heartbeat=time.monotonic()
             while True:
-                if await request.is_disconnected():
+                if getattr(request.app.state,'desktop_stopping',False) or await request.is_disconnected():
                     break
                 try:
-                    message = await asyncio.wait_for(queue.get(), timeout=15)
+                    message = await asyncio.wait_for(queue.get(), timeout=1 if hasattr(request.app.state,'desktop_stopping') else 15)
                     yield message
                 except asyncio.TimeoutError:
-                    yield f"data: {json.dumps({'type': 'heartbeat', 'message': 'connected'})}\n\n"
+                    if time.monotonic()-last_heartbeat>=15:
+                        yield f"data: {json.dumps({'type': 'heartbeat', 'message': 'connected'})}\n\n"
+                        last_heartbeat=time.monotonic()
         except asyncio.CancelledError:
             logger.info("SSE client disconnected subId=%s", subscriber_id)
         except Exception:
