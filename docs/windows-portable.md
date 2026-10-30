@@ -1,6 +1,6 @@
 # Windows 绿色便携宿主与 GitHub 打包
 
-本轮增加 Windows 桌面宿主、系统托盘、原生电源事件桥接和 EXE 打包作业。依赖下载只在 GitHub Windows runner 执行，本机不安装 Qt 或 PyInstaller。**当前没有本机生成或验收过的 EXE；以对应提交的 Actions 结果为准。**
+本轮增加 Windows 桌面宿主、系统托盘、原生电源事件桥接和 EXE 打包作业。依赖下载只在 GitHub Windows runner 执行，本机不安装 Qt 或 PyInstaller。合并提交 `5302e3f` 的 [GitHub EXE 构建与自检已通过](https://github.com/12-test-12/xianyu-pilot/actions/runs/41022405007)；真实 Windows 实机验收仍待完成。
 
 普通程序仍未装配真实闲鱼账号、扫码登录和已验证的生产适配器，因此显示“未连接闲鱼 · 自动发货未启用”。绿色仅在实际运行时、全部账号已连接、无暂停原因且已完成核验时出现。不能把窗口、托盘或打包成功当作真实发货验收成功。
 
@@ -54,12 +54,14 @@ Python 临时文件、SQLite/WAL、日志、浏览器资料、下载临时区和
 7. 将继承的用户/Temp 路径指向空监测目录，检查没有使用后备目录。这不能替代系统级全程 I/O 跟踪。
 8. 对空白构建记录 SHA256，验证必需运行组件、无 data/凭据/真实配置；生成 ZIP 后重新核对每个文件。
 
-成功后在 Actions → 对应运行 → Artifacts 下载：
+发布修复合并后，main 全部门禁通过会自动在 [Releases](https://github.com/12-test-12/xianyu-pilot/releases) 创建 `preview-运行编号-尝试编号` 预览版，包含 Windows ZIP、源码 ZIP 和统一的 `SHA256SUMS.txt`。Windows 用户下载 `xianyu-pilot-windows-x64-提交号.zip`，完整解压后运行 `XianyuPilot.exe`。版本标签发布对应版本；main 预览不替换正式最新版。
+
+也可在 Actions → 对应运行 → Artifacts 下载：
 
 - `xianyu-pilot-windows-portable`：绿色 EXE ZIP 和 SHA256SUMS.txt。
 - `windows-portable-validation`：Qt 契约、启动/移动/渲染报告、依赖清单及 PyInstaller 警告。
 
-便携构建加入 build-gate，失败/跳过阻断质量门禁。现有公开 Release 仍只发布原源码包，便携包先作为 Actions 预览产物。单纯本地提交不会启动远端 Actions。
+便携构建加入 build-gate，失败/跳过阻断质量门禁。Release 作业再次核对两个 ZIP 的源码归属和逐文件校验，任一包缺失或变更均不发布。开发分支与 PR 只保留 Actions 产物；单纯本地提交不会启动远端 Actions。
 
 ## 分阶段验收记录
 
@@ -69,8 +71,8 @@ Python 临时文件、SQLite/WAL、日志、浏览器资料、下载临时区和
 | 问候 + 3 条卡密 + 1 份说明/图片/链接 | 本地顺序与数量测试 |
 | 手动/休眠/断网暂停原因独立 | 本地闸门与恢复测试 |
 | 退出等待在途提交 | 本地执行器及真实本机服务线程测试 |
-| Qt 窗口/托盘和电源桥接 | 本地语法检查；实际 Qt 测试在 GitHub 安装后执行 |
-| 冻结 EXE、移除开发 PATH、移动、内嵌渲染 | 已编写 GitHub 门禁，尚无本轮远端结果 |
+| Qt 窗口/托盘和电源桥接 | GitHub Qt 契约测试通过；物理托盘仍待实机验收 |
+| 冻结 EXE、移除开发 PATH、移动、内嵌渲染 | main `5302e3f` 的 GitHub 门禁已通过 |
 | 干净虚拟机解压即用 | 待 VM 验收，不能用 runner 代替 |
 | 真实换盘符、U 盘和登录状态 | 待实际验证；同盘换目录只覆盖一部分 |
 | C:/Users/AppData 全程零业务写入 | 待主进程及 QtWebEngineProcess 完整 I/O 跟踪 |

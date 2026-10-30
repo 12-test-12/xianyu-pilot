@@ -28,6 +28,12 @@ def safe_name(name):
                 and path.as_posix()==name)
 
 
+def safe_payload(name):
+    return safe_name(name) and not any(
+        part.lower() in ('data','secrets','.git','.env') or part.lower().startswith('.env.')
+        for part in PurePosixPath(name).parts)
+
+
 def is_link(path):
     return path.is_symlink() or bool(getattr(path.lstat(),'st_file_attributes',0) & getattr(stat,'FILE_ATTRIBUTE_REPARSE_POINT',0x400))
 
@@ -42,7 +48,7 @@ def inventory(root):
         if not path.is_file():
             continue
         name=path.relative_to(root).as_posix()
-        if not safe_name(name) or any(part.lower() in ('data','secrets','.git','.env') or part.lower().startswith('.env.') for part in PurePosixPath(name).parts):
+        if not safe_payload(name):
             raise ValueError('private or unsafe payload')
         if name!=MANIFEST:
             with path.open('rb') as stream:
@@ -116,6 +122,51 @@ def package(root,destination):
         digest=hashlib.file_digest(stream,'sha256').hexdigest()
     (destination/'SHA256SUMS.txt').write_text(f'{digest}  {archive.name}\n',encoding='utf-8')
     return archive
+
+
+def verify_archive(directory,revision):
+    """Reverify a downloaded Windows ZIP on the Linux release runner, without extracting."""
+    if not re.fullmatch(r'[0-9a-f]{40}',revision):
+        raise ValueError('release must identify the exact source revision')
+    archive=directory/f'xianyu-pilot-windows-x64-{revision[:12]}.zip'
+    checksum=directory/'SHA256SUMS.txt'
+    for path in (directory,archive,checksum):
+        if is_link(path):
+            raise ValueError('release paths cannot be links')
+    with archive.open('rb') as stream:
+        digest=hashlib.file_digest(stream,'sha256').hexdigest()
+    if checksum.read_text(encoding='utf-8')!=f'{digest}  {archive.name}\n':
+        raise ValueError('portable ZIP checksum mismatch')
+    with zipfile.ZipFile(archive) as bundle:
+        entries=bundle.infolist()
+        names=[entry.filename for entry in entries]
+        if len(names)!=len({name.casefold() for name in names}) or any(
+            not name.startswith('XianyuPilot/') or not safe_payload(name.removeprefix('XianyuPilot/'))
+            or stat.S_ISLNK(entry.external_attr >> 16) or entry.is_dir() for name,entry in zip(names,entries)):
+            raise ValueError('unsafe or duplicate portable ZIP paths')
+        if 'XianyuPilot/'+MANIFEST not in names:
+            raise ValueError('portable manifest is missing')
+        manifest=bundle.getinfo('XianyuPilot/'+MANIFEST)
+        if manifest.file_size>5_000_000:
+            raise ValueError('portable manifest is too large')
+        data=json.loads(bundle.read(manifest))
+        if not isinstance(data,dict) or data.get('format')!=1 or data.get('revision')!=revision \
+                or data.get('platform')!='windows-x64' or data.get('distribution')!='onedir' \
+                or data.get('realDeliveryEnabledByDefault') is not False:
+            raise ValueError('portable ZIP belongs to another revision or distribution')
+        files=data.get('files')
+        if not isinstance(files,dict) or any(
+            not safe_payload(name) or not isinstance(value,str) or not re.fullmatch(r'[0-9a-f]{64}',value)
+            for name,value in files.items()):
+            raise ValueError('invalid portable file inventory')
+        validate_required(files)
+        if set(names)!={'XianyuPilot/'+name for name in [*files,MANIFEST]}:
+            raise ValueError('portable ZIP inventory mismatch')
+        for name,value in files.items():
+            with bundle.open('XianyuPilot/'+name) as stream:
+                if hashlib.file_digest(stream,'sha256').hexdigest()!=value:
+                    raise ValueError('portable ZIP payload checksum mismatch')
+    return archive,data
 
 
 if __name__=='__main__':

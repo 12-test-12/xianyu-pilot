@@ -25,6 +25,7 @@ SQLite 存储基础的安装、启动和后续顺序见 [桌面改造说明](doc
 
 ## 开发与发布
 
+- [下载 Windows 便携预览版](https://github.com/12-test-12/xianyu-pilot/releases)：发布流程合并后，main 检查通过即自动发布。选择 `xianyu-pilot-windows-x64-提交号.zip`，核对 `SHA256SUMS.txt`，完整解压后运行 `XianyuPilot.exe`；无需安装 Python 或 Node.js。当前真实账号接入与真实自动发货仍未完成。
 - [原本机开发流程](docs/local-dev-runbook.md)：`start-local.bat` / `start-local.sh`，适用于迁移中的原服务端。
 - [本机源码部署包](docs/native-deployment.md)：包含原源码和本次验证的 Web/Crawler 构建，尚非 EXE 安装包。
 - [流水线规则](docs/ci-pipeline.md)：检查、构建、安全审计和受限的版本发布。

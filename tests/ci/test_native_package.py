@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
-from scripts.ci import artifacts, native_package as package
+from scripts.ci import artifacts, native_package as package, windows_portable
 
 ENV = {"GITHUB_SHA": "a" * 40, "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1",
        "GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/tags/v1.2.3", "GH_REPO": "owner/project"}
@@ -30,6 +30,18 @@ class NativePackageTests(unittest.TestCase):
                         if package.allowed_source(name)}
         self.sources[".env.development.example"] = b"# public example, not a real credential"
         self.path = package.create(self.output, self.web, self.crawler, ENV, self.sources)
+        portable = self.root / "XianyuPilot"
+        for name in ['XianyuPilot.exe','_internal/web/desktop-safety.html','_internal/web/assets/safety.js',
+                     '_internal/app/desktop_migrations/005_delivery_safety.sql','_internal/python311.dll',
+                     '_internal/QtWebEngineProcess.exe','_internal/Qt6WebEngineCore.dll',
+                     '_internal/qtwebengine_resources.pak','_internal/icudtl.dat','_internal/en-US.pak',
+                     '_internal/vcruntime140.dll','_internal/msvcp140.dll']:
+            target = portable / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"test runtime")
+        windows_portable.record(portable, ENV["GITHUB_SHA"])
+        self.windows = self.root / "windows"
+        self.windows_path = windows_portable.package(portable, self.windows)
 
     def rewrite(self, change):
         with zipfile.ZipFile(self.path) as archive:
@@ -87,41 +99,84 @@ class NativePackageTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             package.verify(self.output, ENV)
 
-    def test_development_pr_and_main_pushes_cannot_publish(self):
+    def test_only_main_and_version_tags_can_publish(self):
         for changes in [{"GITHUB_REF": "refs/heads/codex/test"},
                         {"GITHUB_EVENT_NAME": "pull_request"},
-                        {"GITHUB_REF": "refs/heads/main"},
+                        {"GITHUB_REF": "refs/heads/main", "GITHUB_EVENT_NAME": "pull_request"},
+                        {"GITHUB_EVENT_NAME": "workflow_run"},
                         {"GITHUB_REF": "refs/tags/v1;unsafe"},
                         {"GITHUB_REF": "refs/tags/vinvalid"}]:
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 package.release_target(ENV | changes)
         self.assertEqual(package.release_target(ENV), ("v1.2.3", False))
         self.assertEqual(package.release_target(ENV | {"GITHUB_REF": "refs/tags/v1.2.3-rc.1"}), ("v1.2.3-rc.1", True))
-        self.assertEqual(package.release_target(ENV | {"GITHUB_REF": "refs/heads/main", "GITHUB_EVENT_NAME": "workflow_dispatch"}), ("native-123-1", True))
+        for event in ("push", "workflow_dispatch"):
+            self.assertEqual(package.release_target(ENV | {"GITHUB_REF": "refs/heads/main", "GITHUB_EVENT_NAME": event}), ("preview-123-1", True))
+        self.assertEqual(package.release_target(ENV | {"GITHUB_REF": "refs/heads/main", "GITHUB_RUN_ATTEMPT": "2"}), ("preview-123-2", True))
+        with self.assertRaises(ValueError):
+            package.release_target(ENV | {"GITHUB_REF": "refs/heads/main", "GITHUB_RUN_ATTEMPT": "invalid"})
 
     def test_moved_tag_and_failed_checksums_never_create_a_release(self):
         with patch.object(package.subprocess, "run") as run:
             run.return_value.stdout = "b" * 40
             with self.assertRaises(ValueError):
-                package.publish(self.output, ENV)
+                package.publish(self.output, ENV, self.windows)
             self.assertEqual(run.call_count, 1)
             self.assertEqual(run.call_args.args[0][1], "api")
         self.path.write_bytes(self.path.read_bytes() + b"tampered")
         with patch.object(package.subprocess, "run") as run:
             with self.assertRaises(ValueError):
-                package.publish(self.output, ENV)
+                package.publish(self.output, ENV, self.windows)
             run.assert_not_called()
 
     def test_release_uses_verified_source_and_never_overwrites_existing_assets(self):
         with patch.object(package.subprocess, "run") as run:
             run.return_value.stdout = ENV["GITHUB_SHA"]
-            package.publish(self.output, ENV)
+            package.publish(self.output, ENV, self.windows)
             command = run.call_args.args[0]
             self.assertEqual(command[:4], ["gh", "release", "create", "v1.2.3"])
             self.assertIn(str(self.path), command)
+            self.assertIn(str(self.windows_path), command)
+            checksums = self.output / "publish/SHA256SUMS.txt"
+            self.assertIn(str(checksums), command)
+            self.assertEqual(checksums.read_text(), (self.windows / "SHA256SUMS.txt").read_text()
+                             + (self.output / "SHA256SUMS.txt").read_text())
             self.assertIn("--verify-tag", command)
+            self.assertNotIn("--prerelease", command)
             self.assertNotIn("--clobber", command)
             self.assertIn(ENV["GITHUB_SHA"], command)
+
+    def test_main_push_creates_a_preview_with_both_zips_without_changing_latest(self):
+        summary = self.root / "step-summary.md"
+        with patch.object(package.subprocess, "run") as run:
+            package.publish(self.output, ENV | {"GITHUB_REF": "refs/heads/main", "GITHUB_STEP_SUMMARY": str(summary)}, self.windows)
+            run.assert_called_once()
+            command = run.call_args.args[0]
+            self.assertEqual(command[:4], ["gh", "release", "create", "preview-123-1"])
+            self.assertIn("--prerelease", command)
+            self.assertIn("--latest=false", command)
+            self.assertIn(str(self.windows_path), command)
+        self.assertIn("https://github.com/owner/project/releases/tag/preview-123-1", summary.read_text(encoding="utf-8"))
+        self.assertIn(self.windows_path.name, summary.read_text(encoding="utf-8"))
+
+    def test_bad_or_missing_windows_zip_never_creates_even_a_source_only_release(self):
+        self.windows_path.write_bytes(self.windows_path.read_bytes() + b"tampered")
+        with patch.object(package.subprocess, "run") as run:
+            with self.assertRaises(ValueError):
+                package.publish(self.output, ENV, self.windows)
+            run.assert_not_called()
+        self.windows_path.unlink()
+        with patch.object(package.subprocess, "run") as run:
+            with self.assertRaises(FileNotFoundError):
+                package.publish(self.output, ENV, self.windows)
+            run.assert_not_called()
+
+    def test_prerelease_version_tag_stays_a_prerelease(self):
+        with patch.object(package.subprocess, "run") as run:
+            run.return_value.stdout = ENV["GITHUB_SHA"]
+            package.publish(self.output, ENV | {"GITHUB_REF": "refs/tags/v1.2.3-rc.1"}, self.windows)
+            self.assertIn("--prerelease", run.call_args.args[0])
+            self.assertIn("--latest=false", run.call_args.args[0])
 
 
 class ContainerFreeWorkflowTests(unittest.TestCase):

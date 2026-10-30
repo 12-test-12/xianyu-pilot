@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -36,6 +37,48 @@ class PortablePackageTests(unittest.TestCase):
         with self.assertRaises(ValueError):package.verify(self.root)
         dll.unlink()
         with self.assertRaises(ValueError):package.record(self.root,'a'*40)
+
+    def rewrite_archive(self, output, change):
+        with zipfile.ZipFile(output) as archive:
+            files={name:archive.read(name) for name in archive.namelist()}
+        change(files)
+        with zipfile.ZipFile(output,'w') as archive:
+            for name,data in files.items():
+                archive.writestr(name,data)
+        digest=hashlib.sha256(output.read_bytes()).hexdigest()
+        (output.parent/'SHA256SUMS.txt').write_text(f'{digest}  {output.name}\n',encoding='utf-8')
+
+    def test_release_runner_verifies_zip_without_extracting_or_installing_qt(self):
+        output=package.package(self.root,Path(self.temp.name)/'release')
+        archive,data=package.verify_archive(output.parent,'a'*40)
+        self.assertEqual(archive,output)
+        self.assertEqual(data['revision'],'a'*40)
+        self.assertFalse((output.parent/'XianyuPilot').exists())
+
+    def test_release_rejects_changed_zip_checksum_or_inner_file(self):
+        output=package.package(self.root,Path(self.temp.name)/'release')
+        output.write_bytes(output.read_bytes()+b'changed')
+        with self.assertRaises(ValueError):package.verify_archive(output.parent,'a'*40)
+        output=package.package(self.root,output.parent)
+        self.rewrite_archive(output,lambda files:files.update({'XianyuPilot/XianyuPilot.exe':b'changed'}))
+        with self.assertRaises(ValueError):package.verify_archive(output.parent,'a'*40)
+
+    def test_release_rejects_a_manifest_for_another_commit(self):
+        output=package.package(self.root,Path(self.temp.name)/'release')
+        def change(files):
+            name='XianyuPilot/'+package.MANIFEST
+            manifest=json.loads(files[name])
+            manifest['revision']='b'*40
+            files[name]=json.dumps(manifest).encode()
+        self.rewrite_archive(output,change)
+        with self.assertRaises(ValueError):package.verify_archive(output.parent,'a'*40)
+
+    def test_release_rejects_private_extra_traversal_and_duplicate_zip_paths(self):
+        for name in ('XianyuPilot/data/private','../escape','XianyuPilot/extra','XianyuPilot/xianyupilot.exe'):
+            with self.subTest(name=name):
+                output=package.package(self.root,Path(self.temp.name)/'release')
+                self.rewrite_archive(output,lambda files:files.update({name:b'unexpected'}))
+                with self.assertRaises(ValueError):package.verify_archive(output.parent,'a'*40)
 
     def test_runtime_data_and_private_settings_cannot_enter_distribution(self):
         for name in ['data/app.sqlite3','.env','.env.production','secrets/token']:

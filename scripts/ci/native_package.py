@@ -14,9 +14,10 @@ import tarfile
 import zipfile
 
 if __package__:
-    from . import artifacts
+    from . import artifacts, windows_portable
 else:
     import artifacts
+    import windows_portable
 
 ROOT = Path(__file__).resolve().parents[2]
 INFO = "package-info.json"
@@ -213,16 +214,17 @@ def release_target(env: dict) -> tuple[str, bool]:
         tag = ref.removeprefix("refs/tags/")
         if re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9][A-Za-z0-9.-]*)?", tag):
             return tag, "-" in tag
-    elif ref == "refs/heads/main" and env["GITHUB_EVENT_NAME"] == "workflow_dispatch":
+    elif ref == "refs/heads/main":
         attempt = env.get("GITHUB_RUN_ATTEMPT", "")
         if re.fullmatch(r"[1-9][0-9]*", attempt):
-            return f"native-{env['GITHUB_RUN_ID']}-{attempt}", True
-    raise ValueError("Publication is restricted to version tags or manual main snapshots")
+            return f"preview-{env['GITHUB_RUN_ID']}-{attempt}", True
+    raise ValueError("Publication is restricted to version tags or main snapshots")
 
 
-def publish(directory: Path, env: dict):
+def publish(directory: Path, env: dict, windows_directory: Path):
     tag, prerelease = release_target(env)
     path, info = verify(directory, env)
+    windows_path, _ = windows_portable.verify_archive(windows_directory, info["revision"])
     repo = env.get("GH_REPO", "")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
         raise ValueError("Invalid release repository")
@@ -233,12 +235,24 @@ def publish(directory: Path, env: dict):
             raise ValueError("Version tag no longer points to the verified revision")
     notes = directory / "release-notes.md"
     notes.write_text(
-        "原系统本机部署源码包，包含已验证的 Web/Crawler 构建、后端源码与本机启动脚本。\n\n"
-        "无需 Docker；需要本机 Python 3.11、Node.js 22.23.1/npm 10.9.8、MySQL 8 与 Redis 7。"
-        "这不是独立 EXE，首次依赖与浏览器安装需要联网。请先阅读包内 NATIVE-README.txt。\n\n"
+        "## Windows x64 绿色便携版\n\n"
+        f"下载 `{windows_path.name}`，解压完整 XianyuPilot 文件夹，双击 XianyuPilot.exe。"
+        "无需安装 Python、Node.js、Git 或浏览器运行时；不要单独移动 EXE。\n\n"
+        "当前为桌面预览程序，普通启动未接入真实闲鱼账号，自动发货默认关闭。"
+        "真实订单、干净 Windows 虚拟机和完整文件 I/O 隔离仍待验收。\n\n"
+        "## 本机部署源码包\n\n"
+        f"`{path.name}` 包含后端源码、已验证的 Web/Crawler 构建和本机启动脚本。"
+        "源码开发需要自行安装依赖，详见包内 NATIVE-README.txt。\n\n"
+        "两个 ZIP 的 SHA256 均列于附件 SHA256SUMS.txt。\n\n"
         f"Source revision: {info['revision']}\nBuild run: {info['run']}\n", encoding="utf-8")
-    command = ["gh", "release", "create", tag, str(path), str(directory / "SHA256SUMS.txt"),
-               "--repo", repo, "--target", info["revision"], "--title", f"本机部署源码包 · {tag}",
+    checksums = directory / "publish" / "SHA256SUMS.txt"
+    if checksums.parent.is_symlink() or checksums.is_symlink():
+        raise ValueError("Release checksum paths must not be symbolic links")
+    checksums.parent.mkdir(exist_ok=True)
+    checksums.write_text((windows_directory / "SHA256SUMS.txt").read_text(encoding="utf-8")
+                         + (directory / "SHA256SUMS.txt").read_text(encoding="utf-8"), encoding="utf-8")
+    command = ["gh", "release", "create", tag, str(windows_path), str(path), str(checksums),
+               "--repo", repo, "--target", info["revision"], "--title", f"Windows 便携版与源码 · {tag}",
                "--notes-file", str(notes)]
     if prerelease:
         command += ["--prerelease", "--latest=false"]
@@ -246,6 +260,12 @@ def publish(directory: Path, env: dict):
         command += ["--verify-tag"]
     # An existing release is not overwritten on rerun.
     subprocess.run(command, check=True)
+    if env.get("GITHUB_STEP_SUMMARY"):
+        with open(env["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+            summary.write(f"## Windows 便携版下载\n\n"
+                          f"[打开 GitHub Release](https://github.com/{repo}/releases/tag/{tag})\n\n"
+                          f"Windows 程序包：`{windows_path.name}`（完整解压后运行）。\n\n"
+                          f"源码包：`{path.name}`。两个包的校验和见附件 `SHA256SUMS.txt`。\n")
 
 
 def main():
@@ -254,13 +274,16 @@ def main():
     parser.add_argument("--directory", type=Path, required=True)
     parser.add_argument("--web-dist", type=Path)
     parser.add_argument("--crawler-dist", type=Path)
+    parser.add_argument("--windows-directory", type=Path)
     args = parser.parse_args()
     if args.command == "create":
         if args.web_dist is None or args.crawler_dist is None:
             parser.error("create requires both tested compiled artifacts")
         create(args.directory, args.web_dist, args.crawler_dist, os.environ)
     elif args.command == "publish":
-        publish(args.directory, os.environ)
+        if args.windows_directory is None:
+            parser.error("publish requires --windows-directory with the verified Windows ZIP")
+        publish(args.directory, os.environ, args.windows_directory)
     else:
         path, info = verify(args.directory, os.environ)
         print(f"Verified {path.name}: {len(info['files'])} files at {info['revision']}")
