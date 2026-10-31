@@ -11,6 +11,8 @@
         :key="tab.key"
         :class="['config-link', { active: active === tab.key }]"
         @click="$emit('navigate', tab.key)"
+        @mouseenter="$emit('prefetch', tab.key)"
+        @focus="$emit('prefetch', tab.key)"
       >
         <span><Icon :name="tab.icon" /></span>
         {{ tab.label }}
@@ -24,7 +26,7 @@ import { settingsTabs } from '../data/nav.js'
 import Icon from './Icon.vue'
 
 defineProps({ active: String })
-defineEmits(['navigate'])
+defineEmits(['navigate', 'prefetch'])
 const tabs = settingsTabs
 </script>
 

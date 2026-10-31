@@ -3633,3 +3633,128 @@ button:focus-visible {
 .xya-legal-notice h1 { margin: 0 0 12px; font-size: 22px; }
 .xya-legal-notice p { margin: 0; color: #5c6f8d; line-height: 1.75; }
 .xya-legal-notice button { margin-top: 20px; min-height: 42px; padding: 0 18px; border: 0; border-radius: 11px; background: #0d6bff; color: #fff; font-weight: 800; }
+
+/* Page Transition & Fluid Navigation Pipeline */
+.nav-top-progress {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  z-index: 9999;
+  background: linear-gradient(90deg, #2563eb, #3b82f6, #06b6d4, #3b82f6);
+  background-size: 250% 100%;
+  animation: navProgressSlide 1.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  box-shadow: 0 0 10px rgba(37, 99, 235, 0.5);
+}
+
+@keyframes navProgressSlide {
+  0% { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+
+.page-viewport {
+  position: relative;
+  min-height: calc(100vh - 160px);
+  width: 100%;
+  contain: layout style;
+}
+
+.page-fade-enter-active,
+.page-fade-leave-active {
+  transition: opacity 0.16s cubic-bezier(0.2, 0, 0, 1), transform 0.16s cubic-bezier(0.2, 0, 0, 1);
+  will-change: opacity, transform;
+}
+
+.page-fade-enter-from {
+  opacity: 0;
+  transform: translateY(4px);
+}
+
+.page-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+/* Polished skeleton placeholder for delayed page loads (>240ms) */
+.page-skeleton-placeholder {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+  min-height: 480px;
+  padding: 4px 0;
+  animation: skeletonFadeIn 0.2s ease-out;
+}
+
+@keyframes skeletonFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.skeleton-shimmer {
+  position: relative;
+  overflow: hidden;
+  background: #f1f5fa;
+  border: 1px solid #e7edf7;
+  border-radius: 16px;
+}
+
+.skeleton-shimmer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.7) 50%, transparent 100%);
+  transform: translateX(-100%);
+  animation: shimmerWave 1.4s infinite;
+}
+
+@keyframes shimmerWave {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.skeleton-shimmer.skeleton-head {
+  height: 42px;
+  width: 45%;
+  max-width: 320px;
+  border-radius: 12px;
+}
+
+.skeleton-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+}
+
+.skeleton-shimmer.skeleton-card {
+  height: 96px;
+  border-radius: 16px;
+}
+
+.skeleton-shimmer.skeleton-panel {
+  height: 380px;
+  border-radius: 20px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page-fade-enter-active,
+  .page-fade-leave-active {
+    transition: opacity 0.08s ease;
+  }
+  .page-fade-enter-from,
+  .page-fade-leave-to {
+    transform: none;
+  }
+  .nav-top-progress {
+    animation: none;
+  }
+  .skeleton-shimmer::after {
+    animation: none;
+  }
+}
+

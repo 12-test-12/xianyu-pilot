@@ -22,7 +22,8 @@
   />
 
   <div v-else class="app-shell" :class="{ 'm-nav-open': mobileNavOpen, 'is-mobile': isMobile }">
-    <Sidebar :active="active" :user="currentUserInfo" :open="mobileNavOpen" @navigate="onSidebarNavigate" @close="mobileNavOpen = false" @logout="handleLogout" />
+    <div v-if="navTransitioning" class="nav-top-progress" role="progressbar" aria-label="页面加载中" />
+    <Sidebar :active="active" :user="currentUserInfo" :open="mobileNavOpen" @navigate="onSidebarNavigate" @prefetch="prefetchRoute" @close="mobileNavOpen = false" @logout="handleLogout" />
     <div v-if="isMobile && mobileNavOpen" class="m-nav-overlay" @click="mobileNavOpen = false"></div>
     <main class="main">
       <header v-if="isMobile" class="m-appbar">
@@ -57,7 +58,18 @@
 </AppButton>
         </div>
       </PageHeader>
-      <component :is="pageComponent" :active="active" :user="currentUserInfo" :requested-route="requestedRoute" @navigate="navigate" />
+      <div class="page-viewport">
+        <Transition name="page-fade" mode="out-in" @after-enter="onAfterPageEnter">
+          <component
+            :is="pageComponent"
+            :key="pageTransitionKey"
+            :active="active"
+            :user="currentUserInfo"
+            :requested-route="requestedRoute"
+            @navigate="navigate"
+          />
+        </Transition>
+      </div>
     </main>
   </div>
   <AppStatusCenter
@@ -181,6 +193,9 @@ const mobileDesktopOverride = ref(readMobileDesktopOverride())
 let noticeTimer = null
 const pendingRequestIds = new Set()
 const requestBusyIndicator = createBusyIndicator(value => { requestBusyVisible.value = value })
+const navTransitioning = ref(false)
+let navProgressTimer = null
+let navSequence = 0
 
 function showNotice(text, type = 'info', retry = null, source = null) {
   globalNotice.value = { ...(source || {}), text, type, retry }
@@ -258,6 +273,14 @@ function onOnline() {
   if (recovered) showNotice('网络连接已恢复，可以继续操作。', 'success')
 }
 
+function prefetchRoute(key) {
+  if (!key || key === active.value) return
+  const comp = settingsKeys.includes(key) ? SettingsPage : pageMap[key]
+  if (comp?.prefetch) {
+    comp.prefetch().catch(() => {})
+  }
+}
+
 async function navigate(key, options = {}) {
   if (!options.force) {
     const allowed = await runNavigationGuard()
@@ -271,9 +294,35 @@ async function navigate(key, options = {}) {
     active.value = 'login'
     return
   }
+
+  const currentNavSeq = ++navSequence
+  const targetComp = settingsKeys.includes(next) ? SettingsPage : pageMap[next]
+
+  // 在卸载旧页面前先预先拉取目标组件代码，保持当前页面可见，彻底消除切换时的白屏与闪烁
+  if (targetComp?.prefetch && active.value !== next) {
+    if (navProgressTimer) clearTimeout(navProgressTimer)
+    navProgressTimer = setTimeout(() => {
+      if (currentNavSeq === navSequence) navTransitioning.value = true
+    }, 70)
+
+    try {
+      await Promise.race([
+        targetComp.prefetch(),
+        new Promise(r => setTimeout(r, 160))
+      ])
+    } catch {
+      // 容错处理，由 defineAsyncComponent 处理错误界面
+    }
+    if (currentNavSeq !== navSequence) return
+  }
+
   requestedRoute.value = known ? '' : requested
   location.hash = `#/${encodeURIComponent(requested)}`
   active.value = next
+
+  setTimeout(() => {
+    if (currentNavSeq === navSequence) navTransitioning.value = false
+  }, 320)
 }
 
 function onSidebarNavigate(key) {
@@ -338,7 +387,7 @@ async function onHeaderAction(action) {
   showNotice(`“${action.text}”暂未接入执行逻辑，已为你拦截空点击。`, 'warn')
 }
 
-function onHash() {
+async function onHash() {
   // 别名重定向：将旧版 URL 映射到当前页面键
   const fullPath = String(location.hash || '').replace(/^#\/?/, '').split('?')[0]
   if (routeAliases[fullPath]) {
@@ -352,7 +401,20 @@ function onHash() {
     return
   }
   requestedRoute.value = route.known ? '' : route.requestedPage
-  active.value = next
+  if (active.value !== next) {
+    const targetComp = settingsKeys.includes(next) ? SettingsPage : pageMap[next]
+    if (targetComp?.prefetch) {
+      try {
+        await Promise.race([
+          targetComp.prefetch(),
+          new Promise(r => setTimeout(r, 160))
+        ])
+      } catch {
+        // 容错处理
+      }
+    }
+    active.value = next
+  }
 }
 
 watch(active, clearRequestNoticeForRoute)
@@ -384,6 +446,7 @@ async function handleLoginSuccess(payload) {
   try {
     await loadCurrentUser()
     startSse()
+    scheduleIdlePagePrefetch()
   } catch (e) {
     recordClientError(e, { source: 'auth_init' })
   }
@@ -403,6 +466,35 @@ async function handleLogout() {
   navigate('login', { force: true })
 }
 
+function scheduleIdlePagePrefetch() {
+  const commonPages = [
+    'dashboard',
+    'data',
+    'products',
+    'orders',
+    'messages',
+    'accounts',
+    'auto-delivery',
+    'settings-system'
+  ]
+  const prefetchQueue = commonPages.filter(key => key !== active.value)
+  const idle = window.requestIdleCallback || (cb => setTimeout(cb, 250))
+
+  function step() {
+    if (prefetchQueue.length === 0) return
+    const nextKey = prefetchQueue.shift()
+    const comp = settingsKeys.includes(nextKey) ? SettingsPage : pageMap[nextKey]
+    if (comp?.prefetch) {
+      comp.prefetch().catch(() => {})
+    }
+    idle(step, { timeout: 2000 })
+  }
+
+  setTimeout(() => {
+    idle(step, { timeout: 2000 })
+  }, 1200)
+}
+
 async function boot() {
   booting.value = true
   try {
@@ -412,6 +504,7 @@ async function boot() {
       await loadCurrentUser()
       if (!getToken()) return
       startSse()
+      scheduleIdlePagePrefetch()
       if (!location.hash || authPages.includes(getHash())) {
         navigate(defaultPage)
       } else {
@@ -499,8 +592,21 @@ onBeforeUnmount(() => {
   window.removeEventListener('xya-request-error', onRequestError)
   requestBusyIndicator.dispose()
   if (noticeTimer) clearTimeout(noticeTimer)
+  if (navProgressTimer) clearTimeout(navProgressTimer)
   closeSse()
 })
+
+const pageTransitionKey = computed(() => {
+  if (active.value === NOT_FOUND_PAGE) return NOT_FOUND_PAGE
+  if (settingsKeys.includes(active.value)) return 'settings-shell'
+  return active.value
+})
+
+function onAfterPageEnter() {
+  navTransitioning.value = false
+  if (navProgressTimer) clearTimeout(navProgressTimer)
+  window.scrollTo({ top: 0, left: 0, behavior: 'instant' })
+}
 
 const pageComponent = computed(() => {
   if (active.value === NOT_FOUND_PAGE) return NotFoundPage

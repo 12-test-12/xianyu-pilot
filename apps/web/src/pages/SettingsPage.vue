@@ -1,14 +1,16 @@
 <template>
   <div class="settings-layout">
-    <ConfigNav :active="active" @navigate="$emit('navigate', $event)" />
+    <ConfigNav :active="active" @navigate="$emit('navigate', $event)" @prefetch="onPrefetch" />
     <div class="settings-main">
-      <component :is="current" :active="active" @navigate="$emit('navigate', $event)" />
+      <Transition name="settings-fade" mode="out-in">
+        <component :is="current" :key="active" :active="active" @navigate="$emit('navigate', $event)" />
+      </Transition>
     </div>
   </div>
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, onMounted } from 'vue'
 import { asyncPage } from '../components/asyncPage.js'
 import ConfigNav from '../components/ConfigNav.vue'
 
@@ -27,6 +29,21 @@ const map = {
 }
 
 const current = computed(() => map[props.active] || map['settings-system'])
+
+function onPrefetch(key) {
+  if (map[key]?.prefetch) {
+    map[key].prefetch().catch(() => {})
+  }
+}
+
+onMounted(() => {
+  const idle = window.requestIdleCallback || (cb => setTimeout(cb, 300))
+  idle(() => {
+    Object.values(map).forEach(page => {
+      if (page?.prefetch) page.prefetch().catch(() => {})
+    })
+  })
+})
 </script>
 
 <style scoped>
@@ -42,6 +59,23 @@ const current = computed(() => map[props.active] || map['settings-system'])
   display: flex;
   flex-direction: column;
   gap: 16px;
+  min-height: 480px;
+}
+
+.settings-fade-enter-active,
+.settings-fade-leave-active {
+  transition: opacity 0.16s cubic-bezier(0.2, 0, 0, 1), transform 0.16s cubic-bezier(0.2, 0, 0, 1);
+  will-change: opacity, transform;
+}
+
+.settings-fade-enter-from {
+  opacity: 0;
+  transform: translateY(4px);
+}
+
+.settings-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
 }
 
 @media (max-width: 1260px) {
