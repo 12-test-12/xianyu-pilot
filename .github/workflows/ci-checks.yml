@@ -57,10 +57,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
-          cache-dependency-path: |
-            apps/api/requirements.txt
-            requirements-ci.txt
       - name: Install locked application and CI dependencies
         run: |
           python -m pip install --require-hashes -r apps/api/requirements.txt
@@ -99,8 +95,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-          cache-dependency-path: apps/${{ matrix.component }}/package-lock.json
       - name: Align npm with the package contract
         run: npm install --global "npm@$NPM_VERSION" --ignore-scripts --no-audit --no-fund
       - name: Install from lockfile
@@ -143,11 +137,6 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           architecture: x64
-          cache: pip
-          cache-dependency-path: |
-            apps/api/requirements.txt
-            packaging/windows/requirements-build.txt
-            packaging/windows/requirements-icon-check.txt
       - uses: actions/download-artifact@v4
         with:
           name: web-dist
