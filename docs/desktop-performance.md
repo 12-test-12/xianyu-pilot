@@ -22,7 +22,7 @@
 - 切换账号、日期和趋势范围时隔离旧数据；过期响应和离开页面后的响应不得覆盖当前画面。
 - 图表实例持续复用，窗口 resize 合并到每帧一次；缩短柱状图入场，关闭装饰性常驻脉冲及光晕动画。
 - 全局加载提示延迟 300 ms 显示，已显示时至少保留 350 ms，连续请求之间避免瞬间出现/消失。
-- 沿用蓝色交叉标识，生成真正透明底 PNG、SVG 和含 16/24/32/48/64/128/256 尺寸的 ICO。窗口、任务栏、托盘与两种 PyInstaller EXE 共用图标，托盘保留小状态点。开发者可安装 Pillow 后运行 `python scripts/generate-app-icon.py` 重新生成。
+- 当前采用用户选定的 Gemini「黑曜石极光」蓝色小鱼图标，侧栏、启动页、登录页、窗口、任务栏、托盘与两种 PyInstaller EXE 共用标识，托盘保留小状态点。`apps/web/public/xya/brand/app-icon.png` 为 PNG 母版；`app-icon.svg` 为嵌入 PNG 的容器，并非矢量重绘。开发者可安装 Pillow 后运行 `python scripts/generate-app-icon.py` 生成含 16/24/32/48/64/128/256 尺寸的 `favicon.ico`。
 
 ## 临时界面清理
 

@@ -24,15 +24,10 @@ def main():
     ico_path = ROOT / "apps/web/public/favicon.ico"
     icon.save(ico_path, format="ICO", sizes=[(s, s) for s in (16, 24, 32, 48, 64, 128, 256)])
 
-    # Self-contained SVG wrapper for crisp browser/web vector rendering
+    # Self-contained SVG container for the raster master; not vector artwork.
     png_b64 = base64.b64encode(png_path.read_bytes()).decode("ascii")
     (BRAND / "app-icon.svg").write_text(f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="100%" height="100%">
   <!-- Xianyu Pilot: Modern Obsidian Flagship Icon -->
-  <defs>
-    <clipPath id="squircleClip">
-      <rect x="0" y="0" width="256" height="256" rx="56" ry="56"/>
-    </clipPath>
-  </defs>
   <image width="256" height="256" href="data:image/png;base64,{png_b64}"/>
 </svg>
 ''', encoding="utf-8")

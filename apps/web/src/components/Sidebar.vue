@@ -4,7 +4,8 @@
       <svg viewBox="0 0 24 24" class="ui-icon"><path d="M6 6l12 12M18 6 6 18" /></svg>
     </button>
     <button type="button" class="brand brand-image" aria-label="返回首页" @click="$emit('navigate','dashboard')">
-      <img src="/xya/brand/brand_004.png" alt="XianYuAssistant 闲鱼助手" class="brand-logo" />
+      <img src="/xya/brand/app-icon.png" alt="" class="brand-logo brand-icon" />
+      <span class="sidebar-brand-name">闲鱼助手<small>Xianyu Pilot</small></span>
     </button>
     <nav class="nav-scroll">
       <div v-for="group in groups" :key="group.title" class="nav-group">
@@ -49,3 +50,25 @@ function isActive(key) {
   return props.active === key
 }
 </script>
+
+<style scoped>
+.brand.brand-image {
+  gap: 12px;
+  text-align: left;
+}
+.sidebar-brand-name {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--text);
+  font-size: 21px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.sidebar-brand-name small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: .5px;
+}
+</style>
