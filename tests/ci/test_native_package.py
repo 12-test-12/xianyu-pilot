@@ -7,7 +7,8 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
-from scripts.ci import artifacts, native_package as package, windows_portable
+from scripts.ci import artifacts, native_package as package, windows_icon, windows_portable
+from windows_icon_fixture import executable
 
 ENV = {"GITHUB_SHA": "a" * 40, "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1",
        "GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/tags/v1.2.3", "GH_REPO": "owner/project"}
@@ -31,6 +32,8 @@ class NativePackageTests(unittest.TestCase):
         self.sources[".env.development.example"] = b"# public example, not a real credential"
         self.path = package.create(self.output, self.web, self.crawler, ENV, self.sources)
         portable = self.root / "XianyuPilot"
+        icon = windows_icon.SOURCE_ICON.read_bytes()
+        brand_exe = executable(windows_icon.icon_frames(icon))
         for name in ['XianyuPilot.exe','_internal/web/index.html','_internal/web/assets/safety.js',
                      '_internal/app/desktop_migrations/006_full_console.sql','_internal/python311.dll',
                      '_internal/QtWebEngineProcess.exe','_internal/Qt6WebEngineCore.dll',
@@ -39,10 +42,12 @@ class NativePackageTests(unittest.TestCase):
             target = portable / name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(b"test runtime")
+        (portable/'XianyuPilot.exe').write_bytes(brand_exe)
+        (portable/'_internal/web/favicon.ico').write_bytes(icon)
         windows_portable.record(portable, ENV["GITHUB_SHA"])
         self.windows = self.root / "windows"
         self.standalone = self.root/'standalone.exe'
-        self.standalone.write_bytes(b'test standalone runtime')
+        self.standalone.write_bytes(brand_exe)
         self.windows_path = windows_portable.package(portable, self.windows, self.standalone)
 
     def rewrite(self, change):
@@ -195,6 +200,16 @@ class NativePackageTests(unittest.TestCase):
         (self.windows/'XianyuPilot.exe').unlink()
         with patch.object(package.subprocess,'run') as run:
             with self.assertRaises(FileNotFoundError):package.publish(self.output,ENV,self.windows)
+            run.assert_not_called()
+
+    def test_wrong_exe_icon_blocks_publication_even_with_valid_checksums(self):
+        # Repackage a wrong EXE with freshly valid metadata: hash checks alone pass.
+        self.standalone.write_bytes(b'generic or unbranded executable')
+        windows_portable.package(self.root/'XianyuPilot', self.windows, self.standalone)
+        windows_portable.verify_release(self.windows, ENV['GITHUB_SHA'])
+        with patch.object(package.subprocess, 'run') as run:
+            with self.assertRaisesRegex(ValueError, 'embedded app icon'):
+                package.publish(self.output, ENV, self.windows)
             run.assert_not_called()
 
 

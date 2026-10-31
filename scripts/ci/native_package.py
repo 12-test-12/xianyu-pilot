@@ -14,9 +14,10 @@ import tarfile
 import zipfile
 
 if __package__:
-    from . import artifacts, windows_portable
+    from . import artifacts, windows_icon, windows_portable
 else:
     import artifacts
+    import windows_icon
     import windows_portable
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -31,12 +32,13 @@ LOCAL_SCRIPTS = {
     "scripts/local-dev.ps1", "scripts/setup-local.ps1", "scripts/setup-local.sh",
     "scripts/verify-local.ps1", "scripts/read_only_smoke.py",
     "scripts/build-windows-portable.ps1", "scripts/ci/windows_portable.py", "scripts/ci/windows_portable_smoke.py",
+    "scripts/ci/windows_icon.py",
 }
 LOCAL_DOCS = {"docs/local-dev-runbook.md", "docs/native-deployment.md", "docs/desktop-sqlite-foundation.md", "docs/desktop-delivery-design.md", "docs/official-order-delivery.md", "docs/delivery-safety-recovery.md", "docs/windows-portable.md", "docs/desktop-console-release.md"}
 LOCAL_DOCS.add("docs/desktop-performance.md")
 LOCAL_DOCS.add("docs/desktop-exit-fix.md")
 LOCAL_DOCS.add("docs/app-icon-integration.md")
-PORTABLE_BUILD_FILES={"packaging/windows/requirements-build.txt","packaging/windows/xianyu_portable.spec","packaging/windows/portable_runtime_hook.py"}
+PORTABLE_BUILD_FILES={"packaging/windows/requirements-build.txt","packaging/windows/requirements-icon-check.txt","packaging/windows/xianyu_portable.spec","packaging/windows/portable_runtime_hook.py"}
 REQUIRED = {
     "LICENSE", "start-local.bat", "start-local.sh", "scripts/setup-local.ps1",
     "scripts/setup-local.sh", "scripts/local-dev.ps1", "apps/api/app/main.py",
@@ -63,6 +65,7 @@ REQUIRED = {
     "apps/api/app/services/delivery_gate.py", "docs/windows-portable.md", "scripts/build-windows-portable.ps1",
     "apps/api/app/desktop_console.py", "apps/api/app/desktop_migrations/006_full_console.sql",
     "docs/desktop-performance.md",
+    "scripts/ci/windows_icon.py",
     *PORTABLE_BUILD_FILES,
 }
 README = """Xianyu Pilot - original system, native source distribution
@@ -231,6 +234,9 @@ def publish(directory: Path, env: dict, windows_directory: Path):
     tag, _ = release_target(env)
     path, info = verify(directory, env)
     windows_path, exe_path, _ = windows_portable.verify_release(windows_directory, info["revision"])
+    # Inspect the downloaded attachments themselves on the Linux publication runner.
+    # Hashes and a separate favicon.ico alone do not prove an Explorer icon is embedded.
+    icon_report = windows_icon.verify_release(windows_directory)
     repo = env.get("GH_REPO", "")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
         raise ValueError("Invalid release repository")
@@ -244,6 +250,7 @@ def publish(directory: Path, env: dict, windows_directory: Path):
         "## Windows x64 绿色便携版\n\n"
         f"下载 `{exe_path.name}` 可直接运行，或下载 `{windows_path.name}` 完整解压后运行其中的 XianyuPilot.exe。"
         "无需安装 Python、Node.js、Git 或浏览器运行时。ZIP 中的 EXE 必须与 _internal 一起保留。\n\n"
+        "两个 Windows 下载版本均已内嵌 Gemini 小鱼图标，下载后即可在文件列表中显示，无需额外替换图标。\n\n"
         "程序启动后展示原项目完整后台；首次使用请添加并授权闲鱼账号，再配置商品、库存和自动化规则。"
         "本版本保留原业务模块，真实订单、干净 Windows 虚拟机和完整文件 I/O 隔离仍待实机验收。\n\n"
         "## 本机部署源码包\n\n"
@@ -255,6 +262,8 @@ def publish(directory: Path, env: dict, windows_directory: Path):
     if checksums.parent.is_symlink() or checksums.is_symlink():
         raise ValueError("Release checksum paths must not be symbolic links")
     checksums.parent.mkdir(exist_ok=True)
+    (checksums.parent / 'windows-icon-verification.json').write_text(
+        json.dumps(icon_report, indent=2) + '\n', encoding='utf-8')
     checksums.write_text((windows_directory / "SHA256SUMS.txt").read_text(encoding="utf-8")
                          + (directory / "SHA256SUMS.txt").read_text(encoding="utf-8"), encoding="utf-8")
     command = ["gh", "release", "create", tag, str(exe_path), str(windows_path), str(path), str(checksums), str(windows_directory/'windows-build-info.json'),

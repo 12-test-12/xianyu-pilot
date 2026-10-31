@@ -15,5 +15,9 @@ if (-not $SkipWebBuild) {
 }
 python -c "import importlib.metadata as m; assert m.version('PySide6') == '6.12.0'; assert m.version('PyInstaller') == '6.22.3'"
 if ($LASTEXITCODE -ne 0) { throw 'Use the GitHub Windows packaging job to install pinned build dependencies' }
-python -m PyInstaller packaging/windows/xianyu_portable.spec --noconfirm --distpath dist/windows --workpath build/windows
+python scripts/ci/windows_icon.py --web-icon apps/web/dist/favicon.ico --report reports/windows-icon-source.json
+if ($LASTEXITCODE -ne 0) { throw 'Frontend brand icon verification failed' }
+python -m PyInstaller packaging/windows/xianyu_portable.spec --clean --noconfirm --distpath dist/windows --workpath build/windows
 if ($LASTEXITCODE -ne 0) { throw 'Portable EXE build failed' }
+python scripts/ci/windows_icon.py --exe dist/windows/XianyuPilot/XianyuPilot.exe --exe dist/windows/XianyuPilot-Standalone.exe --report reports/windows-icon-build.json
+if ($LASTEXITCODE -ne 0) { throw 'Built EXEs do not contain the Gemini Explorer icon' }

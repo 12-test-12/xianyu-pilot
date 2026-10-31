@@ -6,6 +6,9 @@ root=Path(SPECPATH).resolve().parents[1]
 web=root/'apps/web/dist'
 if not (web/'index.html').is_file():
     raise SystemExit('Build the original Vue project before packaging')
+icon=root/'apps/web/public/favicon.ico'
+if not icon.is_file() or (web/'favicon.ico').read_bytes()!=icon.read_bytes():
+    raise SystemExit('Rebuild the frontend with the committed Gemini icon before packaging')
 project_notices=[(str(root/'LICENSE'),'licenses/project')]
 if (root/'NOTICE').is_file():
     project_notices.append((str(root/'NOTICE'),'licenses/project'))
@@ -22,9 +25,9 @@ a=Analysis(
 )
 pyz=PYZ(a.pure)
 exe=EXE(pyz,a.scripts,[],exclude_binaries=True,name='XianyuPilot',debug=False,
-    bootloader_ignore_signals=False,strip=False,upx=False,console=False,icon=str(web/'favicon.ico'),
+    bootloader_ignore_signals=False,strip=False,upx=False,console=False,icon=str(icon),
     disable_windowed_traceback=True,contents_directory='_internal')
 coll=COLLECT(exe,a.binaries,a.datas,strip=False,upx=False,name='XianyuPilot')
 standalone=EXE(pyz,a.scripts,a.binaries,a.datas,[],name='XianyuPilot-Standalone',debug=False,
-    bootloader_ignore_signals=False,strip=False,upx=False,console=False,icon=str(web/'favicon.ico'),
+    bootloader_ignore_signals=False,strip=False,upx=False,console=False,icon=str(icon),
     disable_windowed_traceback=True)

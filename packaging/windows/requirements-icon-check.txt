@@ -1,0 +1,2 @@
+# Cross-platform PE resource verification for build gates and Release publication.
+pefile==2024.8.26

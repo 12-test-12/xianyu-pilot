@@ -47,22 +47,7 @@
 
 **公开下载以 Releases 实际附件为准。本地构建完成不代表对应修改已经发布到远端。**
 
-<details>
-<summary>当前工作区的本地构建放在哪里？</summary>
-
-本轮已验证的本地产物位于以下目录，这些文件由 Git 忽略，不随源码提交：
-
-```text
-dist/gemini-icon-release/
-├─ XianyuPilot-Windows-x64.zip
-├─ XianyuPilot.exe
-├─ SHA256SUMS.txt
-└─ windows-build-info.json
-```
-
-这些名称用于查找当前工作区产物；后续重新构建时，以实际输出目录为准。
-
-</details>
+GitHub 流水线将小鱼图标直接嵌入独立 EXE 和 ZIP 内的 EXE，下载后无需启动或另行替换图标。打包与发布前会核对 EXE 内全部七种尺寸的图标资源；错误或缺失图标会阻断发布。校验机制与报告位置见 [应用图标与发布校验](docs/app-icon-integration.md)。
 
 ### 2. 启动软件
 

@@ -85,8 +85,17 @@ jobs:
         with:
           name: xianyu-pilot-windows-portable
           path: release/windows
-      - name: Reverify both ZIPs and publish with combined checksums to GitHub Releases
+      - name: Install cross-platform EXE icon verifier
+        run: python -m pip install -r packaging/windows/requirements-icon-check.txt
+      - name: Reverify checksums and embedded EXE icons before publishing GitHub Releases
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: python scripts/ci/native_package.py publish --directory release/native --windows-directory release/windows
+      - name: Preserve Release icon verification evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release-icon-verification
+          path: release/native/publish/windows-icon-verification.json
+          if-no-files-found: error
+          retention-days: 14
