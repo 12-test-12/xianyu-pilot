@@ -26,6 +26,7 @@ import smtplib
 import ssl
 import time
 import urllib.parse
+import httpx
 from email.mime.text import MIMEText
 from email.utils import formataddr, formatdate
 from typing import Optional
@@ -35,7 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.database import async_session
 from ..core.secret_store import decrypt_secret
-from ..core.upload_security import request_public_https
+from ..core.upload_security import PublicRequestNotSent, request_public_https
 from .feishu_bot import send_text_message_result as _feishu_app_send
 from .notification_event_attempt import (
     NotificationDispatchOutcome,
@@ -423,6 +424,8 @@ def _delivery_result(
     request_body: str | bytes | None,
     response_body: str | bytes | None,
     outcome_known: bool,
+    provider_called: bool = True,
+    error_code: str = "",
 ) -> dict:
     """Build a delivery result without retaining notification content or PII."""
 
@@ -434,6 +437,8 @@ def _delivery_result(
         "request_body": _byte_summary("request", request_body),
         "response_body": _byte_summary("response", response_body),
         "outcome_known": bool(outcome_known),
+        "provider_called": bool(provider_called),
+        "error_code": error_code,
     }
 
 async def _insert_in_app_notification(
@@ -501,6 +506,8 @@ async def _send_webhook(channel: dict, title: str, rendered: str, timeout_second
                 success or 400 <= int(resp.status_code) < 500
             ),
         )
+    except PublicRequestNotSent:
+        return _not_sent_result(body, int((time.time() - started) * 1000))
     except Exception:
         return _err_result(body, "Webhook 请求失败", int((time.time() - started) * 1000))
 
@@ -508,13 +515,14 @@ async def _send_webhook(channel: dict, title: str, rendered: str, timeout_second
 async def _send_feishu(channel: dict, rendered: str, timeout_seconds: int) -> dict:
     url = str(channel.get("webhookUrl") or "").strip()
     secret = str(channel.get("secret") or "").strip()
-    body = json.dumps({"msg_type": "text", "content": {"text": rendered}}, ensure_ascii=False)
+    payload = {"msg_type": "text", "content": {"text": rendered}}
     if secret:
         ts = int(time.time())
-        sign = _gen_feishu_sign(ts, secret)
-        url = f"{url}{'&' if '?' in url else '?'}timestamp={ts}&sign={sign}"
+        payload.update(timestamp=str(ts), sign=_gen_feishu_sign(ts, secret))
+    body = json.dumps(payload, ensure_ascii=False)
     return await _http_post(url, body, timeout_seconds, parse_key="code", parse_success=0,
-                            ok_msg="飞书发送成功", fail_prefix="飞书发送失败")
+                            ok_msg="飞书发送成功", fail_prefix="飞书发送失败",
+                            allow_desktop_proxy_dns=True, legacy_parse_key="StatusCode")
 
 
 async def _send_feishu_app(channel: dict, rendered: str) -> dict:
@@ -659,7 +667,9 @@ async def _send_email(channel: dict, title: str, rendered: str, timeout_seconds:
 
 async def _http_post(url: str, body: str, timeout_seconds: int,
                      parse_key: str, parse_success: int,
-                     ok_msg: str, fail_prefix: str) -> dict:
+                     ok_msg: str, fail_prefix: str,
+                     allow_desktop_proxy_dns: bool = False,
+                     legacy_parse_key: str = "") -> dict:
     """通用 POST 发送 + 响应解析。parse_key 为响应 JSON 中标识成功的字段名。"""
     started = time.time()
     try:
@@ -669,6 +679,7 @@ async def _http_post(url: str, body: str, timeout_seconds: int,
             content=body,
             headers={"Content-Type": "application/json"},
             timeout_seconds=timeout_seconds,
+            allow_desktop_proxy_dns=allow_desktop_proxy_dns,
         )
         cost_ms = int((time.time() - started) * 1000)
         status_code = int(resp.status_code)
@@ -685,7 +696,8 @@ async def _http_post(url: str, body: str, timeout_seconds: int,
                     response_body=resp.body,
                     outcome_known=False,
                 )
-            if not isinstance(resp_json, dict) or parse_key not in resp_json:
+            response_key = parse_key if isinstance(resp_json, dict) and parse_key in resp_json else legacy_parse_key
+            if not isinstance(resp_json, dict) or not response_key or response_key not in resp_json:
                 return _delivery_result(
                     success=False,
                     status_code=status_code,
@@ -695,16 +707,17 @@ async def _http_post(url: str, body: str, timeout_seconds: int,
                     response_body=resp.body,
                     outcome_known=False,
                 )
-            code = resp_json.get(parse_key)
+            code = resp_json.get(response_key)
             if str(code) != str(parse_success):
                 return _delivery_result(
                     success=False,
                     status_code=status_code,
                     cost_ms=cost_ms,
-                    message=f"{fail_prefix}: 服务方拒绝请求",
+                    message=f"{fail_prefix}: 服务方拒绝请求（错误码 {int(code)}）" if str(code).isdigit() else f"{fail_prefix}: 服务方拒绝请求",
                     request_body=body,
                     response_body=resp.body,
                     outcome_known=True,
+                    error_code=f"provider_rejected_{code}" if str(code).isdigit() and len(str(code)) <= 10 else 'provider_rejected',
                 )
             return _delivery_result(
                 success=True,
@@ -725,11 +738,24 @@ async def _http_post(url: str, body: str, timeout_seconds: int,
             response_body=resp.body,
             outcome_known=400 <= status_code < 500,
         )
+    except PublicRequestNotSent:
+        return _not_sent_result(body, int((time.time() - started) * 1000))
+    except httpx.ReadTimeout:
+        return _err_result(body, f"{fail_prefix}: 等待服务方回执超时", int((time.time() - started) * 1000), error_code='notification_read_timeout')
     except Exception:
         return _err_result(body, f"{fail_prefix}: 请求失败", int((time.time() - started) * 1000))
 
 
-def _err_result(body: str, err: str, cost_ms: int) -> dict:
+def _not_sent_result(body: str, cost_ms: int) -> dict:
+    return _delivery_result(
+        success=False, status_code=None, cost_ms=cost_ms,
+        message='通知地址校验或连接失败，消息尚未发送；请检查地址、网络与代理设置',
+        request_body=body, response_body=b'', outcome_known=True,
+        provider_called=False, error_code='notification_pre_send_failed',
+    )
+
+
+def _err_result(body: str, err: str, cost_ms: int, *, error_code: str = 'notification_transport_unknown') -> dict:
     return _delivery_result(
         success=False,
         status_code=None,
@@ -738,6 +764,7 @@ def _err_result(body: str, err: str, cost_ms: int) -> dict:
         request_body=body,
         response_body=b"",
         outcome_known=False,
+        error_code=error_code,
     )
 
 
@@ -778,7 +805,6 @@ async def dispatch_notification_detailed(
                     context.update(template_context)
                 rendered = _render_template(channel.get("template"), title, content, context=context)
                 timeout_seconds = int(channel.get("timeoutSeconds") or 10)
-                called = True
                 try:
                     if ctype == "feishu":
                         result = await _send_feishu(channel, rendered, timeout_seconds)
@@ -795,8 +821,10 @@ async def dispatch_notification_detailed(
                     else:
                         result = await _send_webhook(channel, title, rendered, timeout_seconds)
                     channel_delivered = bool(result["success"])
+                    called = called or bool(result.get('provider_called', True))
                     channel_outcome_known = bool(result.get("outcome_known", True))
                 except Exception:
+                    called = True
                     all_outcomes_known = False
                     logger.warning(
                         "Notification transport result unknown event=%s type=%s",

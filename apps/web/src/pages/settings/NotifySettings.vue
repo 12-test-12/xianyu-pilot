@@ -11,19 +11,19 @@
       role="status"
     >
       <div>
-        <strong>通知测试发送安全状态</strong>
-        <span v-if="testAttempt.attemptId">Attempt #{{ testAttempt.attemptId }}</span>
+        <strong>通知测试结果</strong>
+        <span v-if="testAttempt.attemptId">测试记录 #{{ testAttempt.attemptId }}</span>
       </div>
       <p>{{ testAttempt.message }}</p>
       <p v-if="testAttempt.status === 'unknown'" class="notification-resolution-warning">
-        高风险操作：只有在你已从通知服务方人工核对、确认不会再收到本次测试后，才能关闭未知意图。
-        关闭只解除本渠道测试锁，不会撤回可能已送达的消息，也不会自动发送新测试。
+        请先到对应通知渠道核对是否收到本次测试。确认后可关闭本条记录，再主动发送新的测试。
+        关闭记录不会撤回已送达的消息，也不会自动重发。
       </p>
       <dl>
         <div><dt>渠道</dt><dd>{{ testAttempt.channelKey || '-' }}</dd></div>
-        <div><dt>状态</dt><dd>{{ testAttempt.status || 'unknown' }}</dd></div>
-        <div><dt>retrySafe</dt><dd>{{ String(testAttempt.retrySafe) }}</dd></div>
-        <div><dt>logPersisted</dt><dd>{{ String(testAttempt.logPersisted) }}</dd></div>
+        <div><dt>状态</dt><dd>{{ notificationTestStatusLabel(testAttempt.status) }}</dd></div>
+        <div><dt>可安全重试</dt><dd>{{ testAttempt.retrySafe ? '是' : '否' }}</dd></div>
+        <div><dt>投递日志</dt><dd>{{ testAttempt.logPersisted ? '已记录' : '待确认' }}</dd></div>
       </dl>
       <button
         type="button"
@@ -31,7 +31,7 @@
         :disabled="testing || resolving || saving || loading || !testAttempt.replaySafe"
         @click="recoverNotificationTestAttempt"
       >
-        {{ testAttempt.status === 'confirmed' ? '使用原意图补写审计日志' : '使用原意图核对状态' }}
+        {{ testAttempt.status === 'failed' && testAttempt.retrySafe ? '使用原测试重试' : testAttempt.status === 'confirmed' ? '补写投递日志' : '核对本次测试状态' }}
       </button>
       <button
         v-if="testAttempt.status === 'unknown' && testAttempt.replaySafe && testAttempt.attemptId"
@@ -786,6 +786,7 @@ import ToggleSwitch from '../../components/ToggleSwitch.vue'
 import {
   getNotificationDeliveryLogs,
   getNotificationSettings,
+  getNotificationTestStatus,
   getNotifications,
   resolveNotificationTestAttempt,
   saveNotificationSettings,
@@ -793,6 +794,7 @@ import {
 } from '../../api/notification.js'
 import { dateTime, recordsOf } from '../../utils/apiData.js'
 import { withBrowserIntentLock } from '../../utils/browserIntentLock.js'
+import { notificationTestErrorMessage, notificationTestStatusLabel } from '../../utils/notificationTestFeedback.js'
 
 defineProps({ active: String })
 
@@ -1770,9 +1772,31 @@ function rememberNotificationTestAttempt(intent, data, message) {
   return record
 }
 
+let notificationStatusVersion = 0
 function finishNotificationTestIntent(intent) {
+  notificationStatusVersion++
   window.localStorage.removeItem(notificationTestStorageKey(intent.channelKey))
   clearTestAttemptView()
+}
+
+async function refreshNotificationTestStatus(channelKey = selectedKey.value) {
+  const intent = loadNotificationTestIntent(channelKey)
+  if (!intent?.attemptId || settingsAvailable.value !== true) return
+  const version = ++notificationStatusVersion
+  try {
+    const res = await getNotificationTestStatus(intent.attemptId, {
+      channelKey: intent.channelKey, idempotencyKey: intent.idempotencyKey,
+    })
+    if (version !== notificationStatusVersion || selectedKey.value !== channelKey) return
+    const data = res?.data || {}
+    if (data.attemptStatus === 'resolved' || (data.attemptStatus === 'confirmed' && data.logPersisted === true)) {
+      finishNotificationTestIntent(intent)
+    } else {
+      rememberNotificationTestAttempt(intent, data, res?.msg)
+    }
+  } catch (err) {
+    if (version === notificationStatusVersion && selectedKey.value === channelKey) error.value = err?.message || '测试记录暂时无法核对，请稍后重试。'
+  }
 }
 
 function applySettings(data) {
@@ -1887,6 +1911,7 @@ async function load(showErrorNotice = false) {
 
   if (failures.length) error.value = `${[...new Set(failures)].join('；')}，请稍后重试`
   loading.value = false
+  await refreshNotificationTestStatus()
 }
 
 async function save() {
@@ -1910,6 +1935,7 @@ async function save() {
 
 async function test() {
   if (testing.value || resolving.value || saving.value || loading.value) return
+  notificationStatusVersion++
   clearNotices()
   if (settingsAvailable.value !== true) {
     error.value = '通知配置状态未知，重新加载成功前禁止发送测试。'
@@ -1955,7 +1981,7 @@ async function test() {
       if (data.success === true) {
         success.value = '当前渠道测试发送成功，审计日志已记录'
       } else {
-        error.value = '渠道明确返回发送失败，审计日志已记录；请检查渠道配置。'
+        error.value = res?.msg || '渠道明确返回发送失败，审计日志已记录；请检查渠道配置。'
       }
     } else {
       const message = data.attemptStatus === 'confirmed'
@@ -1971,7 +1997,10 @@ async function test() {
       (Number(err?.code || 0) === 400 || Number(err?.code || 0) === 422)
       && !data.attemptId
     )
-    if (definitePreSendRejection) {
+    if (data.attemptStatus === 'resolved' && data.replaySafe === true) {
+      finishNotificationTestIntent(intent)
+      success.value = '旧测试记录已核对关闭，可以主动发送新的测试。'
+    } else if (definitePreSendRejection) {
       try {
         finishNotificationTestIntent(intent)
       } catch {
@@ -1981,13 +2010,7 @@ async function test() {
       error.value = err?.message || '通知测试请求未执行，请修正配置后重试。'
     } else {
       const fallbackStatus = String(data.attemptStatus || 'unknown')
-      const message = fallbackStatus === 'blocked'
-        ? '该渠道被另一测试意图锁定；仅持有原意图的浏览器可完成核对或审计日志修复。'
-        : fallbackStatus === 'in_progress'
-          ? '当前渠道测试正在发送；请保留此页面并使用同一意图核对。'
-          : fallbackStatus === 'confirmed' && data.logPersisted === false
-            ? '通知结果已确认、审计日志待修复；使用原意图只会补日志，不会重发。'
-            : '通知测试结果未知；禁止生成新幂等键，只能使用原意图核对且不会自动重发。'
+      const message = notificationTestErrorMessage({ ...data, attemptStatus: fallbackStatus }, err?.message)
       try {
         rememberNotificationTestAttempt(intent, {
           ...data,
@@ -2006,7 +2029,7 @@ async function test() {
           message,
         })
       }
-      error.value = err?.message ? `${message} ${err.message}` : message
+      error.value = message
     }
   } finally {
     testing.value = false
@@ -2018,7 +2041,12 @@ async function recoverNotificationTestAttempt() {
     error.value = '当前浏览器不持有可恢复的原始测试意图，请回到原浏览器完成核对。'
     return
   }
-  await test()
+  if (testAttempt.attemptId && testAttempt.status !== 'failed' && testAttempt.status !== 'confirmed') {
+    testing.value = true
+    try { await refreshNotificationTestStatus() } finally { testing.value = false }
+  } else {
+    await test()
+  }
 }
 
 async function resolveUnknownNotificationTestAttempt() {
@@ -2139,7 +2167,7 @@ function onHeaderAction(event) {
 }
 
 watch(selectedKey, channelKey => {
-  loadNotificationTestIntent(channelKey)
+  refreshNotificationTestStatus(channelKey)
 })
 
 onMounted(async () => {

@@ -29,6 +29,22 @@ class NotificationTestAttemptError(RuntimeError):
         super().__init__(message)
 
 
+class NotificationResultUnknown(RuntimeError):
+    def __init__(self, code: str):
+        self.code = code if code in {'notification_read_timeout', 'notification_transport_unknown'} else 'notification_test_result_unknown'
+        super().__init__(self.code)
+
+
+def notification_failure_message(code: str | None) -> str:
+    if code == 'notification_pre_send_failed':
+        return '通知尚未发送：地址校验或连接失败，请检查地址、网络与代理；修复后可使用原测试重试'
+    if code == 'notification_read_timeout':
+        return '等待通知服务方回执超时，消息可能已送达；请核对本次记录，系统不会自动重发'
+    if code and re.fullmatch(r'provider_rejected_[0-9]{1,10}', code):
+        return f'通知服务方明确拒绝（错误码 {code.rsplit("_", 1)[-1]}），请检查机器人安全设置与配置'
+    return ''
+
+
 @dataclass(frozen=True, slots=True)
 class NotificationTestCommand:
     user_id: int
@@ -182,6 +198,10 @@ class NotificationTestCoordinator:
             return self._outcome(failed)
         try:
             remote_result = await self._remote_send(command)
+            if remote_result.get('outcomeKnown', True) is not True:
+                raise NotificationResultUnknown(str(remote_result.get('errorCode') or ''))
+            if remote_result.get('providerCalled', True) is False:
+                return self._outcome(await self._store.mark_not_sent(lease))
             success = bool(remote_result["success"])
             status_code = int(remote_result.get("statusCode") or 0)
             cost_ms = max(0, int(remote_result.get("costMs") or 0))
@@ -193,7 +213,7 @@ class NotificationTestCoordinator:
             )
             try:
                 unknown = await self._store.mark_unknown(
-                    lease, code="notification_test_result_unknown"
+                    lease, code=exc.code if isinstance(exc, NotificationResultUnknown) else "notification_test_result_unknown"
                 )
             except Exception as persistence_exc:
                 logger.error(
@@ -228,6 +248,7 @@ class NotificationTestCoordinator:
                 success=success,
                 status_code=status_code,
                 cost_ms=cost_ms,
+                error_code=str(remote_result.get('errorCode') or ''),
             )
         except Exception as exc:
             logger.error(
@@ -297,7 +318,7 @@ class NotificationTestCoordinator:
         }
         return NotificationTestOutcome(
             status=status,
-            message=messages[status],
+            message=(notification_failure_message(lease.error_code) or messages[status]) if status in {'failed', 'unknown', 'confirmed'} else messages[status],
             attempt_id=lease.attempt_id,
             retry_safe=(
                 bool(lease.retry_safe)
@@ -318,6 +339,18 @@ class SqlNotificationTestAttemptStore:
     def __init__(self, db: AsyncSession, *, lease_seconds: int = 120) -> None:
         self.db = db
         self.lease_seconds = max(30, min(int(lease_seconds), 300))
+
+    async def inspect(self, *, user_id: int, channel_key: str, attempt_id: int, idempotency_key: str) -> NotificationTestLease:
+        """Read an owned intent without claiming a lease or invoking a sender."""
+        attempt = await self.db.get(NotificationTestAttempt, int(attempt_id))
+        if (
+            attempt is None or int(attempt.user_id) != int(user_id)
+            or str(attempt.channel_key) != str(channel_key).strip()
+            or not hmac.compare_digest(str(attempt.idempotency_key), str(idempotency_key).strip())
+        ):
+            raise NotificationTestAttemptError(404, 'notification_test_attempt_missing', '未找到匹配的通知测试记录')
+        action = 'in_progress' if self._lease_active(attempt) else 'return'
+        return self._lease(attempt, action, repeated=True)
 
     async def acquire(self, command: NotificationTestCommand) -> NotificationTestLease:
         for retry in range(2):
@@ -505,6 +538,7 @@ class SqlNotificationTestAttemptStore:
         success: bool,
         status_code: int,
         cost_ms: int,
+        error_code: str = '',
     ) -> NotificationTestLease:
         attempt = await self._locked(lease)
         attempt.state = "confirmed"
@@ -514,7 +548,7 @@ class SqlNotificationTestAttemptStore:
         attempt.provider_status_code = max(0, min(int(status_code), 999))
         attempt.cost_ms = max(0, min(int(cost_ms), 3_600_000))
         attempt.result_code = "delivered" if success else "rejected"
-        attempt.last_error_code = None
+        attempt.last_error_code = re.sub(r'[^A-Za-z0-9_.:-]', '_', error_code)[:64] if error_code and not success else None
         self._release(attempt)
         await self.db.commit()
         return self._lease(attempt, "return", repeated=lease.repeated)
@@ -529,6 +563,17 @@ class SqlNotificationTestAttemptStore:
         self._release(attempt)
         await self.db.commit()
         return self._lease(attempt, "return", repeated=lease.repeated)
+
+    async def mark_not_sent(self, lease: NotificationTestLease) -> NotificationTestLease:
+        """A transport-proven validation/connect failure did not reach HTTP send."""
+        attempt = await self._locked(lease)
+        attempt.state = 'failed'
+        attempt.retry_safe = 1
+        attempt.send_started_at = None
+        attempt.last_error_code = 'notification_pre_send_failed'
+        self._release(attempt)
+        await self.db.commit()
+        return self._lease(attempt, 'return', repeated=lease.repeated)
 
     async def reconcile_confirmation_failure(
         self, lease: NotificationTestLease

@@ -613,6 +613,8 @@ async def _execute_test_notification(
         "requestBody": redact_sensitive_text(delivery.get("request_body") or "", max_length=4000),
         "responseBody": redact_sensitive_text(delivery.get("response_body") or "", max_length=4000),
         "outcomeKnown": bool(delivery.get("outcome_known", True)),
+        "providerCalled": bool(delivery.get("provider_called", True)),
+        "errorCode": str(delivery.get("error_code") or ''),
     }
 
 
@@ -856,12 +858,13 @@ async def test_notifications(
             remote_command.content,
             template_context,
         )
-        if result.get("outcomeKnown") is not True:
-            raise RuntimeError("notification provider result unknown")
         return {
             "success": bool(result.get("success")),
             "statusCode": int(result.get("statusCode") or 0),
             "costMs": int(result.get("costMs") or 0),
+            "outcomeKnown": result.get("outcomeKnown") is True,
+            "providerCalled": result.get("providerCalled", True),
+            "errorCode": str(result.get("errorCode") or ''),
         }
 
     async def persist_log(
@@ -875,11 +878,7 @@ async def test_notifications(
             "success": bool(lease.provider_success),
             "statusCode": int(lease.provider_status_code or 0),
             "costMs": int(lease.cost_ms or 0),
-            "message": (
-                "通知渠道明确返回发送成功"
-                if lease.provider_success
-                else "通知渠道明确返回发送失败"
-            ),
+            "message": NotificationTestCoordinator._outcome(lease).message,
             "requestBody": "",
             "responseBody": "",
         }
@@ -926,6 +925,24 @@ async def test_notifications(
         status_code=status_code,
         content=result.model_dump(by_alias=True),
     )
+
+
+@router.post('/notifications/test/attempts/{attempt_id}/status')
+async def inspect_notification_test_attempt(
+    attempt_id: int,
+    payload: dict = Body(default={}),
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    try:
+        lease = await SqlNotificationTestAttemptStore(db).inspect(
+            user_id=_notification_user_id(current_user), channel_key=str(payload.get('channelKey') or ''),
+            attempt_id=attempt_id, idempotency_key=str(payload.get('idempotencyKey') or ''),
+        )
+    except NotificationTestAttemptError as exc:
+        return JSONResponse(status_code=exc.status_code, content=ResultObject(code=exc.status_code, msg=str(exc)).model_dump(by_alias=True))
+    outcome = NotificationTestCoordinator._outcome(lease)
+    return ResultObject.success({**outcome.response_data(), 'channelKey': lease.channel_key, 'providerCalled': False}, outcome.message)
 
 
 @router.post("/notifications/test/attempts/{attempt_id}/resolve")

@@ -43,6 +43,10 @@ class UnsafeRemoteURLError(ValueError):
     pass
 
 
+class PublicRequestNotSent(UnsafeRemoteURLError):
+    """Validation or connection failed before any HTTP request was sent."""
+
+
 class UploadValidationError(ValueError):
     pass
 
@@ -294,6 +298,7 @@ def _resolve_public_image_targets(
     url: str,
     *,
     require_https: bool = False,
+    allow_desktop_proxy_dns: bool = False,
 ) -> list[_PinnedRemoteTarget]:
     """Validate once and pin the connection URL to the resolved public IPs.
 
@@ -324,7 +329,19 @@ def _resolve_public_image_targets(
         addresses = {item[4][0] for item in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)}
     except (socket.gaierror, UnicodeError, ValueError) as exc:
         raise UnsafeRemoteURLError("图片地址无法解析") from exc
-    if not addresses or any(not _is_public_ip(address) for address in addresses):
+    # Desktop proxy/TUN clients use the benchmarking range as synthetic DNS.
+    # Only the fixed Feishu origin may opt in; private/loopback addresses and
+    # arbitrary webhooks/images remain blocked. TLS still verifies this host.
+    proxy_dns_allowed = (
+        allow_desktop_proxy_dns and settings.is_desktop
+        and parsed.scheme.lower() == 'https' and host.casefold() == 'open.feishu.cn'
+        and port == 443
+    )
+    def acceptable(address: str) -> bool:
+        return _is_public_ip(address) or (
+            proxy_dns_allowed and ipaddress.ip_address(address) in ipaddress.ip_network('198.18.0.0/15')
+        )
+    if not addresses or any(not acceptable(address) for address in addresses):
         raise UnsafeRemoteURLError("不允许访问本机或内网地址")
 
     ascii_host = host.encode("idna").decode("ascii")
@@ -359,6 +376,7 @@ async def request_public_https(
     timeout: httpx.Timeout | None = None,
     max_request_bytes: int = 256 * 1024,
     max_response_bytes: int = 64 * 1024,
+    allow_desktop_proxy_dns: bool = False,
 ) -> PublicHTTPResponse:
     """Send one bounded request to a public HTTPS endpoint without DNS rebinding.
 
@@ -378,11 +396,15 @@ async def request_public_https(
         raise UnsafeRemoteURLError("出站请求内容过大")
     response_limit = max(1, min(int(max_response_bytes), 1024 * 1024))
     timeout_value = max(3.0, min(float(timeout_seconds), 60.0))
-    targets = await asyncio.to_thread(
-        _resolve_public_image_targets,
-        url,
-        require_https=True,
-    )
+    try:
+        targets = await asyncio.to_thread(
+            _resolve_public_image_targets,
+            url,
+            require_https=True,
+            allow_desktop_proxy_dns=allow_desktop_proxy_dns,
+        )
+    except UnsafeRemoteURLError as exc:
+        raise PublicRequestNotSent(str(exc)) from exc
     timeout = timeout or httpx.Timeout(timeout_value, connect=min(timeout_value, 5.0))
     last_connection_error: httpx.HTTPError | None = None
 
@@ -430,7 +452,7 @@ async def request_public_https(
             last_connection_error = exc
             continue
 
-    raise UnsafeRemoteURLError("公网 HTTPS 地址暂时无法连接") from last_connection_error
+    raise PublicRequestNotSent("公网 HTTPS 地址暂时无法连接，消息尚未发送") from last_connection_error
 
 
 def validate_public_image_url(url: str) -> str:
