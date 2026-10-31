@@ -5,10 +5,18 @@
         账号列表、手动添加、删除、资料刷新、WebSocket 状态与扫码登录均由当前部署的服务端处理。
         扫码前请确认这是你信任的部署；若服务不可用，页面会显示明确的不可用状态与重试入口。
       </div>
-      <div v-if="error" class="global-notice error">{{ error }}</div>
-      <div v-if="accountListWarning" class="global-notice warning" role="status">{{ accountListWarning }}</div>
-      <div v-if="qrSuccessMsg" class="global-notice success">{{ qrSuccessMsg }}</div>
-      <div v-if="captchaErrorMsg" class="global-notice error">{{ captchaErrorMsg }}</div>
+      <Transition name="notice-fade">
+        <div v-if="error" class="global-notice error">{{ error }}</div>
+      </Transition>
+      <Transition name="notice-fade">
+        <div v-if="accountListWarning" class="global-notice warning" role="status">{{ accountListWarning }}</div>
+      </Transition>
+      <Transition name="notice-fade">
+        <div v-if="qrSuccessMsg" class="global-notice success">{{ qrSuccessMsg }}</div>
+      </Transition>
+      <Transition name="notice-fade">
+        <div v-if="captchaErrorMsg" class="global-notice error">{{ captchaErrorMsg }}</div>
+      </Transition>
       <div class="grid stat-grid" style="grid-template-columns:repeat(5,1fr)">
         <StatCard title="账号总数" :value="accountMetric(stats.total)" change="全部记录" icon="users" />
         <StatCard title="正常账号" :value="accountMetric(stats.normal)" change="当前页" icon="account" color="green" />
@@ -55,8 +63,13 @@
         <AppButton :loading="loading" @click="loadAccounts">刷新</AppButton>
       </div>
       <CardPanel>
-        <div v-if="accountsRefreshing" class="refresh-status" role="status" aria-live="polite">
-          正在刷新账号列表，现有数据仍可查看。
+        <div
+          class="refresh-status"
+          :class="{ active: accountsRefreshing }"
+          role="status"
+          aria-live="polite"
+        >
+          <span v-if="accountsRefreshing">正在刷新账号列表，现有数据仍可查看。</span>
         </div>
         <EmptyState v-if="loading && dataAvailable !== true" icon="⏳" title="账号加载中" description="正在读取账号与认证状态。" />
         <EmptyState v-else-if="dataAvailable === false" icon="⚠️" title="账号列表暂不可用" description="当前无法确认账号记录，不会把失败显示为空列表。">
@@ -372,15 +385,16 @@
   </div>
 
   <Teleport to="body">
-    <div v-if="modal" class="modal-mask" @click.self="closeModal">
-      <section v-if="modal==='scan'" class="xy-modal scan-modal">
-        <button class="modal-close" @click="closeModal"><Icon name="close" /></button>
-        <h2>{{ qr.mode === 'rescan' ? '重新扫码更新账号' : '扫码添加闲鱼账号' }}</h2>
-        <div class="scan-steps">
-          <div class="scan-step" :class="{ active: qrReady }"><b>1</b><span>{{ qrReady ? '二维码已生成' : '等待生成二维码' }}</span></div>
-          <i></i><div class="scan-step" :class="{active: qr.status==='scanned'}"><b>2</b><span>扫码确认</span></div>
-          <i></i><div class="scan-step" :class="{active: qr.status==='confirmed'}"><b>3</b><span>{{ qr.mode === 'rescan' ? '更新账号 Cookie' : '自动添加账号' }}</span></div>
-        </div>
+    <Transition name="modal-fade">
+      <div v-if="modal" class="modal-mask" @click.self="closeModal">
+        <section v-if="modal==='scan'" class="xy-modal scan-modal">
+          <button class="modal-close" @click="closeModal"><Icon name="close" /></button>
+          <h2>{{ qr.mode === 'rescan' ? '重新扫码更新账号' : '扫码添加闲鱼账号' }}</h2>
+          <div class="scan-steps">
+            <div class="scan-step" :class="{ active: qrReady }"><b>1</b><span>{{ qrReady ? '二维码已生成' : '等待生成二维码' }}</span></div>
+            <i></i><div class="scan-step" :class="{ active: ['scanned', 'scaned'].includes(qr.status) }"><b>2</b><span>扫码确认</span></div>
+            <i></i><div class="scan-step" :class="{ active: qr.status === 'confirmed' }"><b>3</b><span>{{ qr.mode === 'rescan' ? '更新账号 Cookie' : '自动添加账号' }}</span></div>
+          </div>
         <div class="scan-main">
           <div>
             <div class="qr-box">
@@ -696,6 +710,7 @@
         </div>
       </section>
     </div>
+    </Transition>
   </Teleport>
 </template>
 <script setup>
@@ -750,6 +765,7 @@ const qr = reactive({ loading:false, sessionId:'', qrUrl:'', status:'', message:
 const qrReady = computed(() => Boolean(qr.sessionId && qr.qrUrl))
 const qrGenerationFailed = computed(() => qr.status === 'error')
 const qrSuccessMsg = ref('')
+const handledLoginAccounts = new Set()
 const captchaErrorMsg = ref('')
 const cookieEdit = reactive({ accountId: null, cookie: '' })
 const cookieEditError = ref('')
@@ -1632,7 +1648,14 @@ async function refreshProfile(accountId, options = {}) {
     if (selected.value && selected.value.id === accountId) {
       selected.value = { ...selected.value, ...data }
     }
-    await loadAccounts()
+    // 就地局部更新 accounts 列表中对应项，避免整表重新触发 loading 导致页面跳动闪烁
+    const idx = accounts.value.findIndex(a => a.id === accountId)
+    if (idx !== -1) {
+      accounts.value[idx] = { ...accounts.value[idx], ...data }
+    }
+    if (options.reloadList === true || idx === -1) {
+      await loadAccounts()
+    }
   } catch (e) {
     error.value = e.message || '刷新资料失败'
   }
@@ -1801,9 +1824,8 @@ async function submitCookieEdit() {
 async function startQrLogin() {
   qr.loading = true
   qr.message = ''
-  qr.sessionId = ''
-  qr.qrUrl = ''
-  qr.status = ''
+  // 保留现有的二维码直到新码就绪，避免刷新时白屏与占位图来回闪烁
+  qr.status = 'generating'
   stopQrPolling()
   try {
     const res = qr.accountId
@@ -1817,8 +1839,10 @@ async function startQrLogin() {
     qr.message = data.message || '请使用闲鱼 App 扫码'
     startQrPolling()
   } catch (e) {
-    qr.sessionId = ''
-    qr.qrUrl = ''
+    if (!qr.qrUrl) {
+      qr.sessionId = ''
+      qr.qrUrl = ''
+    }
     qr.status = 'error'
     qr.message = e.message || '生成二维码失败'
   } finally {
@@ -1848,11 +1872,20 @@ async function checkQrStatus() {
     const data = res.data || {}
     const prevStatus = qr.status
     qr.status = data.status || qr.status
-    qr.message = data.message || qr.message
+    if (['scanned', 'scaned'].includes(qr.status)) {
+      qr.message = data.message || '已成功扫码，请在手机上点击确认登录'
+    } else {
+      qr.message = data.message || qr.message
+    }
 
     if (qr.status === 'confirmed') {
       if (data.accountId) {
         stopQrPolling()
+        const targetAccountId = Number(data.accountId)
+        if (handledLoginAccounts.has(targetAccountId)) return
+        handledLoginAccounts.add(targetAccountId)
+        setTimeout(() => handledLoginAccounts.delete(targetAccountId), 8000)
+
         const isRescan = qr.mode === 'rescan'
         closeModal()
         const externalUid = data.externalUid || data.unb || ''
@@ -1869,14 +1902,13 @@ async function checkQrStatus() {
         }
         try {
           await loadAccounts()
-          const nextAccountId = Number(data.accountId || 0) || null
-          if (nextAccountId && !isRescan) {
-            const target = accounts.value.find(a => a.id === nextAccountId)
+          if (targetAccountId && !isRescan) {
+            const target = accounts.value.find(a => a.id === targetAccountId)
             if (target) {
               selectAccount(target)
             }
-            // 扫码成功后自动刷新账号资料（background，避免闲鱼 API 慢时全局 loading 遮挡页面）
-            refreshProfile(nextAccountId, { background: true }).catch(() => {
+            // 扫码成功后自动刷新账号资料（就地更新单项数据，杜绝全表重复触发刷新与闪屏）
+            refreshProfile(targetAccountId, { background: true, reloadList: false }).catch(() => {
               if (import.meta.env.DEV) console.warn('自动刷新资料失败')
             })
           }
@@ -1908,18 +1940,26 @@ async function handleSseEvent(e) {
   const event = e.detail
   if (!event) return
   if (event.type === 'account_added') {
+    const addedAccountId = Number(event.accountId || event.account_id || 0) || null
+    if (addedAccountId && handledLoginAccounts.has(addedAccountId)) {
+      // 扫码轮询已完成落库和同步，跳过重复全表加载以彻底杜绝闪屏
+      return
+    }
+    if (addedAccountId) {
+      handledLoginAccounts.add(addedAccountId)
+      setTimeout(() => handledLoginAccounts.delete(addedAccountId), 8000)
+    }
     qrSuccessMsg.value = '账号登录成功'
     current.value = 1
     try {
       await loadAccounts()
-      const addedAccountId = Number(event.accountId || event.account_id || 0) || null
       if (addedAccountId) {
         const target = accounts.value.find(a => a.id === addedAccountId)
         if (target) {
           selectAccount(target)
         }
-        // 自动刷新账号资料（background，避免闲鱼 API 慢时全局 loading 遮挡页面）
-        refreshProfile(addedAccountId, { background: true }).catch(() => {
+        // 自动刷新账号资料（就地更新单项，不重刷整表）
+        refreshProfile(addedAccountId, { background: true, reloadList: false }).catch(() => {
           if (import.meta.env.DEV) console.warn('自动刷新资料失败')
         })
       } else if (accounts.value[0]) {
@@ -1988,9 +2028,18 @@ onBeforeUnmount(() => {
 .account-selector { width: 100%; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .account-selector-copy { min-width: 0; }
 .refresh-status {
-  margin-bottom: 10px;
+  overflow: hidden;
+  max-height: 0;
+  margin-bottom: 0;
+  opacity: 0;
   color: #526079;
   font-size: 13px;
+  transition: max-height 0.2s ease, opacity 0.2s ease, margin-bottom 0.2s ease;
+}
+.refresh-status.active {
+  max-height: 28px;
+  margin-bottom: 8px;
+  opacity: 1;
 }
 
 .qr-unavailable {

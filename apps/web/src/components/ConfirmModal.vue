@@ -142,12 +142,12 @@ function trapFocus(event) {
 .global-confirm-mask {
   position: fixed;
   inset: 0;
-  background: rgba(20, 36, 58, .58);
-  backdrop-filter: blur(2px);
+  background: rgba(15, 23, 42, .65);
   z-index: 2000;
   display: flex;
   align-items: center;
   justify-content: center;
+  will-change: opacity;
 }
 
 .global-confirm-modal {
