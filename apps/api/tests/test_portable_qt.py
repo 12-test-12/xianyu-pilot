@@ -53,6 +53,28 @@ def test_close_hides_window_and_keeps_backend_running(console):
     assert Path(c.profile.cachePath()).is_relative_to(root)
 
 
+def test_tray_exit_releases_the_native_event_loop(console):
+    from PySide6.QtCore import QTimer
+    c,_=console
+    forced=[]
+    watchdog=QTimer()
+    watchdog.setSingleShot(True)
+    def force_exit():
+        forced.append(True)
+        c.app.exit(99)
+    watchdog.timeout.connect(force_exit)
+    watchdog.start(2500)
+    c.backend.stopped=True
+    QTimer.singleShot(0,c.begin_shutdown)
+    try:
+        result=c.run()
+    finally:
+        watchdog.stop()
+    assert not forced,'the window close handler vetoed QApplication.quit()'
+    assert result==0 and c.exiting and c.backend.stops==1
+    assert not c.timer.isActive() and not c.tray.isVisible()
+
+
 def test_repeated_status_does_not_repaint_native_status_bar(console):
     from app.portable.qt_host import LABELS
     c,_=console

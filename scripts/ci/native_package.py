@@ -34,6 +34,7 @@ LOCAL_SCRIPTS = {
 }
 LOCAL_DOCS = {"docs/local-dev-runbook.md", "docs/native-deployment.md", "docs/desktop-sqlite-foundation.md", "docs/desktop-delivery-design.md", "docs/official-order-delivery.md", "docs/delivery-safety-recovery.md", "docs/windows-portable.md", "docs/desktop-console-release.md"}
 LOCAL_DOCS.add("docs/desktop-performance.md")
+LOCAL_DOCS.add("docs/desktop-exit-fix.md")
 PORTABLE_BUILD_FILES={"packaging/windows/requirements-build.txt","packaging/windows/xianyu_portable.spec","packaging/windows/portable_runtime_hook.py"}
 REQUIRED = {
     "LICENSE", "start-local.bat", "start-local.sh", "scripts/setup-local.ps1",

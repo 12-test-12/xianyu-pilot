@@ -92,6 +92,11 @@ class ConsoleWindow(QMainWindow):
         self.setMinimumSize(780,560)
 
     def closeEvent(self,event):
+        # QApplication.quit() also closes hidden windows. Refusing that close
+        # while shutting down vetoes quit and leaves the stopped app in memory.
+        if self.controller.exiting:
+            event.accept()
+            return
         event.ignore()
         self.controller.hide_to_tray()
 
