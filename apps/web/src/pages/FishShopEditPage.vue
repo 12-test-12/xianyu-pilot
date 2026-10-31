@@ -133,7 +133,8 @@
         </p>
       </CardPanel>
 
-      <CardPanel v-if="!loading && detail" title="商品位置" style="margin-top:16px">
+      <CardPanel v-if="!loading && detail" title="发布地区" style="margin-top:16px">
+        <p class="subtle">此处为商品展示地区，不是收货地址；线上资源无需填写街道或门牌号。</p>
         <PublishAddressCascader v-model="selectedAddress" />
       </CardPanel>
 
@@ -181,12 +182,12 @@
             <ToggleSwitch :on="shippingMode === 'fixed'" @click="setShipping('fixed')" />
           </div>
           <div class="shipping-item">
-            <span>无需邮寄</span>
+            <span>线上交付 / 无需邮寄</span>
             <ToggleSwitch :on="shippingMode === 'none'" @click="setShipping('none')" />
           </div>
           <div class="shipping-item">
             <span>支持自提</span>
-            <ToggleSwitch :on="form.supportSelfPick" @click="form.supportSelfPick = !form.supportSelfPick" />
+            <ToggleSwitch :on="form.supportSelfPick" :disabled="shippingMode === 'none'" @click="form.supportSelfPick = !form.supportSelfPick" />
           </div>
         </div>
       </CardPanel>
@@ -292,7 +293,10 @@ const multiSpecData = reactive({
 })
 
 const shippingMode = ref('free')
-function setShipping(mode) { shippingMode.value = mode }
+function setShipping(mode) {
+  shippingMode.value = mode
+  if (mode === 'none') form.supportSelfPick = false
+}
 
 // ---- 计算属性 ----
 const selectedAccountLabel = computed(() => {
@@ -754,7 +758,7 @@ async function submit() {
       itemProperties: cleanedPropertyGroups,
       itemSkuList: cleanedSkuList,
       shippingMode: shippingMode.value,
-      supportSelfPick: form.supportSelfPick,
+      supportSelfPick: shippingMode.value !== 'none' && form.supportSelfPick,
       postFee: 0,
       location: locationData,
       category: detail.value.category ? { catName: detail.value.category } : null,

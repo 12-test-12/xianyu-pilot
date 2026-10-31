@@ -57,6 +57,7 @@ from ....services.xianyu_goods_sync import (
     XianyuItemPublisher,
     extract_token_from_cookie,
 )
+from ....services.publish_options import publish_location_error
 from .internal import verify_internal_or_current_user
 
 logger = logging.getLogger(__name__)
@@ -399,6 +400,10 @@ async def publish_fish_shop_item(
         if validation_error:
             return ResultObject.failed(validation_error)
 
+        location_error = publish_location_error(req.get("location"))
+        if location_error:
+            return ResultObject.validate_failed(location_error)
+
         # 4) 类目推荐（复用现有能力）
         publisher = XianyuItemPublisher(cookie_str)
         recommend_result = await _sync_category_recommend(publisher, title, description, image_urls)
@@ -546,6 +551,10 @@ async def edit_fish_shop_item(
         validation_error = validate_multi_spec_payload(req)
         if validation_error:
             return ResultObject.failed(validation_error)
+
+        location_error = publish_location_error(req.get("location"))
+        if location_error:
+            return ResultObject.validate_failed(location_error)
 
         # 4) 类目推荐
         publisher = XianyuItemPublisher(cookie_str)

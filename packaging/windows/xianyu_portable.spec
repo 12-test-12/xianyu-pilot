@@ -15,6 +15,7 @@ if (root/'NOTICE').is_file():
 a=Analysis(
     [str(root/'apps/api/run_portable.py')],pathex=[str(root/'apps/api')],
     binaries=[],datas=[(str(web),'web'),(str(root/'apps/api/app/desktop_migrations'),'app/desktop_migrations'),
+        (str(root/'apps/api/app/data/china_address_dict.json'),'app/resources'),
         *project_notices]+copy_metadata('PySide6',recursive=True),
     hiddenimports=['app.portable.qt_host','app.portable.webengine_check','sqlalchemy.dialects.sqlite.aiosqlite',
         'aiosqlite','uvicorn.protocols.http.h11_impl','uvicorn.lifespan.on','uvicorn.loops.asyncio',
@@ -23,6 +24,11 @@ a=Analysis(
     excludes=['PyQt5','PyQt6','PySide2','tkinter','pytest','IPython','matplotlib','numpy','pandas'],
     noarchive=False,
 )
+# Qt uses Windows' unversioned ICU API. A developer PATH can contain Poppler's
+# identically named ICU DLL with versioned exports; bundling it shadows the OS
+# library and makes QtCore fail to import on a clean launch.
+a.binaries=[entry for entry in a.binaries
+            if Path(entry[0]).name.casefold() not in {'icu.dll','icuin.dll','icuuc.dll'}]
 pyz=PYZ(a.pure)
 exe=EXE(pyz,a.scripts,[],exclude_binaries=True,name='XianyuPilot',debug=False,
     bootloader_ignore_signals=False,strip=False,upx=False,console=False,icon=str(icon),

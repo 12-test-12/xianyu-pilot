@@ -15,9 +15,10 @@ CONSOLE_PROBE=r"""(() => {
       const checks = {};
       for (const path of ['/xianyu/accounts','/goods','/orders','/orders/today-amount','/cards',
                           '/auto-delivery/sources','/auto-delivery/records','/auto-reply/rules','/conversations',
-                          '/operation-logs','/business-settings/ai-customer-service','/system/open-source-config']) {
+                          '/operation-logs','/business-settings/ai-customer-service','/system/open-source-config','/address-dict/tree']) {
         try { const response=await fetch('/api'+path,{headers}); const body=await response.json();
-          checks[path]=response.ok && body.code===200; } catch { checks[path]=false; }
+          checks[path]=response.ok && body.code===200 &&
+            (path!=='/address-dict/tree' || body.data?.provinces?.length>0); } catch { checks[path]=false; }
       }
       try {
         const response=await fetch('/api/sse/ticket',{method:'POST',headers});
@@ -29,6 +30,40 @@ CONSOLE_PROBE=r"""(() => {
           stream.onerror=()=>{clearTimeout(timer);stream.close();resolve(false)};
         });
       } catch { checks.sse=false; }
+      try {
+        // Exercise Vue's actual cascader events in bundled Chromium. No account
+        // or remote publication is needed for region/online-delivery controls.
+        const waitFor=async predicate=>{
+          for(let n=0;n<80;n++) { if(predicate())return; await new Promise(r=>setTimeout(r,50)); }
+          throw new Error('publish controls timeout');
+        };
+        location.hash='#/product-publish';
+        await waitFor(()=>document.querySelector('.publish-address-cascader select')?.options.length>1);
+        const selects=[...document.querySelectorAll('.publish-address-cascader select')];
+        const choose=async(index,value)=>{
+          selects[index].value=value;
+          selects[index].dispatchEvent(new Event('change',{bubbles:true}));
+          await new Promise(r=>setTimeout(r,20));
+        };
+        await choose(0,'北京市');
+        await choose(1,'北京市');
+        await choose(2,'东城区');
+        checks.publishRegion=document.querySelector('.selected-address')?.innerText.includes('东城区') &&
+          [...document.querySelectorAll('.option-line')].some(row=>row.innerText.includes('发布地区完整有效') && row.innerText.includes('通过'));
+        const shippingRows=[...document.querySelectorAll('.shipping-item')];
+        const selfPick=shippingRows.find(row=>row.innerText.includes('支持自提')).querySelector('button');
+        selfPick.click();
+        shippingRows.find(row=>row.innerText.includes('线上交付')).querySelector('button').click();
+        await new Promise(r=>setTimeout(r,20));
+        checks.onlineDelivery=selfPick.disabled && selfPick.getAttribute('aria-checked')==='false';
+        document.querySelector('.selected-address button').click();
+        await new Promise(r=>setTimeout(r,20));
+        checks.clearPublishRegion=selects.every(select=>select.value==='');
+        await choose(0,'浙江省');
+        await choose(1,'杭州市');
+        await choose(2,'西湖区');
+        checks.changePublishRegion=document.querySelector('.selected-address')?.innerText.includes('西湖区') || false;
+      } catch { checks.publishControls=false; }
       window.__xianyuConsoleCheck={pending:false,checks};
     })();
   }

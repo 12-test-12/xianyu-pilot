@@ -3,6 +3,7 @@
     <div v-if="loading" class="address-state">正在加载地址数据...</div>
     <div v-else-if="loadError || !addressTree.length" class="address-state error">
       {{ loadError || '地址数据未加载，请检查地址字典是否已初始化' }}
+      <button type="button" class="address-retry" @click="loadAddressTree">重新加载</button>
     </div>
     <template v-else>
       <div class="address-selects">
@@ -138,12 +139,12 @@ async function loadAddressTree() {
     const provinces = response?.data?.provinces
     if (!Array.isArray(provinces)) throw new Error('地址字典响应格式异常')
     addressTree.value = provinces
-    if (!addressTree.value.length) loadError.value = '地址字典当前为空，请联系管理员初始化后重试'
+    if (!addressTree.value.length) loadError.value = '发布地区数据为空，请重新加载；桌面版请检查安装包是否完整'
     syncSelection(props.modelValue)
   } catch (error) {
     console.warn('[publish-address-cascader] 加载地址字典失败', error)
     addressTree.value = []
-    loadError.value = '地址数据加载失败，请稍后重试'
+    loadError.value = error?.message || '发布地区加载失败，请重新加载；桌面版请检查安装包是否完整'
   } finally {
     loading.value = false
   }
@@ -161,6 +162,7 @@ onMounted(loadAddressTree)
 <style scoped>
 .address-state { padding: 14px; color: #667085; font-size: 13px; text-align: center; }
 .address-state.error { color: #dc2626; }
+.address-retry { display: block; margin: 10px auto 0; padding: 6px 12px; border: 1px solid #d0d5dd; border-radius: 6px; background: #fff; color: #1677ff; cursor: pointer; }
 .address-selects { display: flex; gap: 10px; flex-wrap: wrap; }
 .address-selects select { flex: 1; min-width: 120px; padding: 10px 14px; border: 2px solid #e4e7ec; border-radius: 10px; color: #344054; background: #fff; font-size: 14px; }
 .address-selects select:focus { outline: none; border-color: var(--primary, #1677ff); }

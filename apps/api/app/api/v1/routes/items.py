@@ -50,6 +50,8 @@ from ..deps import get_current_user
 
 from ....services.xianyu_goods_sync import XianyuItemOperator
 
+from ....services.publish_options import ordinary_shipping_error, publish_location_error
+
 from ....services.remote_goods_delete import (
 
     RemoteDeleteError,
@@ -888,21 +890,11 @@ async def publish_item(
 
         free_shipping = req.get("freeShipping", True)
 
-        free_shipping_enabled = str(free_shipping).strip().lower() not in {
+        shipping_error = ordinary_shipping_error(
+            shipping_mode, free_shipping, req.get("supportSelfPick", False)
+        )
 
-            "0",
-
-            "false",
-
-            "no",
-
-            "off",
-
-            "none",
-
-        }
-
-        if shipping_mode != "free" or not free_shipping_enabled:
+        if shipping_error:
 
             raise ExternalOperationError(
 
@@ -910,7 +902,7 @@ async def publish_item(
 
                 "shipping_mode_not_supported",
 
-                "当前发布执行器仅支持单规格包邮；所选运费模式未执行且不会被静默改写",
+                shipping_error,
 
             )
 
@@ -1093,6 +1085,12 @@ async def publish_item(
 
 
         async def remote_publish() -> RemoteOperationResult:
+
+            # Validate only on the remote path. Already-confirmed intents must
+            # still be able to repair local state using their original digest.
+            location_error = publish_location_error(item_data.get("location"))
+            if location_error:
+                return RemoteOperationResult.failed("invalid_publish_location", location_error, retry_safe=False)
 
             try:
 

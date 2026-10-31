@@ -2293,6 +2293,7 @@ def _resolve_address_dict_path() -> Path:
     module_path = Path(__file__).resolve()
     candidates.extend(
         [
+            module_path.parents[3] / "resources" / "china_address_dict.json",
             module_path.parents[3] / "data" / "china_address_dict.json",
             Path("/app/app/data/china_address_dict.json"),
             Path.cwd() / "app" / "data" / "china_address_dict.json",

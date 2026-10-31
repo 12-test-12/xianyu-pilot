@@ -48,7 +48,20 @@ export function buildPublishIntentSummary(payload, resolveAccountName = () => ''
   const category = String(intent.category || '未选择')
   const price = String(intent.price ?? '0.00')
   const stock = Number(intent.stock ?? 0)
-  return `账号：${account}\n商品：${title}\n分类：${category}\n价格：¥${price}\n库存：${Number.isFinite(stock) ? stock : '未知'}`
+  const shipping = { free: '包邮', none: '线上交付 / 无需邮寄', fixed: '一口价 / 运费' }[intent.shippingMode] || '未选择'
+  const region = [intent.location?.prov, intent.location?.city, intent.location?.area].filter(Boolean).join(' ') || '未选择'
+  return `账号：${account}\n商品：${title}\n分类：${category}\n价格：¥${price}\n库存：${Number.isFinite(stock) ? stock : '未知'}\n交付方式：${shipping}\n发布地区：${region}`
+}
+
+export function recoverPublishIntent(saved) {
+  if (!saved?.idempotencyKey || !saved.payload || typeof saved.payload !== 'object' || Array.isArray(saved.payload)) return null
+  return {
+    idempotencyKey: String(saved.idempotencyKey),
+    payload: saved.payload,
+    // A missing receipt is ambiguous, even if the previous shipping mode is
+    // unsupported. Keep the key and payload for reconciliation/local repair.
+    outcome: saved.outcome || { status: 'unknown', retrySafe: false },
+  }
 }
 
 export function markPendingProductSync(storage) {

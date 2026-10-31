@@ -14,7 +14,7 @@ class PortablePackageTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name)/'XianyuPilot'
         for name in ['XianyuPilot.exe','_internal/web/index.html','_internal/web/assets/safety.js',
-                     '_internal/app/desktop_migrations/006_full_console.sql','_internal/python311.dll',
+                     '_internal/app/desktop_migrations/006_full_console.sql','_internal/app/resources/china_address_dict.json','_internal/python311.dll',
                      '_internal/PySide6/QtWebEngineProcess.exe','_internal/PySide6/Qt6WebEngineCore.dll',
                      '_internal/PySide6/resources/qtwebengine_resources.pak','_internal/PySide6/resources/icudtl.dat',
                      '_internal/PySide6/translations/qtwebengine_locales/en-US.pak','_internal/vcruntime140.dll','_internal/msvcp140.dll']:
@@ -37,6 +37,14 @@ class PortablePackageTests(unittest.TestCase):
         with self.assertRaises(ValueError):package.verify(self.root)
         dll.unlink()
         with self.assertRaises(ValueError):package.record(self.root,'a'*40)
+
+    def test_missing_address_dictionary_cannot_be_packaged(self):
+        (self.root/'_internal/app/resources/china_address_dict.json').unlink()
+        with self.assertRaises(ValueError):package.record(self.root,'a'*40)
+
+    def test_foreign_icu_cannot_shadow_windows_runtime(self):
+        (self.root/'_internal/icuuc.dll').write_bytes(b'incompatible developer DLL')
+        with self.assertRaisesRegex(ValueError,'ICU'):package.record(self.root,'a'*40)
 
     def rewrite_archive(self, output, change):
         with zipfile.ZipFile(output) as archive:

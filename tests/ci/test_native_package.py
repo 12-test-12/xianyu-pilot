@@ -35,7 +35,7 @@ class NativePackageTests(unittest.TestCase):
         icon = windows_icon.SOURCE_ICON.read_bytes()
         brand_exe = executable(windows_icon.icon_frames(icon))
         for name in ['XianyuPilot.exe','_internal/web/index.html','_internal/web/assets/safety.js',
-                     '_internal/app/desktop_migrations/006_full_console.sql','_internal/python311.dll',
+                     '_internal/app/desktop_migrations/006_full_console.sql','_internal/app/resources/china_address_dict.json','_internal/python311.dll',
                      '_internal/QtWebEngineProcess.exe','_internal/Qt6WebEngineCore.dll',
                      '_internal/qtwebengine_resources.pak','_internal/icudtl.dat','_internal/en-US.pak',
                      '_internal/vcruntime140.dll','_internal/msvcp140.dll']:

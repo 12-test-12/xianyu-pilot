@@ -61,10 +61,13 @@ def inventory(root):
 
 
 def validate_required(files):
-    required={'XianyuPilot.exe','_internal/web/index.html','_internal/app/desktop_migrations/006_full_console.sql','PORTABLE-README.txt'}
+    required={'XianyuPilot.exe','_internal/web/index.html','_internal/app/desktop_migrations/006_full_console.sql',
+              '_internal/app/resources/china_address_dict.json','PORTABLE-README.txt'}
     if not required<=files.keys():
         raise ValueError('portable build is incomplete')
     names={PurePosixPath(name).name.lower() for name in files}
+    if names & {'icu.dll','icuin.dll','icuuc.dll'}:
+        raise ValueError('bundled ICU must not shadow the Windows system runtime')
     for name in ('qtwebengineprocess.exe','qt6webenginecore.dll','qtwebengine_resources.pak','icudtl.dat','en-us.pak','vcruntime140.dll','msvcp140.dll'):
         if name not in names:
             raise ValueError('missing bundled runtime: '+name)

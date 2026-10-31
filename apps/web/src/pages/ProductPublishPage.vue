@@ -209,7 +209,8 @@
         </div>
       </CardPanel>
 
-      <CardPanel title="商品位置" style="margin-top:16px">
+      <CardPanel title="发布地区" style="margin-top:16px">
+        <p class="subtle">选择商品展示的省、市、区，不需要填写街道或门牌号。线上资源通过卡密、文本或链接交付，此处不是收货地址。</p>
         <PublishAddressCascader v-model="selectedAddress" clearable />
       </CardPanel>
 
@@ -293,18 +294,19 @@
             <ToggleSwitch :on="shippingMode === 'free'" @click="setShipping('free')" />
           </div>
           <div class="shipping-item">
-            <span>一口价 / 运费</span>
-            <ToggleSwitch :on="shippingMode === 'fixed'" @click="setShipping('fixed')" />
+            <span>{{ form.multiSpecEnabled ? '一口价 / 运费' : '一口价 / 运费（暂不支持）' }}</span>
+            <ToggleSwitch :on="shippingMode === 'fixed'" :disabled="!form.multiSpecEnabled" @click="setShipping('fixed')" />
           </div>
           <div class="shipping-item">
-            <span>无需邮寄</span>
+            <span>线上交付 / 无需邮寄</span>
             <ToggleSwitch :on="shippingMode === 'none'" @click="setShipping('none')" />
           </div>
           <div class="shipping-item">
             <span>支持自提</span>
-            <ToggleSwitch :on="form.supportSelfPick" @click="form.supportSelfPick = !form.supportSelfPick" />
+            <ToggleSwitch :on="form.supportSelfPick" :disabled="shippingMode === 'none'" @click="form.supportSelfPick = !form.supportSelfPick" />
           </div>
         </div>
+        <p v-if="shippingMode === 'none'" class="subtle">适用于网盘资料、软件、卡密等线上资源，无需物流或自提。需要自动发送内容时，请开启自动发货并选择货源。</p>
       </CardPanel>
       <div style="height:90px"></div>
     </div>
@@ -325,7 +327,7 @@
       <CardPanel title="发布摘要" style="margin-top:16px">
         <div class="option-line"><span>闲鱼账号</span><b>{{ selectedAccount || '未选择' }}</b></div>
         <div class="option-line"><span>商品分类</span><b>{{ selectedCategoryPath || '未选择' }}</b></div>
-        <div class="option-line"><span>商品位置</span><b>{{ selectedAddress ? `${selectedAddress.prov} ${selectedAddress.city} ${selectedAddress.area}`.trim() : '未选择' }}</b></div>
+        <div class="option-line"><span>发布地区</span><b>{{ selectedAddress ? `${selectedAddress.prov} ${selectedAddress.city} ${selectedAddress.area}`.trim() : '未选择' }}</b></div>
         <div class="option-line"><span>总库存</span><b>{{ totalStock }}件</b></div>
         <div class="option-line"><span>运费模式</span><b>{{ shippingLabel }}</b></div>
       </CardPanel>
@@ -372,11 +374,13 @@ import {
   captureProductAsyncContext,
   isProductAsyncRequestCurrent,
   markPendingProductSync,
+  recoverPublishIntent,
 } from '../utils/productPublishState.js'
 import { imageUploadValidationMessage } from '../utils/imageUploadPolicy.js'
 import { accountAuthUsable, pickPreferredAccount } from '../utils/accountAuth.js'
 import { resolveTrustedMediaUrl } from '../utils/safeMediaUrl.js'
 import { loadPublishDraft, savePublishDraft, clearPublishDraft } from '../utils/publishDraft.js'
+import { isPublishAddressComplete, normalizePublishAddress } from '../utils/publishAddress.js'
 import { setNavigationGuard, clearNavigationGuard } from '../utils/navigationGuard.js'
 import { promptDraftChoice } from '../composables/draftGuardState.js'
 
@@ -932,9 +936,10 @@ function buildItemSkuListForPublish() {
 const shippingMode = ref('free')
 function setShipping(mode) {
   shippingMode.value = mode
+  if (mode === 'none') form.supportSelfPick = false
 }
 const shippingLabel = computed(() => {
-  const map = { free: '包邮', fixed: '一口价 / 运费', none: '无需邮寄' }
+  const map = { free: '包邮', fixed: '一口价 / 运费', none: '线上交付 / 无需邮寄' }
   return map[shippingMode.value] || '包邮'
 })
 
@@ -1066,6 +1071,8 @@ const confirmationPayload = computed(() => publishIntent.payload || {
   category: selectedCategoryName.value,
   price: form.price,
   stock: Number(form.stock) || 0,
+  shippingMode: shippingMode.value,
+  location: selectedAddress.value,
   autoDelivery: autoDelivery.enabled && autoDelivery.sourceId
     ? `已绑定「${selectedSourceTitle.value || '货源'}」`
     : (autoDelivery.enabled ? '未选货源' : '未开启'),
@@ -1085,7 +1092,8 @@ const checks = computed(() => [
   { text: '商品描述已填写', ok: form.description.trim().length > 0 },
   { text: '已上传商品图片', ok: form.imageUrls.length > 0 },
   { text: '分类已选择', ok: !!selectedCategoryName.value },
-  { text: '商品位置已确认', ok: !!selectedAddress.value },
+  { text: '发布地区完整有效', ok: isPublishAddressComplete(selectedAddress.value) },
+  { text: '交付方式有效', ok: (['free', 'none'].includes(shippingMode.value) || (form.multiSpecEnabled && shippingMode.value === 'fixed')) && (shippingMode.value !== 'none' || !form.supportSelfPick) },
   { text: '价格已填写', ok: form.multiSpecEnabled ? multiSpecValidSkus.value.length > 0 : Number(form.price) > 0 },
   { text: '库存数大于 0', ok: form.multiSpecEnabled ? multiSpecTotalStock.value > 0 : totalStock.value > 0 },
   { text: '多规格数据完整', ok: !form.multiSpecEnabled || (multiSpecValidSkus.value.length > 0 && buildItemPropertiesForPublish().length > 0) },
@@ -1468,18 +1476,13 @@ function savePublishIntent() {
 
 function restorePublishIntent() {
   try {
-    const saved = JSON.parse(sessionStorage.getItem(PUBLISH_INTENT_KEY) || 'null')
-    if (saved?.idempotencyKey && saved?.payload) {
-      const hasUnsupportedSku = Array.isArray(saved.payload.skus) && saved.payload.skus.length > 0
-      const hasUnsupportedShipping = saved.payload.shippingMode && saved.payload.shippingMode !== 'free'
-      if (hasUnsupportedSku || hasUnsupportedShipping || saved.payload.freeShipping === false) {
-        clearPublishIntent()
-        warning.value = '检测到旧版多规格或非包邮发布意图。当前无法安全恢复，请按单规格、包邮重新确认后提交。'
-        return
-      }
+    const saved = recoverPublishIntent(JSON.parse(sessionStorage.getItem(PUBLISH_INTENT_KEY) || 'null'))
+    if (saved) {
+      // Preserve every persisted intent, especially unknown/remote-confirmed
+      // outcomes. Dropping an old shipping mode can cause a duplicate publish.
       publishIntent.idempotencyKey = String(saved.idempotencyKey)
       publishIntent.payload = saved.payload
-      publishOutcome.value = saved.outcome || { status: 'failed', retrySafe: true, retryScope: 'resume' }
+      publishOutcome.value = saved.outcome
       if (publishOutcome.value.status === 'unknown') {
         warning.value = '检测到结果未知的发布意图。请先同步商品或到闲鱼 App 核对，当前禁止重试。'
       } else if (publishOutcome.value.status === 'remote_confirmed') {
@@ -1523,7 +1526,7 @@ async function submit() {
     const freeShipping = shippingMap[shippingMode.value] ?? true
 
     // 构建位置数据：使用三级联动选择的结构化地址，与商业版发布逻辑保持一致
-    const addr = selectedAddress.value
+    const addr = normalizePublishAddress(selectedAddress.value)
     const locationData = addr ? {
       prov: addr.prov || '',
       city: addr.city || '',
@@ -1533,16 +1536,7 @@ async function submit() {
       poiId: addr.poiId || '',
       poiName: addr.poiName || '',
       detail: addr.detail || '',
-    } : {
-      prov: '',
-      city: '',
-      area: '',
-      divisionId: '',
-      gps: '',
-      poiId: '',
-      poiName: runtime.defaultAddress || '',
-      detail: '',
-    }
+    } : null
 
     // 先发布到闲鱼，成功后再保存到本地数据库，避免发布失败时本地却显示商品
     if (!publishIntent.payload) {
@@ -1581,7 +1575,7 @@ async function submit() {
       }
       savePublishIntent()
     }
-    const publishRes = form.multiSpecEnabled
+    const publishRes = publishIntent.payload.itemSkuList?.length
       ? await publishFishShopItem({
           ...publishIntent.payload,
           idempotencyKey: publishIntent.idempotencyKey,
@@ -1685,7 +1679,7 @@ function restoreDraft(draft) {
     form.price = f.price || ''
     form.stock = f.stock || ''
     form.supportSelfPick = !!f.supportSelfPick
-    shippingMode.value = draft.shippingMode || 'free'
+    setShipping(draft.shippingMode || 'free')
     // 分类恢复：优先走级联选择，无 pathIds 时回退到直接设置 name/path
     const cat = draft.category || {}
     if (cat.pathIds && cat.pathIds.length) {

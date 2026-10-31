@@ -5,7 +5,6 @@ export const PUBLISH_ADDRESS_REQUIRED_FIELDS = [
   'area',
   'divisionId',
   'gps',
-  'poiId',
 ]
 
 export function cleanAddressValue(value) {
@@ -39,7 +38,19 @@ export function normalizePublishAddress(raw) {
 export function getPublishAddressMissingFields(address) {
   const normalized = normalizePublishAddress(address)
   if (!normalized) return [...PUBLISH_ADDRESS_REQUIRED_FIELDS]
-  return PUBLISH_ADDRESS_REQUIRED_FIELDS.filter((key) => !cleanAddressValue(normalized[key]))
+  const missing = PUBLISH_ADDRESS_REQUIRED_FIELDS.filter((key) => !cleanAddressValue(normalized[key]))
+  if (normalized.divisionId && !/^[1-9][0-9]{5}$/.test(normalized.divisionId)) missing.push('divisionId')
+  if (normalized.gps && !isPublishGpsValid(normalized.gps)) missing.push('gps')
+  return [...new Set(missing)]
+}
+
+// Dictionary entries describe a region. A venue POI ID is optional and must
+// never be fabricated from the administrative division ID.
+export function isPublishGpsValid(gps) {
+  const parts = cleanAddressValue(gps).split(',')
+  if (parts.length !== 2 || parts.some(part => !part.trim())) return false
+  const [lng, lat] = parts.map(Number)
+  return Number.isFinite(lng) && Number.isFinite(lat) && Math.abs(lng) <= 180 && Math.abs(lat) <= 90
 }
 
 export function isPublishAddressComplete(address) {
