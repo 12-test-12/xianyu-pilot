@@ -1,46 +1,39 @@
-"""Regenerate the transparent brand icon (development only; requires Pillow)."""
+"""Regenerate the brand icon and multi-size ICO from master assets."""
+import base64
 from pathlib import Path
 
-from PIL import Image, ImageDraw
+from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 BRAND = ROOT / "apps/web/public/xya/brand"
-SCALE = 4
 SIZE = 256
-
-
-def capsule(start, end, top, bottom):
-    mask = Image.new("L", (SIZE * SCALE, SIZE * SCALE))
-    draw = ImageDraw.Draw(mask)
-    radius = 32 * SCALE
-    points = [(x * SCALE, y * SCALE) for x, y in (start, end)]
-    draw.line(points, fill=255, width=radius * 2)
-    for x, y in points:
-        draw.ellipse((x-radius, y-radius, x+radius, y+radius), fill=255)
-    gradient = Image.new("RGBA", mask.size)
-    draw = ImageDraw.Draw(gradient)
-    for y in range(mask.height):
-        ratio = y / (mask.height - 1)
-        color = tuple(round(a + (b-a) * ratio) for a, b in zip(top, bottom))
-        draw.line((0, y, mask.width, y), fill=(*color, 255))
-    gradient.putalpha(mask)
-    return gradient
 
 
 def main():
     BRAND.mkdir(parents=True, exist_ok=True)
-    icon = capsule((54, 52), (202, 204), (57, 143, 255), (5, 71, 212))
-    icon = Image.alpha_composite(icon, capsule((202, 52), (54, 204), (102, 177, 255), (13, 107, 255)))
-    icon = icon.resize((SIZE, SIZE), Image.Resampling.LANCZOS)
-    icon.save(BRAND / "app-icon.png")
-    icon.save(ROOT / "apps/web/public/favicon.ico", sizes=[(s, s) for s in (16, 24, 32, 48, 64, 128, 256)])
-    (BRAND / "app-icon.svg").write_text('''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+    png_path = BRAND / "app-icon.png"
+    if not png_path.is_file():
+        raise FileNotFoundError(f"Missing master brand asset: {png_path}")
+
+    icon = Image.open(png_path).convert("RGBA")
+    if icon.size != (SIZE, SIZE):
+        icon = icon.resize((SIZE, SIZE), Image.Resampling.LANCZOS)
+        icon.save(png_path)
+
+    # Multi-resolution Windows ICO: 16, 24, 32, 48, 64, 128, 256
+    ico_path = ROOT / "apps/web/public/favicon.ico"
+    icon.save(ico_path, format="ICO", sizes=[(s, s) for s in (16, 24, 32, 48, 64, 128, 256)])
+
+    # Self-contained SVG wrapper for crisp browser/web vector rendering
+    png_b64 = base64.b64encode(png_path.read_bytes()).decode("ascii")
+    (BRAND / "app-icon.svg").write_text(f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="100%" height="100%">
+  <!-- Xianyu Pilot: Modern Obsidian Flagship Icon -->
   <defs>
-    <linearGradient id="back" x2="0" y2="1"><stop stop-color="#398fff"/><stop offset="1" stop-color="#0547d4"/></linearGradient>
-    <linearGradient id="front" x2="0" y2="1"><stop stop-color="#66b1ff"/><stop offset="1" stop-color="#0d6bff"/></linearGradient>
+    <clipPath id="squircleClip">
+      <rect x="0" y="0" width="256" height="256" rx="56" ry="56"/>
+    </clipPath>
   </defs>
-  <path d="M54 52 202 204" fill="none" stroke="url(#back)" stroke-width="64" stroke-linecap="round"/>
-  <path d="M202 52 54 204" fill="none" stroke="url(#front)" stroke-width="64" stroke-linecap="round"/>
+  <image width="256" height="256" href="data:image/png;base64,{png_b64}"/>
 </svg>
 ''', encoding="utf-8")
 
