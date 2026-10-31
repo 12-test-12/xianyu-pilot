@@ -33,3 +33,17 @@ test('publish confirmation includes the actual delivery mode and region', () => 
   assert.match(summary, /线上交付 \/ 无需邮寄/)
   assert.match(summary, /发布地区：北京市 北京市 东城区/)
 })
+
+test('multi-spec payload derives price and stock in publish summary', () => {
+  const summary = buildPublishIntentSummary({
+    title: '多规格商品',
+    shippingMode: 'free',
+    location: region,
+    itemSkuList: [
+      { price: '29.90', quantity: 5 },
+      { price: '19.90', quantity: 10 },
+    ],
+  })
+  assert.match(summary, /价格：¥19\.90/)
+  assert.match(summary, /库存：15/)
+})

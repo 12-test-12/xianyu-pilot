@@ -772,7 +772,6 @@
         </section>
       </div>
     </section>
-
   </div>
 </template>
 
@@ -2173,7 +2172,6 @@ watch(selectedKey, channelKey => {
 onMounted(async () => {
   window.addEventListener('xya-header-action', onHeaderAction)
   await load(true)
-  loadNotificationTestIntent(selectedKey.value)
 })
 
 onBeforeUnmount(() => {

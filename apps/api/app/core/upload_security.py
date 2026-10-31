@@ -33,6 +33,7 @@ SAFE_IMAGE_MEDIA_TYPES = frozenset(
     metadata[1] for metadata in IMAGE_FORMAT_METADATA.values()
 )
 MAX_IMAGE_PIXELS = 40_000_000
+_BENCHMARKING_SYNTHETIC_NET = ipaddress.ip_network("198.18.0.0/15")
 
 
 class UnsafePathError(ValueError):
@@ -328,7 +329,7 @@ def _resolve_public_image_targets(
     try:
         addresses = {item[4][0] for item in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)}
     except (socket.gaierror, UnicodeError, ValueError) as exc:
-        raise UnsafeRemoteURLError("图片地址无法解析") from exc
+        raise UnsafeRemoteURLError("目标地址无法解析" if require_https else "图片地址无法解析") from exc
     # Desktop proxy/TUN clients use the benchmarking range as synthetic DNS.
     # Only the fixed Feishu origin may opt in; private/loopback addresses and
     # arbitrary webhooks/images remain blocked. TLS still verifies this host.
@@ -338,9 +339,14 @@ def _resolve_public_image_targets(
         and port == 443
     )
     def acceptable(address: str) -> bool:
-        return _is_public_ip(address) or (
-            proxy_dns_allowed and ipaddress.ip_address(address) in ipaddress.ip_network('198.18.0.0/15')
-        )
+        if _is_public_ip(address):
+            return True
+        if not proxy_dns_allowed:
+            return False
+        try:
+            return ipaddress.ip_address(address) in _BENCHMARKING_SYNTHETIC_NET
+        except ValueError:
+            return False
     if not addresses or any(not acceptable(address) for address in addresses):
         raise UnsafeRemoteURLError("不允许访问本机或内网地址")
 

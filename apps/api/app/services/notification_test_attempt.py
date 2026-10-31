@@ -40,7 +40,7 @@ def notification_failure_message(code: str | None) -> str:
         return '通知尚未发送：地址校验或连接失败，请检查地址、网络与代理；修复后可使用原测试重试'
     if code == 'notification_read_timeout':
         return '等待通知服务方回执超时，消息可能已送达；请核对本次记录，系统不会自动重发'
-    if code and re.fullmatch(r'provider_rejected_[0-9]{1,10}', code):
+    if code and re.fullmatch(r'provider_rejected_-?[0-9]{1,10}', code):
         return f'通知服务方明确拒绝（错误码 {code.rsplit("_", 1)[-1]}），请检查机器人安全设置与配置'
     return ''
 

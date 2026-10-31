@@ -21,6 +21,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import logging
 import smtplib
 import ssl
@@ -508,6 +509,8 @@ async def _send_webhook(channel: dict, title: str, rendered: str, timeout_second
         )
     except PublicRequestNotSent:
         return _not_sent_result(body, int((time.time() - started) * 1000))
+    except httpx.ReadTimeout:
+        return _err_result(body, "Webhook 等待服务方回执超时", int((time.time() - started) * 1000), error_code="notification_read_timeout")
     except Exception:
         return _err_result(body, "Webhook 请求失败", int((time.time() - started) * 1000))
 
@@ -709,15 +712,17 @@ async def _http_post(url: str, body: str, timeout_seconds: int,
                 )
             code = resp_json.get(response_key)
             if str(code) != str(parse_success):
+                code_str = str(code).strip()
+                is_int = bool(re.fullmatch(r"-?[0-9]{1,10}", code_str))
                 return _delivery_result(
                     success=False,
                     status_code=status_code,
                     cost_ms=cost_ms,
-                    message=f"{fail_prefix}: 服务方拒绝请求（错误码 {int(code)}）" if str(code).isdigit() else f"{fail_prefix}: 服务方拒绝请求",
+                    message=f"{fail_prefix}: 服务方拒绝请求（错误码 {int(code_str)}）" if is_int else f"{fail_prefix}: 服务方拒绝请求",
                     request_body=body,
                     response_body=resp.body,
                     outcome_known=True,
-                    error_code=f"provider_rejected_{code}" if str(code).isdigit() and len(str(code)) <= 10 else 'provider_rejected',
+                    error_code=f"provider_rejected_{code_str}" if is_int else "provider_rejected",
                 )
             return _delivery_result(
                 success=True,

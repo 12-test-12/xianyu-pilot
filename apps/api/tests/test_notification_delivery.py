@@ -1,3 +1,7 @@
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import json
 import socket
 
@@ -147,3 +151,27 @@ async def test_status_endpoint_is_read_only_and_recognizes_closed_record(session
     denied=await inspect_notification_test_attempt(first.attempt_id,payload,session,{'user_id':2})
     assert denied.status_code==404
     assert len(calls)==1
+
+
+@pytest.mark.asyncio
+async def test_webhook_timeout_classifies_as_notification_read_timeout(monkeypatch):
+    async def post(*args, **kwargs):
+        raise httpx.ReadTimeout("fixture timeout")
+    monkeypatch.setattr(notify_dispatcher, "request_public_https", post)
+    result = await notify_dispatcher._send_webhook({"webhookUrl": "https://service.example/hook"}, "测试", "内容", 10)
+    assert result["success"] is False
+    assert result["outcome_known"] is False
+    assert result["error_code"] == "notification_read_timeout"
+    assert "回执超时" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_negative_integer_rejection_code(monkeypatch):
+    async def post(*args, **kwargs):
+        return upload_security.PublicHTTPResponse(200, httpx.Headers(), json.dumps({"errcode": -1}).encode())
+    monkeypatch.setattr(notify_dispatcher, "request_public_https", post)
+    result = await notify_dispatcher._send_dingtalk({"webhookUrl": "https://oapi.dingtalk.com/robot/send?access_token=fixture"}, "测试", 10)
+    assert result["success"] is False
+    assert result["outcome_known"] is True
+    assert result["error_code"] == "provider_rejected_-1"
+    assert "错误码 -1" in result["message"]

@@ -1069,8 +1069,8 @@ const confirmationPayload = computed(() => publishIntent.payload || {
   xianyuAccountId: Number(form.accountId),
   title: form.title,
   category: selectedCategoryName.value,
-  price: form.price,
-  stock: Number(form.stock) || 0,
+  price: form.multiSpecEnabled ? (multiSpecMinPrice.value ? Number(multiSpecMinPrice.value).toFixed(2) : form.price) : form.price,
+  stock: form.multiSpecEnabled ? multiSpecTotalStock.value : (Number(form.stock) || 0),
   shippingMode: shippingMode.value,
   location: selectedAddress.value,
   autoDelivery: autoDelivery.enabled && autoDelivery.sourceId
@@ -1554,7 +1554,7 @@ async function submit() {
           shippingMode: shippingMode.value,
           postFee: shippingMode.value === 'fixed' ? 0 : 0,
           freeShipping: freeShipping,
-          supportSelfPick: form.supportSelfPick,
+          supportSelfPick: shippingMode.value !== 'none' && Boolean(form.supportSelfPick),
           location: locationData,
         }
       } else {
@@ -1569,7 +1569,7 @@ async function submit() {
           shippingMode: shippingMode.value,
           postFee: shippingMode.value === 'fixed' ? 0 : 0,
           freeShipping: freeShipping,
-          supportSelfPick: form.supportSelfPick,
+          supportSelfPick: shippingMode.value !== 'none' && Boolean(form.supportSelfPick),
           location: locationData,
         }
       }

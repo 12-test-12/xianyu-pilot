@@ -1,6 +1,10 @@
 """Publish through the real route and durable coordinator without platform I/O."""
 import json
+import sys
+from pathlib import Path
 from types import SimpleNamespace
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pytest
 import pytest_asyncio

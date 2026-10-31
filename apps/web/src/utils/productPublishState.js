@@ -46,8 +46,17 @@ export function buildPublishIntentSummary(payload, resolveAccountName = () => ''
   const account = resolvedAccount || (accountId ? `账号 ID ${accountId}` : '未选择')
   const title = String(intent.title || '未填写')
   const category = String(intent.category || '未选择')
-  const price = String(intent.price ?? '0.00')
-  const stock = Number(intent.stock ?? 0)
+  let price = intent.price != null && intent.price !== '' ? String(intent.price) : ''
+  let stock = intent.stock != null ? Number(intent.stock) : null
+  if (!price && Array.isArray(intent.itemSkuList) && intent.itemSkuList.length > 0) {
+    const skuPrices = intent.itemSkuList.map(s => Number(s.price) || 0).filter(p => p > 0)
+    price = skuPrices.length ? Math.min(...skuPrices).toFixed(2) : '0.00'
+  }
+  if ((stock == null || !Number.isFinite(stock)) && Array.isArray(intent.itemSkuList) && intent.itemSkuList.length > 0) {
+    stock = intent.itemSkuList.reduce((sum, s) => sum + (Number(s.quantity) || 0), 0)
+  }
+  if (!price) price = '0.00'
+  if (stock == null || !Number.isFinite(stock)) stock = 0
   const shipping = { free: '包邮', none: '线上交付 / 无需邮寄', fixed: '一口价 / 运费' }[intent.shippingMode] || '未选择'
   const region = [intent.location?.prov, intent.location?.city, intent.location?.area].filter(Boolean).join(' ') || '未选择'
   return `账号：${account}\n商品：${title}\n分类：${category}\n价格：¥${price}\n库存：${Number.isFinite(stock) ? stock : '未知'}\n交付方式：${shipping}\n发布地区：${region}`
