@@ -3,6 +3,7 @@ import asyncio
 import logging
 import socket
 import threading
+import time
 
 from app.services.delivery_gate import DeliveryGate
 
@@ -18,6 +19,8 @@ class DesktopBackend:
         self.thread=None
         self._status_future=None
         self._pending_resumes=set()
+        self._resume_futures={}
+        self._next_status_at=0
         self.status={"state":"starting","pauseReasons":[],"accountCount":0}
 
     def start(self):
@@ -68,11 +71,14 @@ class DesktopBackend:
         if not self.ready:
             self._pending_resumes.add(reason)
             return False
+        pending=self._resume_futures.get(reason)
+        if pending and not pending[1].done() and pending[0]==self.gate.revision(reason):
+            return False
         self._pending_resumes.discard(reason)
         self.status={**self.status,"state":"reconciling"}
-        self._status_future=None
+        self._next_status_at=0
         revision=self.gate.revision(reason)
-        asyncio.run_coroutine_threadsafe(self._resume(reason,revision),self.loop)
+        self._resume_futures[reason]=(revision,asyncio.run_coroutine_threadsafe(self._resume(reason,revision),self.loop))
         return True
 
     async def _resume(self,reason,revision):
@@ -89,6 +95,13 @@ class DesktopBackend:
     def poll(self):
         if not self.ready:
             return {**self.status,"state":"error" if self.error else "starting"}
+        for reason,(_,future) in tuple(self._resume_futures.items()):
+            if future.done():
+                try:
+                    future.result()
+                except Exception:
+                    logging.getLogger(__name__).warning("Desktop resume failed: %s",reason)
+                del self._resume_futures[reason]
         for reason in tuple(self._pending_resumes):
             self.resume(reason)
         if "host_starting" in self.gate.reasons:
@@ -99,9 +112,11 @@ class DesktopBackend:
             except Exception:
                 self.status={**self.status,"state":"attention"}
             self._status_future=None
-        if self._status_future is None and self.loop and self.loop.is_running():
+        now=time.monotonic()
+        if self._status_future is None and now>=self._next_status_at and self.loop and self.loop.is_running():
             try:
                 self._status_future=asyncio.run_coroutine_threadsafe(self._status(),self.loop)
+                self._next_status_at=now+2
             except (RuntimeError, AttributeError):
                 pass
         # A stale successful status must never hide an immediate pause.

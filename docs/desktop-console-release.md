@@ -1,10 +1,10 @@
 # 原项目完整控制台与 Windows Release
 
-更新日期：2026-10-30。
+更新日期：2026-10-31。
 
 ## 客户端入口
 
-桌面窗口固定打开本机根路由 `/`，后端从已构建的 `apps/web/dist/index.html` 提供原 Vue 3 应用。继续使用 `App.vue`、原导航、原页面及原 CSS，没有新增替代管理界面。`/desktop/safety` 保留为辅助页面，不再作为启动首页。
+桌面窗口固定打开本机根路由 `/`，后端从已构建的 `apps/web/dist/index.html` 提供原 Vue 3 应用。继续使用 `App.vue`、原导航、原页面及原 CSS。历史演示前端和临时 `/desktop/safety` 工作台已删除，旧工作台地址返回 404。
 
 闲鱼账号、商品、订单、消息、自动发货、卡密仓库、自动回复、AI 设置、日志与定时任务等模块继续使用原业务路由。桌面启动不加载服务端 MySQL 迁移器，也不要求另行安装 MySQL 或 Redis。
 
@@ -23,6 +23,8 @@
 
 1. `XianyuPilot.exe`：独立单文件 EXE，可直接运行；运行组件由 PyInstaller 临时展开，业务数据仍固定在 EXE 旁的 `data/`。
 2. `XianyuPilot-Windows-x64.zip`：完整目录式包，解压整个 `XianyuPilot/` 后运行其中的 EXE。此包内的 EXE 必须与 `_internal/` 一起保留。
+
+日常使用优先选择完整目录 ZIP：避免单文件 EXE 每次启动时临时展开 Python、Qt 和 Chromium。此次启动并行初始化、缓存与刷新优化见 [桌面性能与界面清理](desktop-performance.md)。
 
 两种形式均内置 Python、Qt/Chromium 和原前端，不要求用户安装 Python、Node.js 或系统浏览器。升级、备份和移动前从托盘彻底退出，并保留原 `data/`。
 

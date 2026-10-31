@@ -138,7 +138,7 @@ def create_app(store: Store, *, port: int, web_dir: Path, delay: float = 0.45,
     def index(request: Request):
         page = web_dir / "index.html"
         if not page.is_file():
-            raise HTTPException(503, "前端尚未构建，请通过 start-desktop-demo.bat 启动")
+            raise HTTPException(503, "历史演示界面已移除，请使用主控制台")
         session = request.cookies.get(COOKIE_NAME, "")
         if not session or len(session) > 128 or not store.valid_session(session):
             session = secrets.token_urlsafe(32)

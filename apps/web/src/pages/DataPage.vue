@@ -87,8 +87,8 @@
             </button>
           </div>
         </template>
-        <div v-if="trendAvailable" ref="trendChartEl" class="echart-box trend-box"></div>
-        <EmptyState v-else icon="⚠" title="趋势不可用" :description="trendError || '正在加载趋势数据'" />
+        <div v-show="trendAvailable" ref="trendChartEl" class="echart-box trend-box"></div>
+        <EmptyState v-if="!trendAvailable" icon="⚠" title="趋势不可用" :description="trendError || '正在加载趋势数据'" />
       </CardPanel>
     </div>
 
@@ -99,8 +99,8 @@
             <span class="panel-title-text">发货分布</span>
           </div>
         </template>
-        <div v-if="summaryAvailable && totalDelivery > 0" ref="deliveryPieEl" class="echart-box pie-box"></div>
-        <EmptyState v-else icon="⚠" title="暂无数据" :description="summaryError || '暂无发货数据'" />
+        <div v-show="summaryAvailable && totalDelivery > 0" ref="deliveryPieEl" class="echart-box pie-box"></div>
+        <EmptyState v-if="!summaryAvailable || totalDelivery <= 0" icon="⚠" title="暂无数据" :description="summaryError || '暂无发货数据'" />
       </CardPanel>
       <CardPanel class="chart-panel">
         <template #title>
@@ -108,8 +108,8 @@
             <span class="panel-title-text">核心指标对比</span>
           </div>
         </template>
-        <div v-if="summaryAvailable" ref="replyBarEl" class="echart-box bar-box"></div>
-        <EmptyState v-else icon="⚠" title="暂无数据" :description="summaryError || '正在加载汇总数据'" />
+        <div v-show="summaryAvailable" ref="replyBarEl" class="echart-box bar-box"></div>
+        <EmptyState v-if="!summaryAvailable" icon="⚠" title="暂无数据" :description="summaryError || '正在加载汇总数据'" />
       </CardPanel>
       <CardPanel class="chart-panel overview-panel">
         <template #title>
@@ -222,6 +222,7 @@ import { getDashboardSummary, getDashboardSalesTrend } from '../api/dashboard.js
 import { getAccounts } from '../api/accounts.js'
 import { shortText } from '../utils/format.js'
 import { getSseStatus } from '../utils/sse.js'
+import { createLatestRequestGuard, listRefreshRequestConfig } from '../utils/latestRequest.js'
 import * as echarts from 'echarts/core'
 import { LineChart, PieChart, BarChart } from 'echarts/charts'
 import {
@@ -285,6 +286,9 @@ const trendChartEl = ref(null)
 const deliveryPieEl = ref(null)
 const replyBarEl = ref(null)
 let trendChart = null, deliveryPieChart = null, replyBarChart = null
+const dataRequests = createLatestRequestGuard()
+let dataScope = ''
+let resizeFrame = null
 
 const quick = [
   { label: '添加闲鱼账号', key: 'accounts', icon: '👤' },
@@ -415,19 +419,27 @@ function buildParams(params) {
 }
 
 async function load() {
+  const request = dataRequests.begin()
   loading.value = true
   summaryError.value = ''; trendError.value = ''
-  summaryAvailable.value = false; trendAvailable.value = false
-  stats.value = emptyStats()
-  trend.value = { dates: [], orderCount: [], messageCount: [], deliveryCount: [], deliverySuccess: [], deliveryFail: [], aiReplyCount: [] }
+  const scope = JSON.stringify([accountId.value, date.value, trendDays.value])
+  if (scope !== dataScope) {
+    summaryAvailable.value = false; trendAvailable.value = false
+    stats.value = emptyStats()
+    trend.value = { dates: [], orderCount: [], messageCount: [], deliveryCount: [], deliverySuccess: [], deliveryFail: [], aiReplyCount: [] }
+    updatedAt.value = '-'
+    dataScope = scope
+  }
+  const config = listRefreshRequestConfig(summaryAvailable.value || trendAvailable.value)
 
   const sp = date.value ? { date: date.value, accountId: accountId.value } : { accountId: accountId.value }
   const tp = { days: trendDays.value, accountId: accountId.value }
 
   const [sr, tr] = await Promise.allSettled([
-    getDashboardSummary(buildParams(sp)),
-    getDashboardSalesTrend(buildParams(tp)),
+    getDashboardSummary(buildParams(sp), config),
+    getDashboardSalesTrend(buildParams(tp), config),
   ])
+  if (!request.isCurrent()) return
 
   if (sr.status === 'fulfilled') {
     try {
@@ -471,13 +483,16 @@ async function load() {
       trendAvailable.value = true
     } catch (e) { trendError.value = e.message || '趋势数据不可用' }
   } else { trendError.value = tr.reason?.message || '趋势数据加载失败' }
+  if (summaryError.value && summaryAvailable.value) summaryError.value += '；保留上次汇总数据'
+  if (trendError.value && trendAvailable.value) trendError.value += '；保留上次趋势数据'
 
-  if (summaryAvailable.value || trendAvailable.value)
+  if ((sr.status === 'fulfilled' && !summaryError.value) || (tr.status === 'fulfilled' && !trendError.value))
     updatedAt.value = new Date().toLocaleTimeString('zh-CN', { hour12: false })
-  else updatedAt.value = '-'
+  else if (!summaryAvailable.value && !trendAvailable.value) updatedAt.value = '-'
   loading.value = false
 
   await nextTick()
+  if (!request.isCurrent()) return
   renderAllCharts()
 }
 
@@ -506,6 +521,7 @@ const tooltipStyle = {
 function renderTrendChart() {
   if (!trendChartEl.value) return
   if (!trendChart) trendChart = echarts.init(trendChartEl.value)
+  trendChart.resize()
   const t = trend.value
   trendChart.setOption({
     color: [C.primary, C.green, C.red, C.purple, C.cyan],
@@ -634,12 +650,13 @@ function renderTrendChart() {
         itemStyle: { color: C.cyan }
       },
     ],
-  }, true)
+  }, { lazyUpdate: true })
 }
 
 function renderDeliveryPie() {
   if (!deliveryPieEl.value) return
   if (!deliveryPieChart) deliveryPieChart = echarts.init(deliveryPieEl.value)
+  deliveryPieChart.resize()
   const sc = Number(stats.value.deliverySuccessCount) || 0
   const fc = Number(stats.value.deliveryFailCount) || 0
   const pc = Number(stats.value.pendingDeliveryCount) || 0
@@ -728,12 +745,13 @@ function renderDeliveryPie() {
         },
       ],
     }],
-  }, true)
+  }, { lazyUpdate: true })
 }
 
 function renderReplyBar() {
   if (!replyBarEl.value) return
   if (!replyBarChart) replyBarChart = echarts.init(replyBarEl.value)
+  replyBarChart.resize()
   const reply = Number(stats.value.autoReplyCount ?? stats.value.aiReplyCount) || 0
   const order = Number(stats.value.todayOrderCount ?? stats.value.orderCount) || 0
   const delivery = Number(stats.value.deliverySuccessCount) || 0
@@ -796,11 +814,11 @@ function renderReplyBar() {
           shadowOffsetY: 6,
         }
       },
-      animationDelay: (idx) => idx * 150,
+      animationDelay: (idx) => idx * 35,
     }],
-    animationEasing: 'elasticOut',
-    animationDuration: 1000,
-  }, true)
+    animationDuration: 250,
+    animationDurationUpdate: 200,
+  }, { lazyUpdate: true })
 }
 
 function exportTrendCsv() {
@@ -820,9 +838,13 @@ function exportTrendCsv() {
 }
 
 function handleResize() {
-  trendChart?.resize()
-  deliveryPieChart?.resize()
-  replyBarChart?.resize()
+  if (resizeFrame !== null) return
+  resizeFrame = requestAnimationFrame(() => {
+    resizeFrame = null
+    trendChart?.resize()
+    deliveryPieChart?.resize()
+    replyBarChart?.resize()
+  })
 }
 
 function onSse(event) {
@@ -835,6 +857,7 @@ function onSseStatus(event) { sseStatus.value = String(event?.detail || 'disconn
 function onHeader(e) { if (e.detail === 'refresh-data-panel') load() }
 
 watch(accountId, () => { load() })
+watch(date, () => { load() })
 
 onMounted(() => {
   window.addEventListener('xya-sse-event', onSse)
@@ -846,6 +869,8 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  dataRequests.invalidate()
+  if (resizeFrame !== null) cancelAnimationFrame(resizeFrame)
   window.removeEventListener('xya-sse-event', onSse)
   window.removeEventListener('xya-sse-status', onSseStatus)
   window.removeEventListener('xya-header-action', onHeader)
@@ -861,6 +886,12 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 16px;
   padding-bottom: 32px;
+}
+
+/* Decorative idle pulses continuously repaint the embedded Chromium window. */
+.data-page .hero-glow, .data-page .hero-dot,
+.data-page .live-dot.connected .live-pulse, .data-page .event-dot::after {
+  animation: none;
 }
 
 /* ===== Hero Section ===== */

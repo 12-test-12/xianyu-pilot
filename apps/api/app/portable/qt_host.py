@@ -3,14 +3,17 @@ import ctypes
 from ctypes import wintypes
 from pathlib import Path
 import time
+import sys
 
 from PySide6.QtCore import QTimer,QUrl,Qt,QEvent
 from PySide6.QtGui import QAction,QColor,QIcon,QPainter,QPixmap
-from PySide6.QtWidgets import QApplication,QMainWindow,QMenu,QMessageBox,QSystemTrayIcon
+from PySide6.QtWidgets import QApplication,QMainWindow,QMenu,QMessageBox,QSystemTrayIcon,QLabel,QStackedWidget
 from PySide6.QtWebEngineCore import QWebEnginePage,QWebEngineProfile,QWebEngineProfileBuilder,QWebEngineSettings,QWebEngineUrlRequestInterceptor,QWebEngineUrlRequestInfo,QWebEnginePermission
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
-from app.portable.windows_events import power_event,network_connected
+from app.portable.windows_events import power_event
+from app.portable.network_monitor import NetworkMonitor
+from app.portable.bootstrap import bundled_web_dir
 
 
 LABELS={"starting":"正在启动","offline":"未连接闲鱼 · 自动发货未启用","running":"自动发货运行中",
@@ -18,13 +21,15 @@ LABELS={"starting":"正在启动","offline":"未连接闲鱼 · 自动发货未�
 
 
 def tray_icon(state):
+    icon=QIcon(str(bundled_web_dir()/"favicon.ico"))
     pixmap=QPixmap(32,32)
     pixmap.fill(Qt.GlobalColor.transparent)
     painter=QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    icon.paint(painter,0,0,32,32)
     painter.setBrush(QColor("#22834a" if state=="running" else "#c53c35" if state=="error" else "#c18a16"))
     painter.setPen(Qt.PenStyle.NoPen)
-    painter.drawEllipse(4,4,24,24)
+    painter.drawEllipse(21,21,10,10)
     painter.end()
     return QIcon(pixmap)
 
@@ -109,9 +114,12 @@ class ConsoleWindow(QMainWindow):
 class DesktopConsole:
     def __init__(self,backend,paths,*,smoke=False):
         self.backend,self.paths=backend,paths
+        if sys.platform=='win32':
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('XianyuPilot.Desktop')
         self.app=QApplication.instance() or QApplication([])  # Never forward arbitrary Chromium CLI flags.
         self.app.setApplicationName("XianyuPilot")
         self.app.setOrganizationName("XianyuPilot")
+        self.app.setWindowIcon(QIcon(str(bundled_web_dir()/"favicon.ico")))
         self.app.setQuitOnLastWindowClosed(False)
         if not QSystemTrayIcon.isSystemTrayAvailable():
             raise RuntimeError("当前 Windows 会话没有系统托盘，无法安全后台驻留")
@@ -119,16 +127,18 @@ class DesktopConsole:
         self.first_hide=True
         self.loaded=False
         self.connected=None
+        self.network_monitor=NetworkMonitor()
         self.last_state=None
         self.started=time.monotonic()
         self.smoke=smoke
         self.smoke_started=False
         self.smoke_ok=False
         self.window=ConsoleWindow(self)
+        self.window.statusBar().showMessage(LABELS['starting'])
         builder=QWebEngineProfileBuilder()
         builder.setPersistentStoragePath(str(paths["profile"]))
         builder.setCachePath(str(paths["cache"]))
-        builder.setHttpCacheType(QWebEngineProfile.HttpCacheType.MemoryHttpCache)
+        builder.setHttpCacheType(QWebEngineProfile.HttpCacheType.DiskHttpCache)
         builder.setPersistentCookiesPolicy(QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies)
         self.profile=builder.createProfile("portable-console",self.app)
         if self.profile is None:
@@ -143,13 +153,20 @@ class DesktopConsole:
         self.profile.setUrlRequestInterceptor(self.interceptor)
         self.view=QWebEngineView(self.window)
         self.page=ConsolePage(self.profile,backend.config.desktop_port,self.view)
+        self.page.setBackgroundColor(QColor("#f6f9ff"))
         for option in (QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls,
                        QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls):
             self.page.settings().setAttribute(option,False)
         self.page.settings().setAttribute(QWebEngineSettings.WebAttribute.JavascriptCanAccessClipboard,True)
         self.view.setPage(self.page)
         self.view.loadFinished.connect(self.on_load)
-        self.window.setCentralWidget(self.view)
+        self.stack=QStackedWidget(self.window)
+        self.startup_label=QLabel("正在启动闲鱼助手…",self.stack)
+        self.startup_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.startup_label.setStyleSheet("background:#f6f9ff;color:#15213d;font-size:18px;")
+        self.stack.addWidget(self.startup_label)
+        self.stack.addWidget(self.view)
+        self.window.setCentralWidget(self.stack)
         self.menu=QMenu()
         self.status_action=QAction("正在启动",self.menu)
         self.status_action.setEnabled(False)
@@ -169,9 +186,13 @@ class DesktopConsole:
         self.app.commitDataRequest.connect(lambda _manager:self.begin_shutdown())
 
     def on_load(self,ok):
+        if self.exiting:
+            return
         if ok:
             self.loaded=True
+            self.stack.setCurrentWidget(self.view)
         elif not self.exiting:
+            self.startup_label.setText("本机控制台加载失败，请检查 data/logs/desktop.log")
             self.window.statusBar().showMessage("本机控制台加载失败，请检查 data/logs/desktop.log")
 
     def activated(self,reason):
@@ -210,15 +231,20 @@ class DesktopConsole:
             if state in ("paused","attention","error","reconciling") and self.last_state not in (None,state):
                 self.tray.showMessage("闲鱼助手",LABELS[state]+"；原订单和卡密绑定持续保留。",QSystemTrayIcon.MessageIcon.Warning,6000)
             self.last_state=state
-        self.status_action.setText(LABELS[state])
-        self.window.statusBar().showMessage(LABELS[state])
-        self.toggle.setText("恢复发货（先对账）" if "manual" in self.backend.gate.reasons else "暂停发货")
-        self.toggle.setEnabled(bool(self.backend.runtime and not self.exiting))
+            self.status_action.setText(LABELS[state])
+            self.window.statusBar().showMessage(LABELS[state])
+        toggle_text="恢复发货（先对账）" if "manual" in self.backend.gate.reasons else "暂停发货"
+        if self.toggle.text()!=toggle_text:
+            self.toggle.setText(toggle_text)
+        enabled=bool(self.backend.runtime and not self.exiting)
+        if self.toggle.isEnabled()!=enabled:
+            self.toggle.setEnabled(enabled)
 
     def begin_shutdown(self):
         if self.exiting:
             return
         self.exiting=True
+        self.network_monitor.close()
         self.quit_action.setEnabled(False)
         self.view.setUrl(QUrl('about:blank'))
         self.backend.stop()
@@ -240,8 +266,8 @@ class DesktopConsole:
             QMessageBox.critical(self.window,"启动失败","本机服务未能启动，可能是端口占用或数据库异常。请检查 data/logs/desktop.log。")
             self.begin_shutdown()
             return
-        connected=network_connected()
-        if connected!=self.connected:
+        connected=self.network_monitor.poll()
+        if connected is not None and connected!=self.connected:
             if connected:
                 self.backend.resume("network")
             else:
@@ -267,7 +293,6 @@ class DesktopConsole:
 
     def run(self):
         self.show()
-        self.backend.start()
         result=self.app.exec()
         return result if not self.smoke else (0 if self.smoke_ok else 1)
 
@@ -275,6 +300,7 @@ class DesktopConsole:
         # Release Chromium's files before the data-directory instance lock.
         from shiboken6 import delete,isValid
         self.timer.stop()
+        self.network_monitor.close()
         self.tray.hide()
         if isValid(self.window):
             delete(self.window)

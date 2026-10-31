@@ -11,7 +11,7 @@
 - 数据库连接启用 WAL、FULL 同步、内存临时存储、外键检查和 5 秒锁等待。写入使用短事务，业务状态与库存一起提交，事务中不等待网络，尚未启动后台真实发送任务。
 - 新增 `002_inventory_rules.sql`，补齐原卡密页面使用的分组字段与索引。活跃卡密按“分组 + 卡号 + 密码”唯一，空密码与 NULL 视为同一项；批量请求内和重复请求均会去重。迁移不会修改 `001` 或静默删除旧数据；若旧库已有重复卡密，升级整体回滚，需保留备份后核查。
 
-**当前为官方核验与资产安全阶段，尚非完整桌面产品。** `003_delivery_state.sql` 增加库存占用、逐段回执与审计；`004_official_delivery.sql` 增加权威 SKU 规则、官方事实、IM 线索和触发授权；`005_delivery_safety.sql` 增加永久绑定、只读快照和阶段 B 补偿幂等记录。普通启动仍离线，不对 HTTP 开放模拟付款或伪造平台核验。受信宿主可显式装配双监听及真实网关，启用条件见 [官方订单核验说明](official-order-delivery.md)。桌面主入口仍返回状态 JSON，构建 Web 后新增 `/desktop/safety` 安全工作台，其余原 Vue 业务页面尚未挂载。操作边界见 [资产安全与恢复](delivery-safety-recovery.md)。
+**此处记录官方核验与资产安全阶段的存储设计。** `003_delivery_state.sql` 增加库存占用、逐段回执与审计；`004_official_delivery.sql` 增加权威 SKU 规则、官方事实、IM 线索和触发授权；`005_delivery_safety.sql` 增加永久绑定、只读快照和阶段 B 补偿幂等记录。不对 HTTP 开放模拟付款或伪造平台核验。受信宿主可显式装配双监听及真实网关，启用条件见 [官方订单核验说明](official-order-delivery.md)。当前桌面 `/` 已接入原 Vue 后台；临时 `/desktop/safety` 工作台已移除。入口见 [完整控制台](desktop-console-release.md)，操作边界见 [资产安全与恢复](delivery-safety-recovery.md)。
 
 ## 启动验证
 

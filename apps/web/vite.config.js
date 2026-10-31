@@ -34,7 +34,7 @@ export default defineConfig({
   },
   build: {
     rollupOptions: {
-      input: { main: path.resolve(webRoot, 'index.html'), safety: path.resolve(webRoot, 'desktop-safety.html') },
+      input: { main: path.resolve(webRoot, 'index.html') },
     },
   },
   server: {

@@ -113,10 +113,11 @@ def register_console(app, config, runtime, web_dir):
             else:
                 yield route,prefix+getattr(route,'path',''),dependencies
 
+    route_options=tuple(name for name in inspect.signature(app.add_api_route).parameters if name not in ('path','endpoint'))
+
     def mount(route,path,dependencies):
         if isinstance(route,APIRoute):
-            options={name:getattr(route,name) for name in inspect.signature(app.add_api_route).parameters
-                     if name not in ('path','endpoint') and hasattr(route,name)}
+            options={name:getattr(route,name) for name in route_options if hasattr(route,name)}
             options['dependencies']=[*dependencies,*route.dependencies]
             app.add_api_route(path,route.endpoint,**options)
         else:
@@ -141,6 +142,13 @@ def register_console(app, config, runtime, web_dir):
         html=path.read_text(encoding='utf-8')
         bootstrap=f'<meta name="xianyu-desktop-bootstrap" content="{app.state.desktop_bootstrap}">'
         return HTMLResponse(html.replace('</head>',bootstrap+'</head>'),headers={'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer'})
+
+    # Do not serve stale files from the removed experimental frontends after
+    # upgrading an existing source installation with an old dist directory.
+    @app.get('/desktop/safety')
+    @app.get('/desktop-safety.html')
+    async def retired_frontend():
+        raise HTTPException(status_code=404,detail='测试界面已移除，请使用主控制台')
 
     # Static API routes must precede parameter routes, such as /orders/stats
     # before /orders/{id}. This keeps the original module routes reachable.

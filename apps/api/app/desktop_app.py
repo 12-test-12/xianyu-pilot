@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse,FileResponse
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -115,7 +115,7 @@ def create_desktop_app(config=None, *, web_dir=None, platform_runtime=None, inst
                 "enabledBusinessModules": ["accounts","goods","orders","messages","cards","delivery-rules","goods-config","ai-auto-reply","logs","orders-read","delivery-records-read"],
                 "deliveryExecutionMode": "official-verification" if platform_runtime else "original-platform-services",
                 "externalServicesRequired": [], "uiBuilt": (web_dir / "index.html").is_file(),
-                "safetyUiBuilt":(web_dir/"desktop-safety.html").is_file(),"safetyPage":"/desktop/safety"}
+                }
 
     @app.get("/health/ready")
     async def ready():
@@ -159,13 +159,6 @@ def create_desktop_app(config=None, *, web_dir=None, platform_runtime=None, inst
     app.include_router(inventory_router)
     app.include_router(delivery_router)
     app.include_router(safety_router)
-
-    @app.get("/desktop/safety")
-    async def safety_page():
-        target=web_dir/"desktop-safety.html"
-        if not target.is_file():
-            return JSONResponse({"detail":"安全工作台尚未构建，请先构建 apps/web"},status_code=503)
-        return FileResponse(target,headers={"Cache-Control":"no-store","X-Content-Type-Options":"nosniff"})
 
     if (web_dir/"assets").is_dir():
         app.mount("/assets",StaticFiles(directory=web_dir/"assets"),name="desktop-ui-assets")

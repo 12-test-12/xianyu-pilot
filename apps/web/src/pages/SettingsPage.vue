@@ -9,31 +9,24 @@
 
 <script setup>
 import { computed } from 'vue'
+import { asyncPage } from '../components/asyncPage.js'
 import ConfigNav from '../components/ConfigNav.vue'
-import SystemSettingsPage from './admin/SystemSettingsPage.vue'
-import ModelSettingsPage from './admin/ModelSettingsPage.vue'
-import EmbeddingSettingsPage from './admin/EmbeddingSettingsPage.vue'
-import RagSettingsPage from './admin/RagSettingsPage.vue'
-import AiCsSettings from './settings/AiCsSettings.vue'
-import ProductOpSettings from './settings/ProductOpSettings.vue'
-import NotifySettings from './settings/NotifySettings.vue'
-import AboutSettings from './settings/AboutSettings.vue'
 
 const props = defineProps({ active: String })
 defineEmits(['navigate'])
 
 const map = {
-  'settings-system': SystemSettingsPage,
-  'settings-ai-cs': AiCsSettings,
-  'settings-model': ModelSettingsPage,
-  'settings-embedding': EmbeddingSettingsPage,
-  'settings-rag': RagSettingsPage,
-  'settings-product': ProductOpSettings,
-  'settings-about': AboutSettings,
-  'settings-notify': NotifySettings
+  'settings-system': asyncPage(() => import('./admin/SystemSettingsPage.vue')),
+  'settings-ai-cs': asyncPage(() => import('./settings/AiCsSettings.vue')),
+  'settings-model': asyncPage(() => import('./admin/ModelSettingsPage.vue')),
+  'settings-embedding': asyncPage(() => import('./admin/EmbeddingSettingsPage.vue')),
+  'settings-rag': asyncPage(() => import('./admin/RagSettingsPage.vue')),
+  'settings-product': asyncPage(() => import('./settings/ProductOpSettings.vue')),
+  'settings-about': asyncPage(() => import('./settings/AboutSettings.vue')),
+  'settings-notify': asyncPage(() => import('./settings/NotifySettings.vue'))
 }
 
-const current = computed(() => map[props.active] || SystemSettingsPage)
+const current = computed(() => map[props.active] || map['settings-system'])
 </script>
 
 <style scoped>

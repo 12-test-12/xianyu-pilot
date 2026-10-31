@@ -2,7 +2,7 @@
   <div :class="['auth-shell', `auth-shell-${pageKey}`]">
     <header class="auth-topbar">
       <button type="button" class="brand brand-image auth-brand" @click="emit('navigate', 'dashboard')">
-        <img src="/xya/brand/brand_002.png" class="brand-logo brand-icon" alt="XianYuAssistant" />
+        <img src="/xya/brand/app-icon.png" class="brand-logo brand-icon" alt="XianYuAssistant" />
       </button>
       <div class="auth-lang-switch" aria-label="当前语言：简体中文">
         <TrustedSvg class="auth-lang-icon" :markup="authIcons.globe" />

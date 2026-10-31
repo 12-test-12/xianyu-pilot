@@ -202,7 +202,7 @@ def test_resume_detector_catches_sleep_wall_jumps_and_long_scheduler_pause():
     assert not detector.sample(235,70)
 
 
-def test_operator_boundary_and_offline_ui_are_fail_closed(store,monkeypatch,tmp_path):
+def test_operator_boundary_and_retired_ui_are_fail_closed(store,monkeypatch,tmp_path):
     from app.core import paths
     monkeypatch.setattr(paths,'SOURCE_ROOT',store.path.parent.parent)
     web=tmp_path/'web';web.mkdir();(web/'assets').mkdir()
@@ -210,9 +210,10 @@ def test_operator_boundary_and_offline_ui_are_fail_closed(store,monkeypatch,tmp_
     (web/'assets'/'safety.js').write_text('export {}',encoding='utf-8')
     app=create_desktop_app(Settings(runtime_mode='desktop'),web_dir=web)
     with TestClient(app,base_url='http://127.0.0.1:15177') as client:
-        assert client.get('/desktop/safety').status_code==200
+        assert client.get('/desktop/safety').status_code==404
+        assert client.get('/desktop-safety.html').status_code==404
         assert client.get('/assets/safety.js').status_code==200
-        assert client.get('/health/ready').json()['safetyUiBuilt'] is True
+        assert 'safetyUiBuilt' not in client.get('/health/ready').json()
         assert client.get('/api/desktop/safety/session').status_code==403
         response=client.get('/api/desktop/safety/session',headers={'X-Desktop-UI':'delivery-safety','Sec-Fetch-Site':'same-origin'})
         session=response.json()['data']

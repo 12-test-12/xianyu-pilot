@@ -33,6 +33,7 @@ LOCAL_SCRIPTS = {
     "scripts/build-windows-portable.ps1", "scripts/ci/windows_portable.py", "scripts/ci/windows_portable_smoke.py",
 }
 LOCAL_DOCS = {"docs/local-dev-runbook.md", "docs/native-deployment.md", "docs/desktop-sqlite-foundation.md", "docs/desktop-delivery-design.md", "docs/official-order-delivery.md", "docs/delivery-safety-recovery.md", "docs/windows-portable.md", "docs/desktop-console-release.md"}
+LOCAL_DOCS.add("docs/desktop-performance.md")
 PORTABLE_BUILD_FILES={"packaging/windows/requirements-build.txt","packaging/windows/xianyu_portable.spec","packaging/windows/portable_runtime_hook.py"}
 REQUIRED = {
     "LICENSE", "start-local.bat", "start-local.sh", "scripts/setup-local.ps1",
@@ -53,11 +54,13 @@ REQUIRED = {
     "apps/api/app/services/unified_delivery_rules.py", "apps/api/app/services/seller_orders_api.py",
     "apps/api/app/desktop_migrations/005_delivery_safety.sql", "apps/api/app/desktop_safety_api.py",
     "apps/api/app/services/delivery_safety.py", "apps/api/app/services/delivery_resume.py",
-    "docs/delivery-safety-recovery.md", "apps/web/dist/desktop-safety.html",
+    "docs/delivery-safety-recovery.md", "apps/web/dist/favicon.ico",
     "apps/api/run_portable.py", "apps/api/app/portable/backend.py", "apps/api/app/portable/bootstrap.py",
     "apps/api/app/portable/qt_host.py", "apps/api/app/portable/windows_events.py", "apps/api/app/portable/webengine_check.py",
+    "apps/api/app/portable/network_monitor.py",
     "apps/api/app/services/delivery_gate.py", "docs/windows-portable.md", "scripts/build-windows-portable.ps1",
     "apps/api/app/desktop_console.py", "apps/api/app/desktop_migrations/006_full_console.sql",
+    "docs/desktop-performance.md",
     *PORTABLE_BUILD_FILES,
 }
 README = """Xianyu Pilot - original system, native source distribution
@@ -69,7 +72,7 @@ Desktop SQLite inventory/rules: read docs/desktop-sqlite-foundation.md and run
 start-desktop.bat (Windows) or sh start-desktop.sh. Python dependencies are needed.
 This phase provides warehouse/rule APIs and read-only original order/delivery
 records. The local segmented state machine runs in offline Mock tests only.
-Build Web to use /desktop/safety for local delivery-state review. Actual delivery
+Build Web to use the original console at /. Actual delivery
 requires explicitly configured and verified official adapters; it stays off by default.
 It needs no MySQL/Redis and sends no platform messages. See the delivery design.
 

@@ -22,9 +22,9 @@ a=Analysis(
 )
 pyz=PYZ(a.pure)
 exe=EXE(pyz,a.scripts,[],exclude_binaries=True,name='XianyuPilot',debug=False,
-    bootloader_ignore_signals=False,strip=False,upx=False,console=False,
+    bootloader_ignore_signals=False,strip=False,upx=False,console=False,icon=str(web/'favicon.ico'),
     disable_windowed_traceback=True,contents_directory='_internal')
 coll=COLLECT(exe,a.binaries,a.datas,strip=False,upx=False,name='XianyuPilot')
 standalone=EXE(pyz,a.scripts,a.binaries,a.datas,[],name='XianyuPilot-Standalone',debug=False,
-    bootloader_ignore_signals=False,strip=False,upx=False,console=False,
+    bootloader_ignore_signals=False,strip=False,upx=False,console=False,icon=str(web/'favicon.ico'),
     disable_windowed_traceback=True)

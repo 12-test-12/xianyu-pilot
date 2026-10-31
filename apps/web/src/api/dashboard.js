@@ -8,16 +8,18 @@ function buildParams(params, extra = {}) {
   return merged
 }
 
-export function getDashboardSummary(params) {
+export function getDashboardSummary(params, config = {}) {
   return request({
+    ...config,
     url: '/dashboard/summary',
     method: 'get',
     params: buildParams(params)
   })
 }
 
-export function getDashboardSalesTrend(params) {
+export function getDashboardSalesTrend(params, config = {}) {
   return request({
+    ...config,
     url: '/dashboard/sales-trend',
     method: 'get',
     params: buildParams(params)

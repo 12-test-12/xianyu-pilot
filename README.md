@@ -6,7 +6,7 @@
 
 ## 当前进度
 
-2026-10-30 修复：桌面入口恢复原项目完整 Vue 后台，接入原业务 API 与 SQLite，并提供独立 EXE/完整目录 ZIP 的正式 Latest Release 发布流程。当前入口、触发方式与验收边界见 [完整控制台与 Windows Release](docs/desktop-console-release.md)。下列早期阶段记录中的“仅安全工作台”“业务页面未接入”和“只发布预览版”不再代表该修复后的入口与规则。
+2026-10-31 更新：优化桌面启动、界面刷新与图标，移除独立演示前端和临时安全工作台，统一使用原项目 Vue 后台。修改与验证边界见 [桌面性能与界面清理](docs/desktop-performance.md)。桌面入口、SQLite 与 EXE 发布流程见 [完整控制台与 Windows Release](docs/desktop-console-release.md)。下列早期阶段记录中的“仅安全工作台”“业务页面未接入”和“只发布预览版”不再代表当前入口与规则。
 
 当前尚未完成的开发、联调和实机验收，统一见 [项目进度与未完成清单](docs/project-status-and-remaining-work.md)。
 
@@ -15,7 +15,7 @@
 - SQLite 已支持卡密与规则接口、只读订单与发货记录，以及离线测试中的整单占用、逐段回执、未知锁定和重启恢复。完整 Vue 业务页面与真实发货尚未接入。
 - 阶段设计与安全验收见 [自动发货与便携版设计](docs/desktop-delivery-design.md)。普通启动仅提供本地配置与查询，HTTP 不提供模拟付款、伪造平台核验或绕过验证的发货入口。
 - 新增 [官方订单核验与双监听](docs/official-order-delivery.md)：统一商品/SKU 规则、严格付款状态、关键词核验与实时/20 秒轮询入口。真实运行通过受信宿主显式装配；普通桌面启动默认离线，待真实接口契约及账号接入验证后启用。
-- 新增 [资产安全与恢复工作台](docs/delivery-safety-recovery.md)：数据库禁止释放未知卡密、只读内容与图片快照、启动/重连对账、阶段 B 单独补偿。构建 Web 后可访问 `/desktop/safety`，查看红色待核对警告和分段状态；真实平台未装配时保持只读。
+- [资产安全与恢复](docs/delivery-safety-recovery.md)：保留数据库禁止释放未知卡密、只读内容与图片快照、启动/重连对账及阶段 B 单独补偿。临时安全工作台页面已移除，统一使用原后台业务页面。
 - 新增 [Windows 便携宿主与 GitHub 打包](docs/windows-portable.md)：EXE 目录数据闭环、内嵌 Chromium、关闭驻留托盘、暂停/恢复及电源事件桥接。依赖由 GitHub Windows runner 下载，成功后输出 `xianyu-pilot-windows-portable` ZIP；本地尚未构建 EXE，真实托盘、干净虚拟机及 I/O 验收仍待完成。
 - 原服务端流程暂时仍依赖 MySQL/Redis，供未迁移的原业务开发使用。待相关业务适配完成后删除这些依赖。
 
@@ -33,6 +33,6 @@ SQLite 存储基础的安装、启动和后续顺序见 [桌面改造说明](doc
 - [流水线规则](docs/ci-pipeline.md)：检查、构建、安全审计和受限的版本发布。
 - [自动发货增量改造](docs/auto-delivery-incremental.md)：原业务修改记录。
 
-历史独立工作流演示保留在 `apps/desktop`，不作为此次桌面改造的业务实现，也不进入原系统发布包。相关历史文档保留供追溯。
+历史独立演示前端及启动脚本已删除。`apps/desktop` 中剩余 Python 代码仅供历史离线回归使用，不进入原系统发布包。
 
 项目包含上游开源代码；许可证和署名见 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)。

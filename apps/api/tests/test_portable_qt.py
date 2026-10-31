@@ -20,6 +20,9 @@ def console(tmp_path,monkeypatch):
     monkeypatch.setenv('QT_QPA_PLATFORM','offscreen')
     from app.portable.bootstrap import configure_environment
     root,locations=configure_environment()
+    web=tmp_path/'apps/web/dist'
+    web.mkdir(parents=True)
+    (web/'favicon.ico').write_bytes((Path(__file__).resolve().parents[2]/'web/public/favicon.ico').read_bytes())
     from app.portable.qt_host import DesktopConsole,QSystemTrayIcon
     from app.services.delivery_gate import DeliveryGate
     monkeypatch.setattr(QSystemTrayIcon,'isSystemTrayAvailable',staticmethod(lambda:True))
@@ -48,6 +51,27 @@ def test_close_hides_window_and_keeps_backend_running(console):
     assert c.tray.isVisible() and not c.first_hide
     assert Path(c.profile.persistentStoragePath()).is_relative_to(root)
     assert Path(c.profile.cachePath()).is_relative_to(root)
+
+
+def test_repeated_status_does_not_repaint_native_status_bar(console):
+    from app.portable.qt_host import LABELS
+    c,_=console
+    messages=[]
+    c.window.statusBar().messageChanged.connect(messages.append)
+    c.render('offline')
+    for _ in range(20):c.render('offline')
+    assert messages==[LABELS['offline']]
+
+
+def test_window_icon_persistent_cache_and_stable_loading_background(console):
+    from PySide6.QtWebEngineCore import QWebEngineProfile
+    c,_=console
+    assert not c.app.windowIcon().isNull()
+    assert c.profile.httpCacheType()==QWebEngineProfile.HttpCacheType.DiskHttpCache
+    assert c.page.backgroundColor().name()=='#f6f9ff'
+    assert c.stack.currentWidget() is c.startup_label
+    c.on_load(True)
+    assert c.stack.currentWidget() is c.view
 
 
 def test_pause_toggle_and_resume_do_not_clear_network_pause(console):

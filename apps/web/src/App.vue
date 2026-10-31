@@ -1,7 +1,7 @@
 <template>
   <div v-if="booting" class="boot-screen">
     <div class="boot-card">
-      <img src="/xya/brand/brand_002.png" class="boot-brand-icon" alt="XianYuAssistant" />
+      <img src="/xya/brand/app-icon.png" class="boot-brand-icon" alt="XianYuAssistant" />
       <b>正在连接后端服务...</b>
       <span>{{ bootMessage }}</span>
     </div>
@@ -29,7 +29,7 @@
         <button class="m-menu-btn" type="button" aria-label="打开菜单" @click="mobileNavOpen = true">
           <svg viewBox="0 0 24 24" class="ui-icon"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
         </button>
-        <img src="/xya/brand/brand_002.png" class="m-appbar-logo m-appbar-brand-icon" alt="XianYuAssistant" @click="navigate('dashboard')" />
+        <img src="/xya/brand/app-icon.png" class="m-appbar-logo m-appbar-brand-icon" alt="XianYuAssistant" @click="navigate('dashboard')" />
         <button
           v-if="mobileDesktopOverride"
           class="m-return-lite"
@@ -73,7 +73,8 @@
 </template>
 
 <script setup>
-import { computed, defineAsyncComponent, h, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { asyncPage } from './components/asyncPage.js'
 import Sidebar from './components/Sidebar.vue'
 import Topbar from './components/Topbar.vue'
 import PageHeader from './components/PageHeader.vue'
@@ -81,7 +82,6 @@ import AppButton from './components/AppButton.vue'
 import ConfirmModal from './components/ConfirmModal.vue'
 import DraftGuardModal from './components/DraftGuardModal.vue'
 import AppStatusCenter from './components/AppStatusCenter.vue'
-import MobileLite from './components/MobileLite.vue'
 import NotFoundPage from './pages/NotFoundPage.vue'
 import { pageTitles } from './data/nav.js'
 import { logout as logoutApi } from './api/auth.js'
@@ -93,38 +93,15 @@ import { installClientErrorReporter, recordClientError } from './utils/errorRepo
 import { playIncomingMessageSound, primeAudioOnFirstGesture } from './utils/notifySound.js'
 import { DEFAULT_PAGE, NOT_FOUND_PAGE, resolveHashRoute } from './utils/routeState.js'
 import { runNavigationGuard, clearNavigationGuard } from './utils/navigationGuard.js'
+import { createBusyIndicator } from './utils/busyIndicator.js'
 import {
   createGlobalRequestNotice,
   retainGlobalNoticeForRoute,
   shouldTrackGlobalBusy,
 } from './utils/requestUi.js'
 
-const AsyncPageLoading = {
-  name: 'AsyncPageLoading',
-  render: () => h('div', { class: 'page-loading', role: 'status' }, '页面加载中...')
-}
-
-const AsyncPageError = {
-  name: 'AsyncPageError',
-  render: () => h('div', { class: 'page-load-error', role: 'alert' }, [
-    h('span', '页面加载失败。'),
-    h('button', { type: 'button', onClick: () => location.reload() }, '重新加载')
-  ])
-}
-
-const asyncPage = loader => defineAsyncComponent({
-  loader,
-  loadingComponent: AsyncPageLoading,
-  errorComponent: AsyncPageError,
-  delay: 120,
-  timeout: 30000,
-  onError(_error, retry, fail, attempts) {
-    if (navigator.onLine !== false && attempts < 2) retry()
-    else fail()
-  }
-})
-
 const LoginPage = asyncPage(() => import('./pages/LoginPage.vue'))
+const MobileLite = asyncPage(() => import('./components/MobileLite.vue'))
 const DashboardPage = asyncPage(() => import('./pages/DashboardPage.vue'))
 const SettingsPage = asyncPage(() => import('./pages/SettingsPage.vue'))
 
@@ -202,8 +179,8 @@ const isMobile = ref(false)
 const mobileNavOpen = ref(false)
 const mobileDesktopOverride = ref(readMobileDesktopOverride())
 let noticeTimer = null
-let requestBusyTimer = null
 const pendingRequestIds = new Set()
+const requestBusyIndicator = createBusyIndicator(value => { requestBusyVisible.value = value })
 
 function showNotice(text, type = 'info', retry = null, source = null) {
   globalNotice.value = { ...(source || {}), text, type, retry }
@@ -216,18 +193,7 @@ function showNotice(text, type = 'info', retry = null, source = null) {
 
 function syncRequestBusyState() {
   pendingRequests.value = pendingRequestIds.size
-  if (pendingRequests.value === 0) {
-    if (requestBusyTimer) clearTimeout(requestBusyTimer)
-    requestBusyTimer = null
-    requestBusyVisible.value = false
-    return
-  }
-  if (!requestBusyTimer && !requestBusyVisible.value) {
-    requestBusyTimer = setTimeout(() => {
-      requestBusyTimer = null
-      if (pendingRequestIds.size > 0) requestBusyVisible.value = true
-    }, 250)
-  }
+  requestBusyIndicator.update(pendingRequests.value > 0)
 }
 
 function onRequestStart(event) {
@@ -531,7 +497,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('xya-request-start', onRequestStart)
   window.removeEventListener('xya-request-end', onRequestEnd)
   window.removeEventListener('xya-request-error', onRequestError)
-  if (requestBusyTimer) clearTimeout(requestBusyTimer)
+  requestBusyIndicator.dispose()
   if (noticeTimer) clearTimeout(noticeTimer)
   closeSse()
 })

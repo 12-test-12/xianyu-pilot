@@ -24,7 +24,7 @@ class NativePackageTests(unittest.TestCase):
             directory.mkdir()
             (directory / entry).write_text("compiled " + component, encoding="utf-8")
             if component=="web":
-                (directory/"desktop-safety.html").write_text("compiled safety",encoding="utf-8")
+                (directory/"favicon.ico").write_bytes(b"compiled icon")
             artifacts.record(directory, component, ENV)
         self.sources = {name: b"source" for name in package.REQUIRED
                         if package.allowed_source(name)}

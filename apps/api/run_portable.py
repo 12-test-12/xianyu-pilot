@@ -42,16 +42,21 @@ def main():
         with SingleInstance(root) as instance:
             from app.core.config import Settings
             from app.portable.backend import DesktopBackend
-            from app.portable.qt_host import DesktopConsole
             backend=DesktopBackend(Settings(runtime_mode="desktop",desktop_port=args.port),web,instance)
-            console=DesktopConsole(backend,paths,smoke=args.smoke_test)
+            console=None
             try:
+                # Import and initialize Chromium while the API starts on its own
+                # thread, rather than paying both startup costs sequentially.
+                backend.start()
+                from app.portable.qt_host import DesktopConsole
+                console=DesktopConsole(backend,paths,smoke=args.smoke_test)
                 return console.run()
             finally:
                 backend.stop()
                 if backend.thread:
                     backend.thread.join()  # No force-exit while SQLite commits.
-                console.dispose()
+                if console is not None:
+                    console.dispose()
     except (PermissionError,OSError,ValueError) as exc:
         startup_error(exc)
     except Exception as exc:
