@@ -22,6 +22,23 @@ const ErrorPage = {
     ]),
 }
 
+// Keep the current page mounted until the destination code is ready. The
+// fallback deadline still lets defineAsyncComponent display its error state.
+export async function prefetchPage(component, timeout = 30000) {
+  if (!component?.prefetch) return
+  let timer
+  try {
+    await Promise.race([
+      component.prefetch(),
+      new Promise(resolve => { timer = setTimeout(resolve, timeout) }),
+    ])
+  } catch {
+    // The async component owns loading errors and retries.
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 export const asyncPage = loader => {
   let modulePromise = null
   const load = () => {

@@ -3685,18 +3685,15 @@ button:focus-visible {
 
 .page-fade-enter-active,
 .page-fade-leave-active {
-  transition: opacity 0.16s cubic-bezier(0.2, 0, 0, 1), transform 0.16s cubic-bezier(0.2, 0, 0, 1);
-  will-change: opacity, transform;
+  transition: opacity 0.12s ease;
 }
 
 .page-fade-enter-from {
-  opacity: 0;
-  transform: translateY(4px);
+  opacity: 0.85;
 }
 
 .page-fade-leave-to {
-  opacity: 0;
-  transform: translateY(-4px);
+  opacity: 1;
 }
 
 /* Polished skeleton placeholder for delayed page loads (>240ms) */
@@ -3766,8 +3763,12 @@ button:focus-visible {
 
 @media (prefers-reduced-motion: reduce) {
   .page-fade-enter-active,
-  .page-fade-leave-active {
-    transition: opacity 0.08s ease;
+  .page-fade-leave-active,
+  .modal-fade-enter-active,
+  .modal-fade-leave-active,
+  .notice-fade-enter-active,
+  .notice-fade-leave-active {
+    transition: none;
   }
   .page-fade-enter-from,
   .page-fade-leave-to {

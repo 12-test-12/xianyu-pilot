@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { asyncPage } from '../src/components/asyncPage.js'
+import { asyncPage, prefetchPage } from '../src/components/asyncPage.js'
 
 test('asyncPage creates a component with prefetch capability', async () => {
   let loadCalls = 0
@@ -33,4 +33,26 @@ test('asyncPage avoids redundant loader executions on repeated prefetch', async 
   const page = asyncPage(loader)
   await Promise.all([page.prefetch(), page.prefetch(), page.prefetch()])
   assert.equal(loadCount, 1)
+})
+
+test('navigation waits for slow page code rather than switching to an empty async component', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let resolve, ready = false
+  const page = asyncPage(() => new Promise(done => { resolve = done }))
+  const pending = prefetchPage(page).then(() => { ready = true })
+  await Promise.resolve()
+  t.mock.timers.tick(1000)
+  await Promise.resolve()
+  assert.equal(ready, false)
+  resolve({ name: 'SlowPage' })
+  await pending
+  assert.equal(ready, true)
+})
+
+test('prefetch failure or deadline hands control back to the component error UI', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  await prefetchPage({ prefetch: () => Promise.reject(new Error('offline')) })
+  const pending = prefetchPage({ prefetch: () => new Promise(() => {}) }, 30000)
+  t.mock.timers.tick(30000)
+  await pending
 })

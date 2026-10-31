@@ -17,7 +17,7 @@
       <Transition name="notice-fade">
         <div v-if="captchaErrorMsg" class="global-notice error">{{ captchaErrorMsg }}</div>
       </Transition>
-      <div class="grid stat-grid" style="grid-template-columns:repeat(5,1fr)">
+      <div class="grid stat-grid" style="grid-template-columns:repeat(4,minmax(0,1fr))">
         <StatCard title="账号总数" :value="accountMetric(stats.total)" change="全部记录" icon="users" />
         <StatCard title="正常账号" :value="accountMetric(stats.normal)" change="当前页" icon="account" color="green" />
         <StatCard title="需验证" :value="accountMetric(stats.verify)" change="当前页" icon="shield" color="orange" />
@@ -65,11 +65,10 @@
       <CardPanel>
         <div
           class="refresh-status"
-          :class="{ active: accountsRefreshing }"
           role="status"
           aria-live="polite"
         >
-          <span v-if="accountsRefreshing">正在刷新账号列表，现有数据仍可查看。</span>
+          <span v-if="accountsRefreshVisible">正在刷新账号列表，现有数据仍可查看。</span>
         </div>
         <EmptyState v-if="loading && dataAvailable !== true" icon="⏳" title="账号加载中" description="正在读取账号与认证状态。" />
         <EmptyState v-else-if="dataAvailable === false" icon="⚠️" title="账号列表暂不可用" description="当前无法确认账号记录，不会把失败显示为空列表。">
@@ -385,7 +384,7 @@
   </div>
 
   <Teleport to="body">
-    <Transition name="modal-fade">
+    <Transition name="modal-fade" @after-leave="resetClosedQrState">
       <div v-if="modal" class="modal-mask" @click.self="closeModal">
         <section v-if="modal==='scan'" class="xy-modal scan-modal">
           <button class="modal-close" @click="closeModal"><Icon name="close" /></button>
@@ -416,7 +415,7 @@
               <h4>会话信息</h4>
               <div v-if="qr.accountId"><span>目标账号：</span><b>{{ selected?.nickname || selected?.displayName || selected?.externalUid || qr.accountId }}</b></div>
               <div><span>会话 ID：</span><b>{{ qr.sessionId || '-' }}</b></div>
-              <div><span>当前状态：</span><b>{{ qr.status || '-' }}</b><button class="inline-link" @click="startQrLogin"><Icon name="refresh" /> 生成/刷新二维码</button></div>
+              <div><span>当前状态：</span><b>{{ qr.status || '-' }}</b><button class="inline-link" :disabled="qr.loading" @click="startQrLogin"><Icon name="refresh" /> 生成/刷新二维码</button></div>
             </div>
           </div>
         </div>
@@ -714,7 +713,7 @@
   </Teleport>
 </template>
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import StatCard from '../components/StatCard.vue'; import CardPanel from '../components/CardPanel.vue'; import BaseTable from '../components/BaseTable.vue'; import Badge from '../components/Badge.vue'; import AppButton from '../components/AppButton.vue'; import Icon from '../components/Icon.vue'; import Pagination from '../components/Pagination.vue'; import EmptyState from '../components/EmptyState.vue'
 import { checkAccountAuth, deleteAccount, getAccounts, createAccountByCookie, refreshAccountProfile, updateAccountCookie, getAccountAutoRateConfig, saveAccountAutoRateConfig, getAccountStrategyConfig, saveAccountStrategyConfig, setAccountMembership } from '../api/accounts.js'
 import { startWebSocket, stopWebSocket, websocketStatus } from '../api/websocket.js'
@@ -724,7 +723,9 @@ import { getSolveRecords, retrySolve } from '../api/captcha.js'
 import { polishItem } from '../api/items.js'
 import { getAccountMembership } from '../api/accounts.js'
 const emit = defineEmits(['navigate'])
-import { generateQrLogin, getQrLoginStatus, cleanupQrLogin } from '../api/qrlogin.js'
+import { cleanupQrLogin } from '../api/qrlogin.js'
+import { useQrLogin } from '../composables/useQrLogin.js'
+import { createBusyIndicator } from '../utils/busyIndicator.js'
 import { accountName } from '../utils/format.js'
 import { accountAuthState, accountCookieBadgeType, accountCookieLabel, accountCookieStatus, accountLoginHint } from '../utils/accountAuth.js'
 import { extractKeyFields, maskKeyFields, validateCookie, checkIdentity, maskValue } from '../utils/cookie.js'
@@ -754,16 +755,16 @@ const wsMap = reactive({})
 const wsBusyMap = reactive({})
 const selectedWs = computed(() => wsMap[selected.value?.id] || {})
 const accountsRefreshing = computed(() => loading.value && dataAvailable.value === true)
+const accountsRefreshVisible = ref(false)
+const accountsRefreshIndicator = createBusyIndicator(value => { accountsRefreshVisible.value = value })
+watch(accountsRefreshing, value => accountsRefreshIndicator.update(value))
 const accountsRequestGuard = createLatestRequestGuard()
 const WS_START_PHASES = new Set(['starting', 'refresh_token', 'connecting', 'registering', 'syncing', 'accepted', 'pending', 'recovering'])
 const WS_FAILURE_PHASES = new Set(['failed', 'error', 'stopped', 'cookie_expired'])
 const WS_STATUS_POLL_INTERVAL = 300
 const WS_STATUS_POLL_LIMIT = 10
 const selectedWsPending = computed(() => isWsPending(selected.value?.id))
-let qrTimer = null
-const qr = reactive({ loading:false, sessionId:'', qrUrl:'', status:'', message:'', mode:'create', accountId:null })
-const qrReady = computed(() => Boolean(qr.sessionId && qr.qrUrl))
-const qrGenerationFailed = computed(() => qr.status === 'error')
+const { qr, qrReady, qrGenerationFailed, startQrLogin, cancelQrLogin, resetQrState } = useQrLogin({ onConfirmed: handleQrConfirmed })
 const qrSuccessMsg = ref('')
 const handledLoginAccounts = new Set()
 const captchaErrorMsg = ref('')
@@ -885,7 +886,7 @@ const captchaAlerts = computed(() => {
 
 async function loadActiveSolveRecords() {
   try {
-    const res = await getSolveRecords({ status: 'active' })
+    const res = await getSolveRecords({ status: 'active' }, { uiMode: 'background', suppressGlobalError: true })
     activeSolveRecords.value = res?.data?.list || []
   } catch {
     // 静默失败，不阻塞页面
@@ -1074,14 +1075,8 @@ const accountDiagnostics = computed(() => {
   ]
 })
 
-function resetQrState() {
-  qr.loading = false
-  qr.sessionId = ''
-  qr.qrUrl = ''
-  qr.status = ''
-  qr.message = ''
-  qr.mode = 'create'
-  qr.accountId = null
+function resetClosedQrState() {
+  if (!modal.value) resetQrState()
 }
 
 function openModal(type){
@@ -1092,6 +1087,7 @@ function openModal(type){
     manualError.value=''
   }
   if(type === 'scan') {
+    resetQrState()
     qr.mode = 'create'
     qr.accountId = null
     startQrLogin()
@@ -1108,11 +1104,11 @@ function closeModal(){
   autoRateError.value = ''
   strategyError.value = ''
   membershipError.value = ''
-  stopQrPolling()
-  resetQrState()
+  cancelQrLogin()
 }
 function openRescanModal(account) {
   if (!account?.id) return
+  resetQrState()
   modal.value = 'scan'
   qr.mode = 'rescan'
   qr.accountId = account.id
@@ -1640,20 +1636,22 @@ async function refreshProfile(accountId, options = {}) {
     const requestConfig = options.background ? { uiMode: 'background', suppressGlobalError: true } : {}
     const res = await refreshAccountProfile(accountId, requestConfig)
     const data = res.data?.account || res.data || res
-    // 刷新成功后的提示
-    const displayName = data.displayName || data.nickname || ''
-    qrSuccessMsg.value = displayName ? `资料刷新成功: ${displayName}` : '资料刷新成功'
-    setTimeout(() => { if (qrSuccessMsg.value && qrSuccessMsg.value.startsWith('资料刷新')) qrSuccessMsg.value = '' }, 4000)
+    if (!options.background) {
+      const displayName = data.displayName || data.nickname || ''
+      const message = displayName ? `资料刷新成功: ${displayName}` : '资料刷新成功'
+      qrSuccessMsg.value = message
+      setTimeout(() => { if (qrSuccessMsg.value === message) qrSuccessMsg.value = '' }, 4000)
+    }
     // 更新选中账号的详情
     if (selected.value && selected.value.id === accountId) {
-      selected.value = { ...selected.value, ...data }
+      Object.assign(selected.value, data)
     }
     // 就地局部更新 accounts 列表中对应项，避免整表重新触发 loading 导致页面跳动闪烁
     const idx = accounts.value.findIndex(a => a.id === accountId)
     if (idx !== -1) {
-      accounts.value[idx] = { ...accounts.value[idx], ...data }
+      Object.assign(accounts.value[idx], data)
     }
-    if (options.reloadList === true || idx === -1) {
+    if (options.reloadList === true || (idx === -1 && options.reloadList !== false && !options.background)) {
       await loadAccounts()
     }
   } catch (e) {
@@ -1821,118 +1819,31 @@ async function submitCookieEdit() {
   }
 }
 
-async function startQrLogin() {
-  qr.loading = true
-  qr.message = ''
-  // 保留现有的二维码直到新码就绪，避免刷新时白屏与占位图来回闪烁
-  qr.status = 'generating'
-  stopQrPolling()
-  try {
-    const res = qr.accountId
-      ? await generateQrLogin({ accountId: qr.accountId })
-      : await generateQrLogin()
-    const data = res.data || {}
-    qr.sessionId = data.sessionId || data.id || ''
-    qr.qrUrl = data.qrCodeBase64 || data.qrImage || data.qrUrl || data.qrcodeUrl || data.qrCodeUrl || data.url || ''
-    if (!qr.sessionId || !qr.qrUrl) throw new Error('二维码服务响应不完整，请稍后重试')
-    qr.status = data.status || 'pending'
-    qr.message = data.message || '请使用闲鱼 App 扫码'
-    startQrPolling()
-  } catch (e) {
-    if (!qr.qrUrl) {
-      qr.sessionId = ''
-      qr.qrUrl = ''
-    }
-    qr.status = 'error'
-    qr.message = e.message || '生成二维码失败'
-  } finally {
-    qr.loading = false
+async function handleQrConfirmed(data, context) {
+  const targetAccountId = Number(data.accountId)
+  const isRescan = context.mode === 'rescan'
+  // Completing the modal must not depend on which channel refreshed the list.
+  closeModal()
+  const externalUid = String(data.externalUid || data.unb || '')
+  qrSuccessMsg.value = externalUid
+    ? `账号 ${externalUid.slice(0, 8)}... 登录成功`
+    : '账号登录成功'
+  if (isRescan) {
+    qrSuccessMsg.value = data.message || (data.authUsable === false
+      ? (data.loginStatusMessage || '重新扫码成功，但统一登录校验未通过')
+      : '账号 Cookie 已更新')
   }
-}
-
-function startQrPolling() {
-  stopQrPolling()
-  // 使用 setTimeout 链式轮询代替 setInterval，确保前一次请求返回后再发起下一次。
-  // 避免闲鱼 API 响应慢时请求堆积，耗尽数据库连接池。
-  qrTimer = setTimeout(scheduleQrPoll, 2000)
-}
-function stopQrPolling() { if (qrTimer) { clearTimeout(qrTimer); qrTimer = null } }
-async function scheduleQrPoll() {
-  await checkQrStatus()
-  // checkQrStatus 内部可能调用 stopQrPolling（confirmed/error/expired），
-  // 只有轮询仍在进行时才安排下一次。
-  if (qrTimer) qrTimer = setTimeout(scheduleQrPoll, 2000)
-}
-async function checkQrStatus() {
-  if (!qr.sessionId) return
-  try {
-    const res = qr.accountId
-      ? await getQrLoginStatus(qr.sessionId, { accountId: qr.accountId })
-      : await getQrLoginStatus(qr.sessionId)
-    const data = res.data || {}
-    const prevStatus = qr.status
-    qr.status = data.status || qr.status
-    if (['scanned', 'scaned'].includes(qr.status)) {
-      qr.message = data.message || '已成功扫码，请在手机上点击确认登录'
-    } else {
-      qr.message = data.message || qr.message
-    }
-
-    if (qr.status === 'confirmed') {
-      if (data.accountId) {
-        stopQrPolling()
-        const targetAccountId = Number(data.accountId)
-        if (handledLoginAccounts.has(targetAccountId)) return
-        handledLoginAccounts.add(targetAccountId)
-        setTimeout(() => handledLoginAccounts.delete(targetAccountId), 8000)
-
-        const isRescan = qr.mode === 'rescan'
-        closeModal()
-        const externalUid = data.externalUid || data.unb || ''
-        qrSuccessMsg.value = externalUid
-          ? `账号 ${externalUid.slice(0, 8)}... 登录成功`
-          : '账号登录成功'
-        if (isRescan) {
-          qrSuccessMsg.value = data.message || (data.authUsable === false
-            ? (data.loginStatusMessage || '重新扫码成功，但统一登录校验未通过')
-            : '账号 Cookie 已更新')
-        }
-        if (!isRescan) {
-          current.value = 1
-        }
-        try {
-          await loadAccounts()
-          if (targetAccountId && !isRescan) {
-            const target = accounts.value.find(a => a.id === targetAccountId)
-            if (target) {
-              selectAccount(target)
-            }
-            // 扫码成功后自动刷新账号资料（就地更新单项数据，杜绝全表重复触发刷新与闪屏）
-            refreshProfile(targetAccountId, { background: true, reloadList: false }).catch(() => {
-              if (import.meta.env.DEV) console.warn('自动刷新资料失败')
-            })
-          }
-        } catch {
-          if (import.meta.env.DEV) console.warn('账号列表刷新失败')
-          qrSuccessMsg.value = '账号已保存，但列表刷新失败，请手动刷新'
-        }
-        setTimeout(() => { if (qrSuccessMsg.value) qrSuccessMsg.value = '' }, 6000)
-      } else if (prevStatus !== 'confirmed' || data.credentialsAvailable) {
-        qr.message = data.credentialsAvailable
-          ? '扫码已确认，服务端正在安全同步账号信息...'
-          : (data.message || '扫码已确认，等待服务端完成账号同步...')
-      }
-    }
-    if (qr.status === 'error') {
-      stopQrPolling()
-      qr.message = data.message || '账号保存失败，请重试'
-      if (data.errorCode) {
-        if (import.meta.env.DEV) console.warn('扫码保存返回失败状态')
-      }
-    }
-    if (['expired','failed'].includes(qr.status)) stopQrPolling()
-  } catch (e) {
-    qr.message = e.message || '查询扫码状态失败'
+  const message = qrSuccessMsg.value
+  setTimeout(() => { if (qrSuccessMsg.value === message) qrSuccessMsg.value = '' }, 6000)
+  if (!isRescan && handledLoginAccounts.has(targetAccountId)) return
+  handledLoginAccounts.add(targetAccountId)
+  setTimeout(() => handledLoginAccounts.delete(targetAccountId), 8000)
+  if (!isRescan) current.value = 1
+  await loadAccounts()
+  if (targetAccountId && !isRescan) {
+    const target = accounts.value.find(a => a.id === targetAccountId)
+    if (target) selectAccount(target)
+    void refreshProfile(targetAccountId, { background: true })
   }
 }
 
@@ -1949,7 +1860,8 @@ async function handleSseEvent(e) {
       handledLoginAccounts.add(addedAccountId)
       setTimeout(() => handledLoginAccounts.delete(addedAccountId), 8000)
     }
-    qrSuccessMsg.value = '账号登录成功'
+    const message = '账号登录成功'
+    qrSuccessMsg.value = message
     current.value = 1
     try {
       await loadAccounts()
@@ -1968,7 +1880,7 @@ async function handleSseEvent(e) {
     } catch {
       if (import.meta.env.DEV) console.warn('账号列表刷新失败')
     }
-    setTimeout(() => { qrSuccessMsg.value = '' }, 4000)
+    setTimeout(() => { if (qrSuccessMsg.value === message) qrSuccessMsg.value = '' }, 4000)
   } else if (event.type === 'cookie_status_changed') {
     // 从服务端重新拉取账号列表，确保 cookie 状态与后端一致
     const targetId = event.accountId
@@ -2015,8 +1927,9 @@ onBeforeUnmount(() => {
   accountsRequestGuard.invalidate()
   window.removeEventListener('xya-header-action', handleHeaderAction)
   window.removeEventListener('xya-sse-event', handleSseEvent)
-  stopQrPolling()
-  void cleanupQrLogin()
+  cancelQrLogin()
+  accountsRefreshIndicator.dispose()
+  void cleanupQrLogin().catch(() => {})
   if (solveRecordsTimer) {
     clearInterval(solveRecordsTimer)
     solveRecordsTimer = null
@@ -2028,18 +1941,10 @@ onBeforeUnmount(() => {
 .account-selector { width: 100%; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .account-selector-copy { min-width: 0; }
 .refresh-status {
-  overflow: hidden;
-  max-height: 0;
-  margin-bottom: 0;
-  opacity: 0;
+  min-height: 20px;
+  margin-bottom: 8px;
   color: #526079;
   font-size: 13px;
-  transition: max-height 0.2s ease, opacity 0.2s ease, margin-bottom 0.2s ease;
-}
-.refresh-status.active {
-  max-height: 28px;
-  margin-bottom: 8px;
-  opacity: 1;
 }
 
 .qr-unavailable {

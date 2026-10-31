@@ -86,7 +86,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { asyncPage } from './components/asyncPage.js'
+import { asyncPage, prefetchPage } from './components/asyncPage.js'
 import Sidebar from './components/Sidebar.vue'
 import Topbar from './components/Topbar.vue'
 import PageHeader from './components/PageHeader.vue'
@@ -297,27 +297,21 @@ async function navigate(key, options = {}) {
 
   const currentNavSeq = ++navSequence
   const targetComp = settingsKeys.includes(next) ? SettingsPage : pageMap[next]
+  if (navProgressTimer) clearTimeout(navProgressTimer)
+  navProgressTimer = null
 
   // 在卸载旧页面前先预先拉取目标组件代码，保持当前页面可见，彻底消除切换时的白屏与闪烁
   if (targetComp?.prefetch && active.value !== next) {
-    if (navProgressTimer) clearTimeout(navProgressTimer)
     navProgressTimer = setTimeout(() => {
       if (currentNavSeq === navSequence) navTransitioning.value = true
     }, 70)
 
-    try {
-      await Promise.race([
-        targetComp.prefetch(),
-        new Promise(r => setTimeout(r, 160))
-      ])
-    } catch {
-      // 容错处理，由 defineAsyncComponent 处理错误界面
-    }
+    await prefetchPage(targetComp)
     if (currentNavSeq !== navSequence) return
   }
 
   requestedRoute.value = known ? '' : requested
-  location.hash = `#/${encodeURIComponent(requested)}`
+  if (!options.preserveHash) location.hash = `#/${encodeURIComponent(requested)}`
   active.value = next
 
   setTimeout(() => {
@@ -402,18 +396,12 @@ async function onHash() {
   }
   requestedRoute.value = route.known ? '' : route.requestedPage
   if (active.value !== next) {
-    const targetComp = settingsKeys.includes(next) ? SettingsPage : pageMap[next]
-    if (targetComp?.prefetch) {
-      try {
-        await Promise.race([
-          targetComp.prefetch(),
-          new Promise(r => setTimeout(r, 160))
-        ])
-      } catch {
-        // 容错处理
-      }
-    }
-    active.value = next
+    await navigate(route.known ? next : route.requestedPage, { force: true, preserveHash: true })
+  } else {
+    // Back to the visible page also cancels an older pending navigation.
+    navSequence += 1
+    if (navProgressTimer) clearTimeout(navProgressTimer)
+    navTransitioning.value = false
   }
 }
 

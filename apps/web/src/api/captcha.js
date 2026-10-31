@@ -15,5 +15,5 @@ export const getCaptchaRecords = (params = {}) => request.get('/captcha/records'
 
 
 // 滑块求解活跃记录 & 重试（同步商业版前端调用约定）
-export const getSolveRecords = (params = {}) => request.get('/captcha/solve-records', { params })
+export const getSolveRecords = (params = {}, config = {}) => request.get('/captcha/solve-records', { ...config, params })
 export const retrySolve = data => request.post('/captcha/solve-retry', data, { timeout: 180000, uiMode: 'background' })
