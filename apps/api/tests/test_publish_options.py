@@ -17,6 +17,8 @@ from app.services.fish_shop_publish import build_internal_item_object
 from app.services.publish_options import publish_location_error
 
 REAL_PUBLISH = xianyu_goods_sync.XianyuItemPublisher.publish
+REAL_CATEGORY_RECOMMEND = xianyu_goods_sync.XianyuItemPublisher.category_recommend
+CATEGORY = dict(catId="91000001", catName="测试叶子分类", channelCatId="92000001", tbCatId="93000001")
 
 
 REGION = dict(prov="北京市", city="北京市", area="东城区", divisionId="110101",
@@ -34,7 +36,7 @@ async def publish_context(tmp_path, monkeypatch):
         return SimpleNamespace(encrypted_cookie="fixture")
 
     def publish(self, payload):
-        calls.append(self._build_publish_data(payload, {}, ["https://example.com/image.jpg"]))
+        calls.append(self._build_publish_data(payload, payload.get("category") or CATEGORY, ["https://example.com/image.jpg"]))
         return {"success": True, "itemId": "fixture-item", "itemUrl": "https://example.com/item"}
 
     async def persist(*args, **kwargs):
@@ -110,7 +112,7 @@ async def test_unknown_online_publish_is_never_replayed(publish_context, monkeyp
 def mock_platform_receipts(monkeypatch, receipts, calls):
     monkeypatch.setattr(xianyu_goods_sync.XianyuItemPublisher, "publish", REAL_PUBLISH)
     monkeypatch.setattr(xianyu_goods_sync, "_refresh_m_h5_tk", lambda cookie: cookie)
-    monkeypatch.setattr(xianyu_goods_sync.XianyuItemPublisher, "category_recommend", lambda *args: {})
+    monkeypatch.setattr(xianyu_goods_sync.XianyuItemPublisher, "category_recommend", lambda *args: {**CATEGORY, "recommended": True})
     monkeypatch.setattr(xianyu_goods_sync.XianyuItemPublisher, "upload_images_to_xianyu", lambda *args: ["https://example.com/image.jpg"])
 
     def receipt(*args):
@@ -198,7 +200,48 @@ def test_region_validation(change):
 
 
 def test_fish_shop_online_payload_has_no_freight_or_self_pick():
-    payload = build_internal_item_object(dict(title="资料", description="线上交付", price="1", shippingMode="none", location=REGION), [], {})
+    payload = build_internal_item_object(dict(title="资料", description="线上交付", price="1", shippingMode="none", location=REGION), [], CATEGORY)
     assert payload["itemPostFeeDTO"]["supportFreight"] is False
     assert not payload["itemPostFeeDTO"].get("onlyTakeSelf")
     assert payload["itemAddrDTO"]["poiId"] == ""
+
+
+@pytest.mark.asyncio
+async def test_category_metadata_reaches_publish_without_default_ids(publish_context):
+    request, session, calls, _ = publish_context
+    request.update(category=CATEGORY["catName"], categoryInfo={**CATEGORY, "source": "xianyu", "isLeaf": True})
+    body = response_body(await items.publish_item(request, session, None))
+    assert body["data"]["status"] == "confirmed"
+    assert calls[0]["itemCatDTO"] == CATEGORY
+
+
+@pytest.mark.asyncio
+async def test_object_recommendation_replaces_old_default_before_publish(publish_context, monkeypatch):
+    request, session, calls, _ = publish_context
+    mock_platform_receipts(monkeypatch, [], calls)
+    monkeypatch.setattr(xianyu_goods_sync.XianyuItemPublisher, "category_recommend", REAL_CATEGORY_RECOMMEND)
+    request["category"] = CATEGORY["catName"]
+
+    def call(self, api, version, payload):
+        if api == self.CATEGORY_RECOMMEND_API:
+            return {"ret": ["SUCCESS::ok"], "data": {"categoryPredictResult": CATEGORY}}
+        calls.append(payload)
+        return {"ret": ["SUCCESS::ok"], "data": {"itemId": "valid-category"}}
+
+    monkeypatch.setattr(xianyu_goods_sync.XianyuItemPublisher, "_call_api", call)
+    body = response_body(await items.publish_item(request, session, None))
+    assert body["data"]["status"] == "confirmed"
+    assert calls[0]["itemCatDTO"] == CATEGORY
+
+
+@pytest.mark.asyncio
+async def test_no_valid_category_stops_before_remote_publish_and_allows_editing(publish_context, monkeypatch):
+    request, session, calls, local_calls = publish_context
+    mock_platform_receipts(monkeypatch, [], calls)
+    monkeypatch.setattr(xianyu_goods_sync.XianyuItemPublisher, "category_recommend", lambda *args: {"recommended": False})
+    request["category"] = "旧的分类名称"
+    body = response_body(await items.publish_item(request, session, None))
+    assert body["data"]["status"] == "failed"
+    assert body["data"]["retrySafe"] is True
+    assert "重新识别分类" in body["msg"]
+    assert calls == local_calls == []

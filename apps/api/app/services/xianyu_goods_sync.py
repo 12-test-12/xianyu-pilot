@@ -18,6 +18,8 @@ from urllib.parse import urlencode
 import re
 import requests
 from PIL import Image
+
+from .publish_category import normalize_publish_category, parse_publish_category_recommendation, resolve_publish_category, PublishCategoryError
 
 from ..core.upload_security import (
     UnsafePathError,
@@ -160,6 +162,7 @@ SESSION_EXPIRED = "FAIL_SYS_SESSION_EXPIRED"
 # 闲鱼发布 API 常见业务错误码 → 中文友好提示
 # 用于把 ret_msg 中的 FAIL_XXX::描述 翻译成用户能看懂的原因
 PUBLISH_REJECT_CODE_MAP = {
+    "FAIL_BIZ_CATEGORY_DISPOSED": "该类目已废弃，请返回编辑，点击“重新识别分类”并选择闲鱼返回的有效叶子类目后重新发布",
     "FAIL_BIZ_STRONG_VALID_VERIFY_INFO": "当前账号未完成平台要求的认证或协议签署。请用同一账号打开闲鱼 App，进入发布流程并按平台提示完成认证及协议签署，再回到本页手动重试；若仍提示登录异常，请到账号管理重新登录",
     "FAIL_BIZ_ITEM_PICTURE_VIOLATION": "商品图片涉嫌违规（涉黄/涉暴/涉政/水印等）",
     "FAIL_BIZ_ITEM_TITLE_VIOLATION": "商品标题含有违禁词或敏感词",
@@ -2149,12 +2152,6 @@ class XianyuItemPublisher:
     IMAGE_UPLOAD_URL = "https://stream-upload.goofish.com/api/upload.api"
     IMAGE_UPLOAD_APPKEY = "xy_chat"
 
-    # 默认类目（软件安装包/序列号/激活码）
-    DEFAULT_CAT_ID = "50025461"
-    DEFAULT_CAT_NAME = "软件安装包/序列号/激活码"
-    DEFAULT_CHANNEL_CAT_ID = "201449620"
-    DEFAULT_TB_CAT_ID = "50003316"
-
     def __init__(self, cookie_str: str):
         self.cookie_str = cookie_str
         self.token = extract_token_from_cookie(cookie_str)
@@ -2427,51 +2424,10 @@ class XianyuItemPublisher:
             logger.info("调用类目推荐 API: titleLength=%d", len(title))
             result = self._call_api(self.CATEGORY_RECOMMEND_API, self.CATEGORY_RECOMMEND_VERSION, data)
 
-            ret = result.get("ret", [])
-            ret_msg = ret[0] if isinstance(ret, list) and ret else str(ret)
-
-            if "SUCCESS" in ret_msg:
-                data_body = result.get("data", {})
-
-                # 解析推荐类目
-                category_predict = data_body.get("categoryPredictResult", [])
-                recommended_cat = {}
-                if category_predict and isinstance(category_predict, list) and len(category_predict) > 0:
-                    best = category_predict[0]
-                    recommended_cat = {
-                        "catId": str(best.get("catId", "")),
-                        "catName": best.get("catName", ""),
-                        "channelCatId": str(best.get("channelCatId", "")),
-                        "tbCatId": str(best.get("tbCatId", "")),
-                    }
-
-                # 解析推荐标签
-                card_list = data_body.get("cardList", [])
-                if isinstance(card_list, dict):
-                    # 有时 cardList 可能是 dict 而非 list
-                    card_list = [card_list]
-
-                logger.info(
-                    "类目推荐成功: cat=%s, tags=%d",
-                    recommended_cat.get("catName", ""),
-                    len(card_list),
-                )
-
-                return {
-                    "recommended": True,
-                    "catId": recommended_cat.get("catId", ""),
-                    "catName": recommended_cat.get("catName", ""),
-                    "channelCatId": recommended_cat.get("channelCatId", ""),
-                    "tbCatId": recommended_cat.get("tbCatId", ""),
-                    "cardList": card_list,
-                }
-
-            logger.warning("类目推荐 API 返回非成功")
-            return {"recommended": False}
-
+            return parse_publish_category_recommendation(result)
         except Exception:
-            logger.warning("类目推荐异常，将使用默认类目")
-            return {"recommended": False}
+            logger.warning("类目推荐失败，请重新识别或选择有效的闲鱼叶子类目")
+            return {"recommended": False, "candidates": [], "cardList": []}
 
     def _build_item_label_ext_list(self, card_list: list) -> list:
         """将类目推荐返回的 cardList 转换为 itemLabelExtList"""
@@ -2537,17 +2493,9 @@ class XianyuItemPublisher:
         }
 
         # ---- 类目 ----
-        cat_id = category_info.get("catId") or self.DEFAULT_CAT_ID
-        cat_name = category_info.get("catName") or self.DEFAULT_CAT_NAME
-        channel_cat_id = category_info.get("channelCatId") or self.DEFAULT_CHANNEL_CAT_ID
-        tb_cat_id = category_info.get("tbCatId") or self.DEFAULT_TB_CAT_ID
-
-        item_cat_dto = {
-            "catId": cat_id,
-            "catName": cat_name,
-            "channelCatId": channel_cat_id,
-            "tbCatId": tb_cat_id,
-        }
+        item_cat_dto = normalize_publish_category(category_info)
+        if not item_cat_dto:
+            raise PublishCategoryError("发布分类缺少有效的叶子类目 ID，请重新识别分类后发布")
 
         # ---- 推荐标签 ----
         card_list = category_info.get("cardList", [])
@@ -2713,21 +2661,7 @@ class XianyuItemPublisher:
         logger.info("Step 1/3: 类目推荐 titleLength=%d", len(title))
         recommend_result = self.category_recommend(title, desc, image_urls)
 
-        if recommend_result.get("recommended"):
-            category_info = recommend_result
-            logger.info("类目推荐成功: %s (catId=%s)", category_info["catName"], category_info["catId"])
-        else:
-            # 回退到手动指定的类目
-            logger.info("类目推荐失败，使用手动指定类目")
-            user_cat = item_data.get("category", {})
-            category_info = {
-                "recommended": False,
-                "catId": user_cat.get("catId") or self.DEFAULT_CAT_ID,
-                "catName": user_cat.get("catName") or self.DEFAULT_CAT_NAME,
-                "channelCatId": user_cat.get("channelCatId") or self.DEFAULT_CHANNEL_CAT_ID,
-                "tbCatId": user_cat.get("tbCatId") or self.DEFAULT_TB_CAT_ID,
-                "cardList": [],
-            }
+        category_info = resolve_publish_category(item_data.get("category"), recommend_result)
 
         # ---- Step 2: 图片上传到闲鱼 CDN ----
         logger.info("Step 2/3: 图片上传 - %d 张", len(image_urls))

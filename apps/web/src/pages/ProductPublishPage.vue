@@ -126,11 +126,12 @@
               :class="['candidate-btn', { active: autoSelectedCatId === (cat.catId || cat.catName) }]"
               @click="applyAutoCategory(cat)"
             >
-              {{ cat.catName || cat.catName }}
+              {{ cat.catName || cat.name }}
               <small v-if="cat.score">({{ (cat.score * 100).toFixed(1) }}%)</small>
             </button>
           </div>
           <div class="category-tools">
+            <button type="button" class="category-ai-btn" :disabled="autoCategoryLoading || !form.accountId || !form.imageUrls.length" @click="triggerAutoCategory(true)">重新识别分类</button>
             <input v-model="categoryKeyword" class="category-search" placeholder="搜索分类，如 手机 / 图书 / 家居" />
             <button v-if="aiCategoryStatus.configured" type="button" class="category-ai-btn" :disabled="aiCategoryLoading || !form.title.trim()" @click="autoSelectCategory">{{ aiCategoryLoading ? 'AI选择中...' : 'AI自动选择' }}</button>
             <button v-if="categoryKeyword" type="button" class="category-clear" @click="categoryKeyword = ''">清空</button>
@@ -204,6 +205,10 @@
 {{ cat.label || cat.title }}
 </div>
             </div>
+          </div>
+          <div v-if="deeperCategoryOptions.length" class="auto-category-candidates">
+            <span class="candidates-label">请选择具体叶子分类：</span>
+            <button v-for="item in deeperCategoryOptions" :key="item.id" type="button" :class="['candidate-btn', { active: selectedCategoryIds.at(-1) === item.id }]" @click="selectCategoryByPath(item)">{{ item.name }}</button>
           </div>
           <p class="subtle" style="margin-top:8px">
             已选分类：{{ selectedCategoryPath || '请选择分类' }}
@@ -382,6 +387,7 @@ import {
   markPendingProductSync,
   recoverPublishIntent,
 } from '../utils/productPublishState.js'
+import { publishCategoryFromNode, categoryNodeAtPath } from '../utils/publishCategory.js'
 import { imageUploadValidationMessage } from '../utils/imageUploadPolicy.js'
 import { accountAuthUsable, pickPreferredAccount } from '../utils/accountAuth.js'
 import { resolveTrustedMediaUrl } from '../utils/safeMediaUrl.js'
@@ -408,7 +414,7 @@ const canEditFailedIntent = computed(() => canEditFailedPublishIntent({
   hasIntent: Boolean(publishIntent.payload),
   outcome: publishOutcome.value,
 }))
-const publishSubmitDisabled = computed(() => !canSubmitPublishIntent({
+const publishSubmitDisabled = computed(() => publishOutcome.value?.categoryInvalid === true || !canSubmitPublishIntent({
   accountsAvailable: accountsAvailable.value,
   submitting: submitting.value,
   hasIntent: Boolean(publishIntent.payload),
@@ -418,6 +424,7 @@ const publishSubmitLabel = computed(() => {
   if (publishOutcome.value?.status === 'remote_confirmed') return '仅修复本地状态'
   if (publishOutcome.value?.status === 'unknown') return '结果未知，禁止重试'
   if (publishOutcome.value?.status === 'in_progress') return '发布执行中'
+  if (publishOutcome.value?.categoryInvalid) return '请返回编辑重新选择分类'
   if (unsafePublishFailure.value) return '失败不可安全重试'
   if (publishOutcome.value?.status === 'failed' && publishOutcome.value?.retrySafe) return '使用原意图重试'
   return '立即发布'
@@ -442,6 +449,13 @@ const recentCategories = ref([])
 const favoriteCategories = ref([])
 const selectedCategoryPath = ref('')
 const selectedCategoryName = ref('')
+const selectedPublishCategory = ref(null)
+const selectedCategoryIds = ref([])
+const deeperCategoryOptions = computed(() => {
+  if (!level3Id.value) return []
+  const prefix = [level1Id.value, level2Id.value, level3Id.value]
+  return flatCategoryOptions().filter(item => item.pathIds.length > 3 && prefix.every((id, index) => String(id) === String(item.pathIds[index])))
+})
 const aiCategoryStatus = ref({ configured: false, message: '' })
 const aiCategoryLoading = ref(false)
 const aiCategoryMessage = ref('')
@@ -480,6 +494,8 @@ function markManualCategorySelection() {
 function selectLevel1(cat, { manual = true } = {}) {
   if (manual) markManualCategorySelection()
   level1Id.value = cat.id
+  selectedCategoryIds.value = [cat.id]
+  selectedPublishCategory.value = publishCategoryFromNode(cat)
   level2Id.value = null
   level3Id.value = null
   level2List.value = cat.children || []
@@ -492,6 +508,8 @@ function selectLevel1(cat, { manual = true } = {}) {
 function selectLevel2(cat, { manual = true } = {}) {
   if (manual) markManualCategorySelection()
   level2Id.value = cat.id
+  selectedCategoryIds.value = [level1Id.value, cat.id]
+  selectedPublishCategory.value = publishCategoryFromNode(cat)
   level3Id.value = null
   level3List.value = cat.children || []
   const l1 = categories.value.find(c => c.id === level1Id.value)
@@ -504,6 +522,8 @@ function selectLevel2(cat, { manual = true } = {}) {
 function selectLevel3(cat, { manual = true } = {}) {
   if (manual) markManualCategorySelection()
   level3Id.value = cat.id
+  selectedCategoryIds.value = [level1Id.value, level2Id.value, cat.id]
+  selectedPublishCategory.value = publishCategoryFromNode(cat)
   const l1 = categories.value.find(c => c.id === level1Id.value)
   const l2 = level2List.value.find(c => c.id === level2Id.value)
   const path = (l1?.label || l1?.title) + ' ＞ ' + (l2?.label || l2?.title) + ' ＞ ' + (cat.label || cat.title)
@@ -530,7 +550,7 @@ const categorySearchResults = computed(() => {
       const name = node.label || node.title || ''
       const pathParts = [...parents, name]
       const pathIds = [...parentIds, node.id]
-      if (String(name).toLowerCase().includes(kw)) {
+      if (!(node.children?.length) && String(name).toLowerCase().includes(kw)) {
         res.push({ name, path: pathParts.join(' ＞ '), pathIds })
       }
       if (res.length < 20) walk(node.children || [], pathParts, pathIds)
@@ -551,7 +571,7 @@ function flatCategoryOptions(limit = 5000) {
       const pathIds = [...parentIds, node.id]
       const children = node.children || []
       if (!children.length) {
-        res.push({ id: node.id, name, path: pathParts.join(' ＞ '), pathIds })
+        res.push({ id: node.id, name, path: pathParts.join(' ＞ '), pathIds, categoryInfo: publishCategoryFromNode(node) })
       } else {
         walk(children, pathParts, pathIds)
       }
@@ -643,7 +663,7 @@ async function autoSelectCategory() {
 }
 
 // ---- 自动分类（上传封面图后触发） ----
-async function triggerAutoCategory() {
+async function triggerAutoCategory(force = false) {
   if (!form.accountId) {
     autoCategoryMessage.value = '请先选择闲鱼账号'
     autoCategoryMsgType.value = 'warn'
@@ -653,7 +673,7 @@ async function triggerAutoCategory() {
     return
   }
   // 如果用户已手动选择分类，不要覆盖
-  if (userManuallySelectedCategory.value) {
+  if (userManuallySelectedCategory.value && !force) {
     autoCategoryMessage.value = '已手动选择分类，重新上传封面图可再次自动识别'
     autoCategoryMsgType.value = 'info'
     return
@@ -711,22 +731,7 @@ async function triggerAutoCategory() {
     const candidates = data.candidates || []
     autoCategoryCandidates.value = candidates
     if (selected) {
-      // 尝试在本地分类树中找到匹配项
-      const option = findCategoryOption(selected)
-      if (option) {
-        selectCategoryByPath(option, { manual: false })
-        autoSelectedCatId.value = selected.catId || selected.catName || ''
-        autoCategoryMessage.value = '已根据封面图自动识别分类'
-        autoCategoryMsgType.value = 'success'
-      } else if (candidates.length) {
-        // 未匹配到本地分类树，展示候选分类让用户手动点选
-        autoCategoryMessage.value = '已识别候选分类，请点击选择'
-        autoCategoryMsgType.value = 'info'
-        autoSelectedCatId.value = selected.catId || ''
-      } else {
-        autoCategoryMessage.value = '已根据封面图自动识别分类'
-        autoCategoryMsgType.value = 'success'
-      }
+      applyAutoCategory(selected, { manual: false })
     } else {
       autoCategoryMessage.value = '已识别候选分类，请点击选择'
       autoCategoryMsgType.value = 'info'
@@ -759,34 +764,33 @@ async function refreshCategoriesInBackground() {
   }
 }
 
-function applyAutoCategory(cat) {
-  if (!cat) return
-  markManualCategorySelection()
-  // 用候选分类的名称匹配本地分类树
-  const matchName = cat.catName || cat.name || ''
-  if (matchName) {
-    const options = flatCategoryOptions(5000)
-    const matched = options.find(item =>
-      item.name === matchName || item.path.endsWith(matchName)
-    )
-    if (matched) {
-      selectCategoryByPath(matched, { manual: false })
-      autoSelectedCatId.value = cat.catId || cat.catName || ''
-      autoCategoryMessage.value = `已选择分类：${matchName}`
-      autoCategoryMsgType.value = 'success'
-      return
-    }
+function applyAutoCategory(cat, { manual = true } = {}) {
+  const info = publishCategoryFromNode(cat, 'xianyu')
+  if (!info?.catId || !info.catName || !info.isLeaf) return
+  if (manual) markManualCategorySelection()
+  const matched = findCategoryOption({ name: info.catName })
+  if (matched) selectCategoryByPath(matched, { manual: false })
+  else {
+    level1Id.value = null
+    level2Id.value = null
+    level3Id.value = null
+    level2List.value = []
+    level3List.value = []
+    selectedCategoryIds.value = []
   }
-  // 未匹配到本地分类树时，直接设置分类名称
-  selectedCategoryName.value = matchName
-  selectedCategoryPath.value = matchName
-  autoSelectedCatId.value = cat.catId || cat.catName || ''
-  autoCategoryMessage.value = `已选择分类：${matchName}`
+  // Keep the platform candidate even when the local tree has no matching node.
+  selectedPublishCategory.value = info
+  selectedCategoryName.value = info.catName
+  selectedCategoryPath.value = [cat.channelCat1Name, cat.channelCat2Name, cat.channelCat3Name, info.catName].filter(Boolean).join(' ＞ ')
+  autoSelectedCatId.value = info.catId
+  autoCategoryMessage.value = `已选择闲鱼分类：${info.catName}`
   autoCategoryMsgType.value = 'success'
 }
 
 function selectCategoryByPath(item, { manual = true } = {}) {
   const ids = item.pathIds || []
+  const selectedNode = categoryNodeAtPath(categories.value, ids)
+  if (!selectedNode) return
   const l1 = categories.value.find(c => String(c.id) === String(ids[0]))
   if (!l1) return
   if (manual) markManualCategorySelection()
@@ -799,6 +803,10 @@ function selectCategoryByPath(item, { manual = true } = {}) {
       if (l3) selectLevel3(l3, { manual: false })
     }
   }
+  selectedCategoryIds.value = [...ids]
+  selectedPublishCategory.value = publishCategoryFromNode(selectedNode)
+  selectedCategoryName.value = selectedNode.label || selectedNode.title
+  selectedCategoryPath.value = item.path
   categoryKeyword.value = ''
   rememberCategory(item)
 }
@@ -1102,7 +1110,7 @@ const checks = computed(() => [
   { text: '标题已填写', ok: form.title.trim().length > 0 },
   { text: '商品描述已填写', ok: form.description.trim().length > 0 },
   { text: '已上传商品图片', ok: form.imageUrls.length > 0 },
-  { text: '分类已选择', ok: !!selectedCategoryName.value },
+  { text: '已选择完整的叶子分类', ok: !!selectedCategoryName.value && selectedPublishCategory.value?.isLeaf === true },
   { text: '发布地区完整有效', ok: isPublishAddressComplete(selectedAddress.value) },
   { text: '交付方式有效', ok: (['free', 'none'].includes(shippingMode.value) || (form.multiSpecEnabled && shippingMode.value === 'fixed')) && (shippingMode.value !== 'none' || !form.supportSelfPick) },
   { text: '价格已填写', ok: form.multiSpecEnabled ? multiSpecValidSkus.value.length > 0 : Number(form.price) > 0 },
@@ -1525,6 +1533,7 @@ function editFailedPublish() {
     if (p.category && !selectedCategoryName.value) {
       selectedCategoryName.value = p.category
       selectedCategoryPath.value = p.category
+      selectedPublishCategory.value = p.categoryInfo ? { ...p.categoryInfo } : null
     }
     if (p.location && (!selectedAddress.value || !selectedAddress.value.prov)) {
       selectedAddress.value = { ...p.location }
@@ -1537,7 +1546,7 @@ function editFailedPublish() {
 }
 
 async function submit() {
-  if (submitting.value || accountsAvailable.value !== true || ['unknown', 'in_progress'].includes(publishOutcome.value?.status)) return
+  if (submitting.value || accountsAvailable.value !== true || publishOutcome.value?.categoryInvalid || ['unknown', 'in_progress'].includes(publishOutcome.value?.status)) return
   submitting.value = true
   try {
     await submitPublishIntent()
@@ -1595,6 +1604,7 @@ async function submitPublishIntent() {
           itemProperties: buildItemPropertiesForPublish(),
           itemSkuList: buildItemSkuListForPublish(),
           category: selectedCategoryName.value,
+          categoryInfo: selectedPublishCategory.value ? { ...selectedPublishCategory.value } : null,
           shippingMode: shippingMode.value,
           postFee: shippingMode.value === 'fixed' ? 0 : 0,
           freeShipping: freeShipping,
@@ -1610,6 +1620,7 @@ async function submitPublishIntent() {
           price: finalPrice,
           stock: finalStock,
           category: selectedCategoryName.value,
+          categoryInfo: selectedPublishCategory.value ? { ...selectedPublishCategory.value } : null,
           shippingMode: shippingMode.value,
           postFee: shippingMode.value === 'fixed' ? 0 : 0,
           freeShipping: freeShipping,
@@ -1653,6 +1664,7 @@ async function submitPublishIntent() {
     const state = String(e?.data?.status || 'unknown')
     publishOutcome.value = {
       status: state,
+      categoryInvalid: /FAIL_BIZ_CATEGORY_DISPOSED/.test(e?.message || ''),
       retrySafe: e?.data?.retrySafe === true,
       retryScope: e?.data?.retryScope || null,
     }
@@ -1704,7 +1716,8 @@ function serializeCurrentDraft() {
     category: {
       name: selectedCategoryName.value,
       path: selectedCategoryPath.value,
-      pathIds: [level1Id.value, level2Id.value, level3Id.value].filter(Boolean),
+      pathIds: [...selectedCategoryIds.value],
+      categoryInfo: selectedPublishCategory.value ? { ...selectedPublishCategory.value } : null,
     },
     poi: null,
     location: selectedAddress.value ? JSON.parse(JSON.stringify(selectedAddress.value)) : null,
@@ -1724,23 +1737,16 @@ function restoreDraft(draft) {
     form.stock = f.stock || ''
     form.supportSelfPick = !!f.supportSelfPick
     setShipping(draft.shippingMode || 'free')
-    // 分类恢复：优先走级联选择，无 pathIds 时回退到直接设置 name/path
     const cat = draft.category || {}
-    if (cat.pathIds && cat.pathIds.length) {
-      nextTick(() => {
-        // 试图在分类树中找到对应路径
-        try {
-          if (cat.pathIds[0]) selectLevel1(categories.value.find(c => c.id === cat.pathIds[0]), { manual: false })
-          if (cat.pathIds[1]) selectLevel2(level2List.value.find(c => c.id === cat.pathIds[1]), { manual: false })
-          if (cat.pathIds[2]) selectLevel3(level3List.value.find(c => c.id === cat.pathIds[2]), { manual: false })
-        } catch {
-          selectedCategoryName.value = cat.name || ''
-          selectedCategoryPath.value = cat.path || ''
-        }
-      })
-    } else {
+    if (cat.pathIds?.length) {
+      selectCategoryByPath({ name: cat.name, path: cat.path, pathIds: cat.pathIds }, { manual: false })
+    }
+    if (cat.categoryInfo?.source === 'xianyu') {
+      applyAutoCategory(cat.categoryInfo, { manual: false })
+    } else if (!selectedCategoryName.value) {
       selectedCategoryName.value = cat.name || ''
       selectedCategoryPath.value = cat.path || ''
+      selectedPublishCategory.value = null
     }
     // 商品位置恢复（三级联动地址）
     if (draft.location) {
@@ -1792,6 +1798,7 @@ watch(
 )
 watch(shippingMode, scheduleAutoSave)
 watch(selectedCategoryName, scheduleAutoSave)
+watch(selectedPublishCategory, scheduleAutoSave, { deep: true })
 watch(selectedAddress, scheduleAutoSave, { deep: true })
 // 自动发货状态变化时自动保存草稿
 watch(() => [autoDelivery.enabled, autoDelivery.sourceId], scheduleAutoSave)
@@ -1845,6 +1852,8 @@ async function clearAllData() {
     shippingMode.value = 'free'
     selectedCategoryName.value = ''
     selectedCategoryPath.value = ''
+    selectedPublishCategory.value = null
+    selectedCategoryIds.value = []
     level1Id.value = null
     level2Id.value = null
     level3Id.value = null

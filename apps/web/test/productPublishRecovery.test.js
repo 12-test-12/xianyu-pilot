@@ -24,6 +24,7 @@ function flow({ outcome = null, publish, confirm = async () => true } = {}) {
     },
     form: { accountId: 1, title: '修改后的商品', description: '描述', imageUrls: ['image'], price: '2', stock: 1 },
     shippingMode: ref('free'), selectedAddress: ref(null), selectedCategoryName: ref('分类'),
+    selectedPublishCategory: ref({ catId: '91000002', catName: '分类', channelCatId: '92000002', tbCatId: '93000002', source: 'xianyu', isLeaf: true }),
     normalizePublishAddress: () => null,
     validate: () => true, ensureSelectedAccountCookieValid: async () => true,
     createSecureId: () => 'new-key',
@@ -57,6 +58,7 @@ test('refusal releases busy state; editing retains content and creates a fresh r
   await state.submit()
   assert.equal(requests[1].title, '修改后的商品')
   assert.equal(requests[1].idempotencyKey, 'new-key')
+  assert.equal(requests[1].categoryInfo.catId, '91000002')
 })
 
 test('retry and legacy recovery keep the original payload and key', async () => {
@@ -101,4 +103,20 @@ test('double click during confirmation issues only one request and cancellation 
   await pending
   assert.equal(count, 1)
   assert.equal(state.submitting.value, false)
+})
+
+test('disposed category requires returning to editing rather than repeating the stale intent', async () => {
+  const requests = []
+  const { state } = flow({ publish: async payload => {
+    requests.push(payload)
+    throw { message: '该类目已废弃（错误码：FAIL_BIZ_CATEGORY_DISPOSED）', data: { status: 'failed', retrySafe: true } }
+  } })
+  await state.submit()
+  assert.equal(state.publishOutcome.value.categoryInvalid, true)
+  await state.submit()
+  assert.equal(requests.length, 1)
+  state.editFailedPublish()
+  await state.submit()
+  assert.equal(requests.length, 2)
+  assert.equal(requests[1].idempotencyKey, 'new-key')
 })

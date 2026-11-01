@@ -212,14 +212,8 @@ async def _publish_via_fish_shop(
     if validation_error:
         raise RuntimeError(f"鱼小铺重发校验失败: {validation_error}")
 
-    # 类目信息：使用快照中的或默认值
-    category_info = {
-        "catId": (snapshot.get("category") or {}).get("catId") or "50025461",
-        "catName": (snapshot.get("category") or {}).get("catName") or "软件安装包/序列号/激活码",
-        "channelCatId": (snapshot.get("category") or {}).get("channelCatId") or "201449620",
-        "tbCatId": (snapshot.get("category") or {}).get("tbCatId") or "50003316",
-        "cardList": (snapshot.get("category") or {}).get("cardList") or [],
-    }
+    # Reuse the snapshot category without mixing in unrelated default IDs.
+    category_info = snapshot.get("category") or {}
 
     # 复用 XianyuItemPublisher 上传图片（避免重复实现）
     publisher = XianyuItemPublisher(cookie_str)

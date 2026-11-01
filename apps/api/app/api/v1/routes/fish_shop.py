@@ -58,6 +58,7 @@ from ....services.xianyu_goods_sync import (
     extract_token_from_cookie,
 )
 from ....services.publish_options import publish_location_error
+from ....services.publish_category import category_request, resolve_publish_category, PublishCategoryError
 from .internal import verify_internal_or_current_user
 
 logger = logging.getLogger(__name__)
@@ -323,18 +324,6 @@ async def _sync_category_recommend(
         return {"recommended": False}
 
 
-def _category_info_from_request(req: dict, publisher: XianyuItemPublisher) -> dict:
-    user_cat = req.get("category", {}) or {}
-    return {
-        "recommended": False,
-        "catId": user_cat.get("catId") or publisher.DEFAULT_CAT_ID,
-        "catName": user_cat.get("catName") or publisher.DEFAULT_CAT_NAME,
-        "channelCatId": user_cat.get("channelCatId") or publisher.DEFAULT_CHANNEL_CAT_ID,
-        "tbCatId": user_cat.get("tbCatId") or publisher.DEFAULT_TB_CAT_ID,
-        "cardList": [],
-    }
-
-
 # ============================================================
 # 路由：发布
 # ============================================================
@@ -407,7 +396,7 @@ async def publish_fish_shop_item(
         # 4) 类目推荐（复用现有能力）
         publisher = XianyuItemPublisher(cookie_str)
         recommend_result = await _sync_category_recommend(publisher, title, description, image_urls)
-        category_info = recommend_result if recommend_result.get("recommended") else _category_info_from_request(req, publisher)
+        category_info = resolve_publish_category(category_request(req), recommend_result)
 
         # 5) 图片上传到闲鱼 CDN（复用现有能力）
         #    编辑/回显场景下闲鱼 CDN 图片可能为 http://，统一归一化为 https:// 再上传
@@ -476,6 +465,9 @@ async def publish_fish_shop_item(
             "totalQuantity": str(total_qty),
             "minPriceInCent": str(min_price_cent),
         })
+    except PublishCategoryError as exc:
+        await db.rollback()
+        return ResultObject(code=400, msg=str(exc), data={"status": "failed", "retrySafe": True, "retryScope": "remote"})
     except Exception as exc:
         logger.warning("fish_shop_publish_failed err=%s", str(exc)[:200])
         await db.rollback()
@@ -560,7 +552,7 @@ async def edit_fish_shop_item(
         # 4) 类目推荐
         publisher = XianyuItemPublisher(cookie_str)
         recommend_result = await _sync_category_recommend(publisher, title, description, image_urls)
-        category_info = recommend_result if recommend_result.get("recommended") else _category_info_from_request(req, publisher)
+        category_info = resolve_publish_category(category_request(req), recommend_result)
 
         # 5) 图片上传（http 图片 URL 归一化为 https，download_public_image 仅允许公网 HTTPS）
         upload_sources = [
@@ -635,6 +627,9 @@ async def edit_fish_shop_item(
             "minPriceInCent": str(min_price_cent),
         })
     except Exception as exc:
+        if isinstance(exc, PublishCategoryError):
+            await db.rollback()
+            return ResultObject.validate_failed(str(exc))
         logger.exception("fish_shop_edit_failed item_id=%s", item_id)
         await db.rollback()
         return ResultObject.failed(f"鱼小铺多规格编辑失败，请稍后重试: {type(exc).__name__}")

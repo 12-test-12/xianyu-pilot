@@ -471,6 +471,13 @@ async function loadDetail() {
     // 回显分类（用于显示，不可编辑）
     // 优先使用 editdetail 接口返回的 catName
     detail.value.category = data.catName || data.category || internalItem.itemCatDTO?.catName || ''
+    detail.value.categoryInfo = {
+      catId: data.catId || internalItem.itemCatDTO?.catId || '',
+      catName: detail.value.category,
+      channelCatId: data.channelCatId || internalItem.itemCatDTO?.channelCatId || '',
+      tbCatId: data.tbCatId || internalItem.itemCatDTO?.tbCatId || '',
+      source: 'xianyu',
+    }
 
     // 回显多规格数据
     // 简单商品：itemProperties 为空列表，多规格开关保持关闭
@@ -762,6 +769,7 @@ async function submit() {
       postFee: 0,
       location: locationData,
       category: detail.value.category ? { catName: detail.value.category } : null,
+      categoryInfo: detail.value.categoryInfo,
     })
 
     if (res && typeof res === 'object' && [0, 200].includes(Number(res.code))) {

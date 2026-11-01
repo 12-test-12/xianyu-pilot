@@ -26,6 +26,8 @@ import time
 import uuid
 from typing import Any, Iterable, List, Optional
 
+from .publish_category import normalize_publish_category, PublishCategoryError
+
 from .xianyu_goods_sync import (
     APP_KEY,
     H5_API_BASE,
@@ -355,16 +357,9 @@ def build_internal_item_object(item_data: dict, xianyu_image_urls: List[str],
     }
 
     # ---- 类目 ----
-    cat_id = category_info.get("catId") or "50025461"
-    cat_name = category_info.get("catName") or "软件安装包/序列号/激活码"
-    channel_cat_id = category_info.get("channelCatId") or "201449620"
-    tb_cat_id = category_info.get("tbCatId") or "50003316"
-    item_cat_dto = {
-        "catId": str(cat_id),
-        "catName": cat_name,
-        "channelCatId": str(channel_cat_id),
-        "tbCatId": str(tb_cat_id),
-    }
+    item_cat_dto = normalize_publish_category(category_info)
+    if not item_cat_dto:
+        raise PublishCategoryError("发布分类缺少有效的叶子类目 ID，请重新识别分类后发布")
 
     # ---- 标签 ----
     card_list = category_info.get("cardList", []) or []

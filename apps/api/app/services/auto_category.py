@@ -19,6 +19,7 @@ import requests
 from PIL import Image
 
 from ..core.config import settings
+from .publish_category import normalize_publish_category, parse_publish_category_recommendation, same_category
 
 logger = logging.getLogger(__name__)
 
@@ -343,11 +344,19 @@ def select_best_category(
     if not isinstance(data, dict):
         return _no_category_result("接口返回数据格式异常")
 
+    direct = parse_publish_category_recommendation(result)
+    def direct_or_empty():
+        if direct.get("recommended"):
+            return {"auto_select": True, "reason": "官方首选推荐", "category": normalize_publish_category(direct), "candidates": direct["candidates"]}
+        return _no_category_result("CATEGORY_NO_CANDIDATES")
+
     # 提取 categoryPredictResult
     predict_result = data.get("categoryPredictResult")
 
     # 提取 cardList
     card_list = data.get("cardList", [])
+    if isinstance(card_list, dict):
+        card_list = [card_list]
     if not isinstance(card_list, list):
         card_list = []
 
@@ -365,7 +374,7 @@ def select_best_category(
 
     if not category_card:
         logger.warning("未找到 propertyName='分类' 的卡片，无候选分类")
-        return _no_category_result("CATEGORY_NO_CANDIDATES")
+        return direct_or_empty()
 
     # 提取 valuesList
     values_list = category_card.get("valuesList", [])
@@ -374,14 +383,14 @@ def select_best_category(
 
     if not values_list:
         logger.warning("分类卡片 valuesList 为空")
-        return _no_category_result("CATEGORY_NO_CANDIDATES")
+        return direct_or_empty()
 
     # 构建候选分类列表
     # 保留闲鱼 4 级层级信息：channelCat1Name → channelCat2Name → channelCat3Name → catName
     # 供当前请求的自动选择和前端候选路径展示；不会修改版本化分类文件。
     candidates = []
     for val in values_list:
-        if not isinstance(val, dict):
+        if not normalize_publish_category(val):
             continue
         candidate = {
             "catId": val.get("catId", ""),
@@ -409,18 +418,14 @@ def select_best_category(
     selected_from_predict = False  # 标记是否来自 categoryPredictResult（闲鱼官方首选）
 
     # 优先级 1: 优先使用 categoryPredictResult（闲鱼官方首选推荐，直接采用，跳过置信度检查）
-    if predict_result and isinstance(predict_result, dict):
-        predict_channel_cat_id = str(predict_result.get("channelCatId", ""))
-        predict_cat_id = str(predict_result.get("catId", ""))
-        predict_tb_cat_id = str(predict_result.get("tbCatId", ""))
-
-        for c in candidates:
-            if (predict_channel_cat_id and str(c.get("channelCatId", "")) == predict_channel_cat_id) or \
-               (predict_cat_id and str(c.get("catId", "")) == predict_cat_id) or \
-               (predict_tb_cat_id and str(c.get("tbCatId", "")) == predict_tb_cat_id):
-                selected = c
-                selected_from_predict = True
-                break
+    predictions = [predict_result] if isinstance(predict_result, dict) else predict_result
+    for prediction in predictions if isinstance(predictions, list) else []:
+        if not isinstance(prediction, dict):
+            continue
+        selected = next((c for c in candidates if same_category(prediction, c)), None)
+        if selected:
+            selected_from_predict = True
+            break
 
     # 优先级 2: 选 isClicked == "1" 的项
     if not selected:

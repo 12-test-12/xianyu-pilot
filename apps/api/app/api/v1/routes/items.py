@@ -51,6 +51,7 @@ from ..deps import get_current_user
 from ....services.xianyu_goods_sync import XianyuItemOperator
 
 from ....services.publish_options import ordinary_shipping_error, publish_location_error
+from ....services.publish_category import category_request
 
 from ....services.remote_goods_delete import (
 
@@ -964,9 +965,9 @@ async def publish_item(
 
         category = req.get("category", "")
 
-        if category:
+        if category or req.get("categoryInfo"):
 
-            item_data["category"] = {"catName": category}
+            item_data["category"] = category_request(req)
 
 
 
