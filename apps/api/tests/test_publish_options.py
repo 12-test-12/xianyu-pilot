@@ -121,7 +121,7 @@ def mock_platform_receipts(monkeypatch, receipts, calls):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("code", ["FAIL_BIZ_STRONG_VALID_VERIFY_INFO", "FAIL_BIZ_ITEM_TITLE_VIOLATION"])
+@pytest.mark.parametrize("code", ["FAIL_BIZ_STRONG_VALID_VERIFY_INFO", "FAIL_BIZ_ITEM_TITLE_VIOLATION", "FAIL_BIZ_USER_NOT_REALNAME"])
 async def test_explicit_refusal_can_retry_original_key_after_remediation(publish_context, monkeypatch, code):
     request, session, calls, local_calls = publish_context
     mock_platform_receipts(monkeypatch, [

@@ -8,8 +8,8 @@
         <b>当前是恢复中的已持久化发布意图</b>
         <span>本次操作固定使用下列数据和原幂等键；页面表单的后续改动不会进入该恢复请求。</span>
         <pre>{{ persistedIntentSummary }}</pre>
-        <button v-if="canEditFailedIntent" type="button" class="clear-draft-btn" @click="editFailedPublish">返回编辑（保留商品内容）</button>
-        <button v-else-if="unsafePublishFailure" type="button" class="clear-draft-btn" :disabled="submitting || accountsAvailable !== true" @click="submit">重新检查并重试原请求</button>
+        <button v-if="canEditFailedIntent" type="button" class="intent-action-btn" @click="editFailedPublish">返回编辑（保留商品内容）</button>
+        <button v-else-if="unsafePublishFailure" type="button" class="intent-action-btn secondary" :disabled="submitting || accountsAvailable !== true" @click="submit">重新检查并重试原请求</button>
         <span v-if="publishOutcome?.status === 'failed'">请先按错误提示处理账号认证或修改商品资料，再手动发布。</span>
       </div>
 
@@ -1514,6 +1514,22 @@ function clearPublishIntent() {
 
 function editFailedPublish() {
   if (!canEditFailedIntent.value) return
+  const p = publishIntent.payload
+  if (p && !form.title) {
+    if (p.title) form.title = p.title
+    if (p.description) form.description = p.description
+    if (Array.isArray(p.imageUrls) && p.imageUrls.length && !form.imageUrls.length) form.imageUrls = [...p.imageUrls]
+    if (p.price != null && !form.price) form.price = String(p.price)
+    if (p.stock != null && !form.stock) form.stock = String(p.stock)
+    if (p.shippingMode) setShipping(p.shippingMode)
+    if (p.category && !selectedCategoryName.value) {
+      selectedCategoryName.value = p.category
+      selectedCategoryPath.value = p.category
+    }
+    if (p.location && (!selectedAddress.value || !selectedAddress.value.prov)) {
+      selectedAddress.value = { ...p.location }
+    }
+  }
   clearPublishIntent()
   error.value = ''
   warning.value = '已返回编辑，商品内容已保留。请处理失败原因后重新发布。'
@@ -2320,6 +2336,35 @@ onBeforeUnmount(() => {
 .clear-draft-btn:hover {
   background: #fee2e2;
   border-color: #fca5a5;
+}
+.intent-action-btn {
+  border: 1px solid #93c5fd;
+  background: #eff6ff;
+  color: #1d4ed8;
+  border-radius: 8px;
+  padding: 6px 14px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: all 0.15s;
+}
+.intent-action-btn:hover {
+  background: #dbeafe;
+  border-color: #60a5fa;
+}
+.intent-action-btn.secondary {
+  border-color: #fde68a;
+  background: #fefce8;
+  color: #b45309;
+}
+.intent-action-btn.secondary:hover {
+  background: #fef9c3;
+  border-color: #f59e0b;
+}
+.intent-action-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 /* === 移动端适配 (max-width: 900px) === */

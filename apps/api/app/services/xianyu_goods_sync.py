@@ -2781,5 +2781,8 @@ class XianyuItemPublisher:
             "message": friendly,
             "retMsg": ret_msg,
             # Only an explicit platform rejection proves that publishing did not succeed.
-            "retrySafe": ret_msg.partition("::")[0].split("[", 1)[0].strip() in PUBLISH_REJECT_CODE_MAP,
+            "retrySafe": (
+                ret_msg.partition("::")[0].split("[", 1)[0].strip() in PUBLISH_REJECT_CODE_MAP
+                or ret_msg.partition("::")[0].split("[", 1)[0].strip().startswith("FAIL_BIZ_")
+            ),
         }

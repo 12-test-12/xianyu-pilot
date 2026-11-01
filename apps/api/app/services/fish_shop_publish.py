@@ -29,6 +29,7 @@ from typing import Any, Iterable, List, Optional
 from .xianyu_goods_sync import (
     APP_KEY,
     H5_API_BASE,
+    _explain_publish_rejection,
     _refresh_m_h5_tk,
     _safe_price_to_cent,
     extract_token_from_cookie,
@@ -629,7 +630,8 @@ def call_fish_shop_api(cookie_str: str, api_name: str, version: str,
             "fish_shop_api_failed api=%s is_edit=%s ret=%s traceId=%s",
             api_name, is_edit, ret_msg, result.get("traceId", ""),
         )
-        raise RuntimeError(f"鱼小铺接口调用失败：{ret_msg}")
+        friendly = _explain_publish_rejection(ret_msg, result.get("data"))
+        raise RuntimeError(friendly or f"鱼小铺接口调用失败：{ret_msg}")
 
     data_body = result.get("data", {})
     if isinstance(data_body, dict):

@@ -233,15 +233,7 @@ class SqlExternalOperationStore:
             # Older releases permanently locked explicit authentication refusals.
             # Recover only that known refusal, under the existing row lock and
             # original digest; never reopen ambiguous or remotely confirmed work.
-            if (
-                attempt.operation_type == "publish"
-                and attempt.state == "failed"
-                and attempt.last_error_code == "platform_rejected"
-                and "FAIL_BIZ_STRONG_VALID_VERIFY_INFO" in (attempt.error_message or "")
-                and not attempt.remote_confirmed_at
-                and not attempt.remote_reference_id
-            ):
-                attempt.retry_safe = 1
+            self._recover_legacy_refusal(attempt)
 
             # A final result is always replayable by its original key, even if
             # later update-price intents exist for the same goods row.
@@ -356,6 +348,7 @@ class SqlExternalOperationStore:
             # a later key with a different digest represents a new price.
             return None
 
+        self._recover_legacy_refusal(latest)
         blocks_new_intent = state in {
             "pending",
             "in_progress",
@@ -427,6 +420,22 @@ class SqlExternalOperationStore:
                 .with_for_update()
             )
         ).scalar_one_or_none()
+
+    @staticmethod
+    def _recover_legacy_refusal(attempt: ExternalOperationAttempt | None) -> None:
+        if (
+            attempt is not None
+            and attempt.operation_type == "publish"
+            and attempt.state == "failed"
+            and attempt.last_error_code in {"platform_rejected", "remote_rejected"}
+            and (
+                "FAIL_BIZ_STRONG_VALID_VERIFY_INFO" in (attempt.error_message or "")
+                or "未签署相关认证协议" in (attempt.error_message or "")
+            )
+            and not attempt.remote_confirmed_at
+            and not attempt.remote_reference_id
+        ):
+            attempt.retry_safe = 1
 
     @staticmethod
     def _is_final(attempt: ExternalOperationAttempt) -> bool:

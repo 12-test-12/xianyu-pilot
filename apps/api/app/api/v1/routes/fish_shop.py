@@ -479,7 +479,8 @@ async def publish_fish_shop_item(
     except Exception as exc:
         logger.warning("fish_shop_publish_failed err=%s", str(exc)[:200])
         await db.rollback()
-        return ResultObject.failed(f"鱼小铺多规格发布失败，请稍后重试: {type(exc).__name__}")
+        err_msg = str(exc).strip()
+        return ResultObject.failed(err_msg or f"鱼小铺多规格发布失败，请稍后重试: {type(exc).__name__}")
 
 
 # ============================================================
