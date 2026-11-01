@@ -58,7 +58,7 @@ from ....services.xianyu_goods_sync import (
     extract_token_from_cookie,
 )
 from ....services.publish_options import publish_location_error
-from ....services.publish_category import category_request, resolve_publish_category, PublishCategoryError
+from ....services.publish_category import PublishCategoryError
 from .internal import verify_internal_or_current_user
 
 logger = logging.getLogger(__name__)
@@ -269,6 +269,7 @@ def _build_publish_snapshot(req: dict, internal_obj: dict, matched_skus: list) -
         (int(s.get("priceInCent", 0)) for s in matched_skus),
         default=0,
     )
+    category_data = internal_obj.get("itemCatDTO") or req.get("categoryInfo") or req.get("category", {})
     snapshot = {
         "title": (req.get("title") or "").strip(),
         "description": (req.get("description") or "").strip(),
@@ -277,7 +278,8 @@ def _build_publish_snapshot(req: dict, internal_obj: dict, matched_skus: list) -
         "shippingMode": req.get("shippingMode", "free"),
         "supportSelfPick": req.get("supportSelfPick", False),
         "location": req.get("location", {}),
-        "category": req.get("category", {}),
+        "category": category_data,
+        "categoryInfo": category_data if isinstance(category_data, dict) else {},
     }
     if req.get("origPrice"):
         snapshot["origPrice"] = req.get("origPrice")
@@ -308,20 +310,6 @@ async def _save_edit_snapshot(
         source=source,
     ))
     await db.flush()
-
-
-async def _sync_category_recommend(
-    publisher: XianyuItemPublisher, title: str, desc: str, image_urls: list
-) -> dict:
-    """同步调用类目推荐，包装为异步。"""
-    loop = asyncio.get_event_loop()
-    try:
-        return await loop.run_in_executor(
-            None, publisher.category_recommend, title, desc, image_urls
-        )
-    except Exception as exc:
-        logger.warning("category_recommend_failed err=%s", str(exc)[:200])
-        return {"recommended": False}
 
 
 # ============================================================
@@ -394,9 +382,8 @@ async def publish_fish_shop_item(
             return ResultObject.validate_failed(location_error)
 
         # 4) 类目推荐（复用现有能力）
-        publisher = XianyuItemPublisher(cookie_str)
-        recommend_result = await _sync_category_recommend(publisher, title, description, image_urls)
-        category_info = resolve_publish_category(category_request(req), recommend_result)
+        publisher = XianyuItemPublisher(cookie_str, account_id=account_id)
+        category_info = await asyncio.to_thread(publisher.resolve_category_for_publish, req)
 
         # 5) 图片上传到闲鱼 CDN（复用现有能力）
         #    编辑/回显场景下闲鱼 CDN 图片可能为 http://，统一归一化为 https:// 再上传
@@ -467,7 +454,9 @@ async def publish_fish_shop_item(
         })
     except PublishCategoryError as exc:
         await db.rollback()
-        return ResultObject(code=400, msg=str(exc), data={"status": "failed", "retrySafe": True, "retryScope": "remote"})
+        recovery = (await asyncio.to_thread(publisher.refresh_rejected_category, req, exc.rejected_category)
+                    if exc.rejected_category else exc.to_data())
+        return ResultObject(code=400, msg=str(exc), data={"status": "failed", "retrySafe": True, "retryScope": "remote", **recovery})
     except Exception as exc:
         logger.warning("fish_shop_publish_failed err=%s", str(exc)[:200])
         await db.rollback()
@@ -550,9 +539,8 @@ async def edit_fish_shop_item(
             return ResultObject.validate_failed(location_error)
 
         # 4) 类目推荐
-        publisher = XianyuItemPublisher(cookie_str)
-        recommend_result = await _sync_category_recommend(publisher, title, description, image_urls)
-        category_info = resolve_publish_category(category_request(req), recommend_result)
+        publisher = XianyuItemPublisher(cookie_str, account_id=account_id)
+        category_info = await asyncio.to_thread(publisher.resolve_category_for_publish, req)
 
         # 5) 图片上传（http 图片 URL 归一化为 https，download_public_image 仅允许公网 HTTPS）
         upload_sources = [
@@ -629,6 +617,8 @@ async def edit_fish_shop_item(
     except Exception as exc:
         if isinstance(exc, PublishCategoryError):
             await db.rollback()
+            if exc.rejected_category:
+                await asyncio.to_thread(publisher.invalidate_category_cache)
             return ResultObject.validate_failed(str(exc))
         logger.exception("fish_shop_edit_failed item_id=%s", item_id)
         await db.rollback()

@@ -11,6 +11,12 @@
         <button v-if="canEditFailedIntent" type="button" class="intent-action-btn" @click="editFailedPublish">返回编辑（保留商品内容）</button>
         <button v-else-if="unsafePublishFailure" type="button" class="intent-action-btn secondary" :disabled="submitting || accountsAvailable !== true" @click="submit">重新检查并重试原请求</button>
         <span v-if="publishOutcome?.status === 'failed'">请先按错误提示处理账号认证或修改商品资料，再手动发布。</span>
+        <div v-if="publishOutcome?.categoryInvalid" class="auto-category-candidates">
+          <span>最新候选分类（点击后返回编辑，商品内容保留）：</span>
+          <button v-for="cat in publishOutcome.categoryCandidates || []" :key="`${cat.catId}:${cat.channelCatId}`" type="button" class="candidate-btn" :disabled="!canEditFailedIntent || !isCategoryRecoveryCurrent(publishIntent.payload, productAsyncContext())" @click="chooseRecoveredCategory(cat)">{{ cat.categoryPath?.join(' ＞ ') || cat.catName }}</button>
+          <span v-if="!publishOutcome.categoryCandidates?.length">暂未取得可用候选，请返回编辑后点击“重新识别分类”重试。</span>
+          <span v-else-if="!isCategoryRecoveryCurrent(publishIntent.payload, productAsyncContext())">商品资料已改动，请返回编辑后重新识别分类。</span>
+        </div>
       </div>
 
       <div class="draft-toolbar">
@@ -387,7 +393,7 @@ import {
   markPendingProductSync,
   recoverPublishIntent,
 } from '../utils/productPublishState.js'
-import { publishCategoryFromNode, categoryNodeAtPath } from '../utils/publishCategory.js'
+import { publishCategoryFromNode, categoryNodeAtPath, isCategoryRecoveryCurrent } from '../utils/publishCategory.js'
 import { imageUploadValidationMessage } from '../utils/imageUploadPolicy.js'
 import { accountAuthUsable, pickPreferredAccount } from '../utils/accountAuth.js'
 import { resolveTrustedMediaUrl } from '../utils/safeMediaUrl.js'
@@ -482,9 +488,9 @@ function productAsyncContext() {
   })
 }
 
-function markManualCategorySelection() {
+function markManualCategorySelection(manual = true) {
   categoryRevision += 1
-  userManuallySelectedCategory.value = true
+  if (manual) userManuallySelectedCategory.value = true
   aiCategoryRequestVersion += 1
   autoCategoryRequestVersion += 1
   aiCategoryLoading.value = false
@@ -637,7 +643,7 @@ async function autoSelectCategory() {
       currentVersion: aiCategoryRequestVersion,
       snapshot: requestContext,
       current: productAsyncContext(),
-      fields: ['title', 'description', 'categoryRevision'],
+      fields: ['accountId', 'title', 'description', 'coverImageUrl', 'categoryRevision'],
     })) return
     const data = res?.data || {}
     if (data.enabled === false || data.configured === false) {
@@ -653,6 +659,7 @@ async function autoSelectCategory() {
       return
     }
     const matched = findCategoryOption(data.category) || data.category
+    markManualCategorySelection(false)
     selectCategoryByPath(matched, { manual: false })
     aiCategoryMessage.value = data.reason ? `AI已选择：${data.reason}` : 'AI已自动选择分类'
   } catch (e) {
@@ -692,6 +699,7 @@ async function triggerAutoCategory(force = false) {
       coverImageUrl,
       title: requestContext.title || undefined,
       description: requestContext.description || undefined,
+      forceRefresh: force,
     })
     if (!isProductAsyncRequestCurrent({
       requestVersion,
@@ -730,8 +738,11 @@ async function triggerAutoCategory(force = false) {
     const selected = data.selectedCategory
     const candidates = data.candidates || []
     autoCategoryCandidates.value = candidates
-    if (selected) {
+    if (selected && !selectedCategoryName.value && !selectedPublishCategory.value) {
       applyAutoCategory(selected, { manual: false })
+    } else if (selectedCategoryName.value) {
+      autoCategoryMessage.value = '已刷新候选分类，当前选择已保留。点击候选分类才会更换。'
+      autoCategoryMsgType.value = 'info'
     } else {
       autoCategoryMessage.value = '已识别候选分类，请点击选择'
       autoCategoryMsgType.value = 'info'
@@ -746,7 +757,7 @@ async function triggerAutoCategory(force = false) {
   } finally {
     if (requestVersion === autoCategoryRequestVersion) {
       autoCategoryLoading.value = false
-      // 后台刷新分类树，让新增的分类在前端级联选择器中可见
+      // The bundled tree is a display aid; live candidates remain separate.
       refreshCategoriesInBackground()
     }
   }
@@ -767,7 +778,7 @@ async function refreshCategoriesInBackground() {
 function applyAutoCategory(cat, { manual = true } = {}) {
   const info = publishCategoryFromNode(cat, 'xianyu')
   if (!info?.catId || !info.catName || !info.isLeaf) return
-  if (manual) markManualCategorySelection()
+  markManualCategorySelection(manual)
   const matched = findCategoryOption({ name: info.catName })
   if (matched) selectCategoryByPath(matched, { manual: false })
   else {
@@ -1110,7 +1121,7 @@ const checks = computed(() => [
   { text: '标题已填写', ok: form.title.trim().length > 0 },
   { text: '商品描述已填写', ok: form.description.trim().length > 0 },
   { text: '已上传商品图片', ok: form.imageUrls.length > 0 },
-  { text: '已选择完整的叶子分类', ok: !!selectedCategoryName.value && selectedPublishCategory.value?.isLeaf === true },
+  { text: '已选择完整的叶子分类', ok: !!selectedCategoryName.value && selectedPublishCategory.value?.isLeaf === true && selectedPublishCategory.value?.invalidated !== true },
   { text: '发布地区完整有效', ok: isPublishAddressComplete(selectedAddress.value) },
   { text: '交付方式有效', ok: (['free', 'none'].includes(shippingMode.value) || (form.multiSpecEnabled && shippingMode.value === 'fixed')) && (shippingMode.value !== 'none' || !form.supportSelfPick) },
   { text: '价格已填写', ok: form.multiSpecEnabled ? multiSpecValidSkus.value.length > 0 : Number(form.price) > 0 },
@@ -1520,9 +1531,17 @@ function clearPublishIntent() {
   try { sessionStorage.removeItem(PUBLISH_INTENT_KEY) } catch { /* Optional storage. */ }
 }
 
+function chooseRecoveredCategory(cat) {
+  if (!canEditFailedIntent.value || !isCategoryRecoveryCurrent(publishIntent.payload, productAsyncContext())) return
+  editFailedPublish()
+  applyAutoCategory(cat)
+  warning.value = '已选择平台最新候选分类，商品内容已保留，请确认后发布。'
+}
+
 function editFailedPublish() {
   if (!canEditFailedIntent.value) return
   const p = publishIntent.payload
+  const restoringCategory = Boolean(p && !form.title && publishOutcome.value?.categoryInvalid)
   if (p && !form.title) {
     if (p.title) form.title = p.title
     if (p.description) form.description = p.description
@@ -1538,6 +1557,9 @@ function editFailedPublish() {
     if (p.location && (!selectedAddress.value || !selectedAddress.value.prov)) {
       selectedAddress.value = { ...p.location }
     }
+  }
+  if (restoringCategory && selectedPublishCategory.value) {
+    selectedPublishCategory.value = { ...selectedPublishCategory.value, invalidated: true }
   }
   clearPublishIntent()
   error.value = ''
@@ -1556,6 +1578,7 @@ async function submit() {
 }
 
 async function submitPublishIntent() {
+  let submittedCategoryRevision = null
   error.value = ''
   warning.value = ''
   success.value = ''
@@ -1630,6 +1653,7 @@ async function submitPublishIntent() {
       }
       savePublishIntent()
     }
+    submittedCategoryRevision = categoryRevision
     const publishRes = publishIntent.payload.itemSkuList?.length
       ? await publishFishShopItem({
           ...publishIntent.payload,
@@ -1664,9 +1688,17 @@ async function submitPublishIntent() {
     const state = String(e?.data?.status || 'unknown')
     publishOutcome.value = {
       status: state,
-      categoryInvalid: /FAIL_BIZ_CATEGORY_DISPOSED/.test(e?.message || ''),
+      categoryInvalid: e?.data?.categoryRefreshRequired === true || /FAIL_BIZ_CATEGORY_DISPOSED|FAIL_BIZ_ITEM_CATEGORY_INVALID|FAIL_BIZ_ITEM_CATEGORY_NOT_MATCH/.test(e?.message || ''),
+      categoryCandidates: Array.isArray(e?.data?.categoryCandidates) ? e.data.categoryCandidates : [],
+      categoryRefreshFailed: e?.data?.categoryRefreshFailed === true,
       retrySafe: e?.data?.retrySafe === true,
       retryScope: e?.data?.retryScope || null,
+    }
+    if (state === 'failed' && publishOutcome.value.categoryInvalid
+        && submittedCategoryRevision === categoryRevision
+        && isCategoryRecoveryCurrent(publishIntent.payload, productAsyncContext())
+        && selectedPublishCategory.value) {
+      selectedPublishCategory.value = { ...selectedPublishCategory.value, invalidated: true }
     }
     savePublishIntent()
     if (state === 'remote_confirmed') {
@@ -1677,6 +1709,8 @@ async function submitPublishIntent() {
       warning.value = '同一发布意图正在执行，请勿重复提交。'
     } else if (state === 'failed' && publishOutcome.value.retrySafe !== true) {
       error.value = `${e.message || '发布失败'}。可重新检查原请求；服务端确认可安全重试后才会再次发布。`
+    } else if (state === 'failed' && publishOutcome.value.categoryInvalid) {
+      error.value = `${e.message || '分类需要更新'}。请在最新候选中选择分类，或返回编辑重新识别；商品内容已保留。`
     } else if (state === 'failed') {
       error.value = `${e.message || '发布失败'}。处理后可使用原请求重试，或点击“返回编辑”修改商品。`
     } else {

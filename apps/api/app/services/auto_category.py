@@ -20,6 +20,7 @@ from PIL import Image
 
 from ..core.config import settings
 from .publish_category import normalize_publish_category, parse_publish_category_recommendation, same_category
+from .category_cache import category_scope, category_query_key, desktop_category_cache
 
 logger = logging.getLogger(__name__)
 
@@ -536,6 +537,30 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
 
 
 def auto_category(
+    cookie_str: str,
+    image_data: bytes,
+    title: Optional[str] = None,
+    description: Optional[str] = None,
+    *, account_id=None, force_refresh=False,
+) -> dict:
+    cache = desktop_category_cache()
+    scope = category_scope(account_id, cookie_str)
+    key = category_query_key("cover", title, description, hashlib.sha256(image_data).hexdigest())
+    if cache:
+        if force_refresh:
+            cache.invalidate(scope)
+        else:
+            cached = cache.get(scope, key)
+            if cached:
+                return cached
+    generation = cache.generation(scope) if cache else None
+    result = _auto_category_live(cookie_str, image_data, title, description)
+    if cache:
+        cache.put(scope, key, result, generation=generation)
+    return {**result, "cacheHit": False}
+
+
+def _auto_category_live(
     cookie_str: str,
     image_data: bytes,
     title: Optional[str] = None,

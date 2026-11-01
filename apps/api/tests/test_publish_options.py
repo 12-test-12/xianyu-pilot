@@ -15,6 +15,7 @@ from app.models.entities import ExternalOperationAttempt
 from app.services import xianyu_goods_sync
 from app.services.fish_shop_publish import build_internal_item_object
 from app.services.publish_options import publish_location_error
+from app.services.category_cache import CategoryCache, category_scope
 
 REAL_PUBLISH = xianyu_goods_sync.XianyuItemPublisher.publish
 REAL_CATEGORY_RECOMMEND = xianyu_goods_sync.XianyuItemPublisher.category_recommend
@@ -245,3 +246,72 @@ async def test_no_valid_category_stops_before_remote_publish_and_allows_editing(
     assert body["data"]["retrySafe"] is True
     assert "重新识别分类" in body["msg"]
     assert calls == local_calls == []
+
+
+@pytest.mark.asyncio
+async def test_disposed_category_invalidates_cache_and_refreshes_choices_without_republishing(publish_context, monkeypatch, tmp_path):
+    request, session, calls, local_calls = publish_context
+    mock_platform_receipts(monkeypatch, [], calls)
+    monkeypatch.setattr(xianyu_goods_sync.XianyuItemPublisher, "category_recommend", REAL_CATEGORY_RECOMMEND)
+    cache = CategoryCache(tmp_path / "categories.sqlite3")
+    monkeypatch.setattr(xianyu_goods_sync, "desktop_category_cache", lambda: cache)
+    cache.put(category_scope(1), "cover", {"success": True, "selectedCategory": CATEGORY, "candidates": [CATEGORY]})
+    latest = {**CATEGORY, "catId": "91000999", "channelCatId": "92000999"}
+    category_queries = []
+
+    def call(self, api, version, payload):
+        if api == self.CATEGORY_RECOMMEND_API:
+            current = CATEGORY if not calls else latest
+            category_queries.append(current)
+            return {"ret": ["SUCCESS::ok"], "data": {"categoryPredictResult": current}}
+        calls.append(payload)
+        if len(calls) == 1:
+            return {"ret": ["FAIL_BIZ_CATEGORY_DISPOSED::类目已废弃"], "data": {}}
+        return {"ret": ["SUCCESS::ok"], "data": {"itemId": "after-category-refresh"}}
+
+    monkeypatch.setattr(xianyu_goods_sync.XianyuItemPublisher, "_call_api", call)
+    request.update(category=CATEGORY["catName"], categoryInfo={**CATEGORY, "source": "xianyu"})
+    body = response_body(await items.publish_item(request, session, None))
+    assert body["data"]["status"] == "failed"
+    assert body["data"]["retrySafe"] is True
+    assert body["data"]["categoryRefreshRequired"] is True
+    assert body["data"]["categoryCandidates"][0]["catId"] == latest["catId"]
+    assert len(calls) == 1 and not local_calls
+    assert len(category_queries) == 2
+    assert cache.get(category_scope(1), "cover") is None
+    # Explicitly selecting a new candidate creates a new user intent.
+    request.update(categoryInfo={**latest, "source": "xianyu"}, idempotencyKey="new-category-intent")
+    for _ in range(2):
+        body = response_body(await items.publish_item(request, session, None))
+        assert body["data"]["status"] == "confirmed"
+    assert calls[-1]["itemCatDTO"] == latest
+    assert len(category_queries) == 3  # A platform write revalidates live IDs and labels.
+    assert len(calls) == 2 and len(local_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_removed_selection_returns_live_choices_without_publishing(publish_context, monkeypatch):
+    request, session, calls, local_calls = publish_context
+    mock_platform_receipts(monkeypatch, [], calls)
+    request.update(category="已删除的分类", categoryInfo={"catId": "91000888", "catName": "已删除的分类", "source": "xianyu"})
+    body = response_body(await items.publish_item(request, session, None))
+    assert body["data"]["status"] == "failed"
+    assert body["data"]["categoryCandidates"][0]["catId"] == CATEGORY["catId"]
+    assert not calls and not local_calls
+
+
+@pytest.mark.asyncio
+async def test_timeout_does_not_refresh_categories_or_retry_publish(publish_context, monkeypatch):
+    request, session, calls, _ = publish_context
+    mock_platform_receipts(monkeypatch, [], calls)
+
+    def timeout(*args):
+        calls.append("publish-started")
+        raise TimeoutError("fixture")
+
+    monkeypatch.setattr(xianyu_goods_sync.XianyuItemPublisher, "_call_api", timeout)
+    for _ in range(2):
+        body = response_body(await items.publish_item(request, session, None))
+        assert body["data"]["status"] == "unknown"
+        assert "categoryRefreshRequired" not in body["data"]
+    assert calls == ["publish-started"]

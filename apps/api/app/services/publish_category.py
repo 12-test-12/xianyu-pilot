@@ -3,7 +3,17 @@ from __future__ import annotations
 
 
 class PublishCategoryError(RuntimeError):
-    pass
+    def __init__(self, message, *, candidates=(), rejected_category=None):
+        super().__init__(message)
+        self.candidates = [option for item in candidates if (option := category_option(item))]
+        self.rejected_category = normalize_publish_category(rejected_category)
+
+    def to_data(self):
+        return {"categoryRefreshRequired": True, "categoryCandidates": self.candidates,
+                "categoryRefreshFailed": not bool(self.candidates), "rejectedCategory": self.rejected_category or None}
+
+
+CATEGORY_REFRESH_CODES = {"FAIL_BIZ_CATEGORY_DISPOSED", "FAIL_BIZ_ITEM_CATEGORY_INVALID", "FAIL_BIZ_ITEM_CATEGORY_NOT_MATCH"}
 
 
 def normalize_publish_category(value: object) -> dict:
@@ -28,10 +38,37 @@ def category_request(req: dict) -> dict:
     return dict(category) if isinstance(category, dict) else {"catName": str(category or "").strip()}
 
 
+def category_option(value: object) -> dict:
+    category = normalize_publish_category(value)
+    if not category:
+        return {}
+    path = value.get("categoryPath")
+    if not isinstance(path, list):
+        path = [value.get(key) for key in ("channelCat1Name", "channelCat2Name", "channelCat3Name")]
+    path = [str(name).strip()[:200] for name in path[:8] if name]
+    if not path or path[-1] != category["catName"]:
+        path.append(category["catName"])
+    return {**category, "categoryPath": path}
+
+
+def current_category_candidates(recommendation: dict) -> list[dict]:
+    values = recommendation.get("candidates") or []
+    if recommendation.get("recommended"):
+        values = [recommendation, *values]
+    unique = {}
+    for value in values:
+        option = category_option(value)
+        if option:
+            unique[(option["catId"], option["channelCatId"])] = option
+    return list(unique.values())
+
+
 def same_category(preferred: dict, candidate: dict) -> bool:
     # tbCatId can be shared by multiple idle-marketplace categories.
-    keys = [key for key in ("catId", "channelCatId") if preferred.get(key)]
-    return bool(keys) and all(str(preferred[key]) == str(candidate.get(key) or "") for key in keys)
+    if not isinstance(preferred, dict) or not isinstance(candidate, dict):
+        return False
+    keys = [key for key in ("catId", "channelCatId") if preferred.get(key) and candidate.get(key)]
+    return bool(keys) and all(str(preferred[key]) == str(candidate[key]) for key in keys)
 
 
 def parse_publish_category_recommendation(result: object) -> dict:
@@ -57,7 +94,7 @@ def parse_publish_category_recommendation(result: object) -> dict:
             continue
         values = card.get("valuesList") or []
         for value in values if isinstance(values, list) else []:
-            category = normalize_publish_category(value)
+            category = category_option(value)
             if category:
                 candidates.append(category)
                 if str(value.get("isClicked")) == "1":
@@ -72,7 +109,7 @@ def parse_publish_category_recommendation(result: object) -> dict:
         if prediction.get("isLeaf") in (False, "false", "0", 0) or prediction.get("children"):
             continue
         matched = next((cat for cat in candidates if same_category(prediction, cat)), None)
-        selected = matched or normalize_publish_category(prediction)
+        selected = matched or category_option(prediction)
         if selected:
             break
     selected = selected or clicked
@@ -83,21 +120,23 @@ def parse_publish_category_recommendation(result: object) -> dict:
 
 def resolve_publish_category(preferred: object, recommendation: dict) -> dict:
     preferred = preferred if isinstance(preferred, dict) else {"catName": str(preferred or "")}
-    candidates = recommendation.get("candidates") or []
-    if recommendation.get("recommended"):
-        candidates = [recommendation, *candidates]
-    candidates = [category for item in candidates if (category := normalize_publish_category(item))]
-    selected = normalize_publish_category(preferred) if preferred.get("source") != "local" else {}
-    if selected:
-        # Respect an explicitly selected platform candidate, including its IDs.
-        category = next((cat for cat in candidates if same_category(selected, cat)), selected)
-    elif preferred.get("catName"):
-        matches = [cat for cat in candidates if cat["catName"] == str(preferred["catName"]).strip()]
-        unique = {(cat["catId"], cat["channelCatId"]): cat for cat in matches}
-        category = next(iter(unique.values())) if len(unique) == 1 else None
+    candidates = current_category_candidates(recommendation)
+    name = str(preferred.get("catName") or "").strip()
+    category = None
+    if name:
+        # IDs from a saved draft or template are hints, not permanent authority.
+        matches = [cat for cat in candidates if cat["catName"] == name]
+        old_path = preferred.get("categoryPath")
+        if preferred.get("source") != "local" and isinstance(old_path, list) and len(old_path) > 1:
+            matches = [cat for cat in matches if cat["categoryPath"] == old_path]
+        identical = [cat for cat in matches if same_category(preferred, cat)]
+        if len(identical) == 1:
+            category = identical[0]
+        elif len(matches) == 1:
+            category = matches[0]
     else:
-        category = normalize_publish_category(recommendation) if recommendation.get("recommended") else None
+        category = category_option(recommendation) if recommendation.get("recommended") else None
     if not category:
-        raise PublishCategoryError("未取得所选分类的有效叶子类目，请点击“重新识别分类”，从闲鱼返回的候选分类中选择后再发布。商品内容已保留。")
+        raise PublishCategoryError("当前分类未能在平台最新候选中确认，请从最新候选中重新选择，或点击“重新识别分类”。商品内容已保留。", candidates=candidates)
     same_as_recommended = same_category(category, recommendation)
     return {**category, "cardList": recommendation.get("cardList", []) if same_as_recommended else []}

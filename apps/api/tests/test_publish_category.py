@@ -3,6 +3,7 @@ import pytest
 from app.services.publish_category import (
     PublishCategoryError, normalize_publish_category,
     parse_publish_category_recommendation, resolve_publish_category,
+    same_category,
 )
 from app.services.auto_category import select_best_category
 from app.services.fish_shop_publish import build_internal_item_object
@@ -40,7 +41,9 @@ def test_empty_or_parent_prediction_is_not_a_success(data):
 
 def test_explicit_candidate_is_preserved_and_local_ids_are_never_used_as_platform_ids():
     result = {**CATEGORY, "recommended": True, "candidates": [CATEGORY]}
-    assert normalize_publish_category(resolve_publish_category(OTHER, result)) == OTHER
+    with pytest.raises(PublishCategoryError):
+        resolve_publish_category(OTHER, result)
+    assert normalize_publish_category(resolve_publish_category(OTHER, {**result, "candidates": [CATEGORY, OTHER]})) == OTHER
     assert normalize_publish_category(resolve_publish_category({"catName": CATEGORY["catName"], "source": "local", "catId": "50025461"}, result)) == CATEGORY
     with pytest.raises(PublishCategoryError):
         resolve_publish_category({"id": 5893, "catName": "失效的本地名称"}, result)
@@ -61,3 +64,57 @@ def test_absent_optional_ids_stay_empty_in_both_payloads():
     ordinary = publisher._build_publish_data({"title": "测试", "price": "1"}, category, [])
     fish = build_internal_item_object({"title": "测试"}, [], category)
     assert ordinary["itemCatDTO"] == fish["itemCatDTO"] == {**category, "channelCatId": "", "tbCatId": ""}
+
+
+def test_ids_can_change_repeatedly_without_changing_the_selected_category():
+    preferred = {**CATEGORY, "categoryPath": ["服务", CATEGORY["catName"]], "source": "xianyu"}
+    for revision in range(10):
+        live = {**CATEGORY, "catId": str(91000100 + revision), "channelCatId": str(92000100 + revision), "categoryPath": preferred["categoryPath"]}
+        resolved = resolve_publish_category(preferred, {**live, "recommended": True})
+        assert normalize_publish_category(resolved) == normalize_publish_category(live)
+        assert preferred["catId"] == CATEGORY["catId"]
+
+
+@pytest.mark.parametrize("change", ["missing", "renamed", "ambiguous", "path_changed"])
+def test_removed_or_ambiguous_categories_are_never_silently_retargeted(change):
+    preferred = {**CATEGORY, "source": "xianyu", "categoryPath": ["服务", CATEGORY["catName"]]}
+    live = {**CATEGORY, "catId": "91000999", "categoryPath": preferred["categoryPath"]}
+    result = {"recommended": False, "candidates": [live]}
+    if change == "missing":
+        result = {"recommended": False, "candidates": []}
+    elif change == "renamed":
+        live.update(catName="已更名", categoryPath=["服务", "已更名"])
+    elif change == "ambiguous":
+        result["candidates"].append({**live, "catId": "91000888"})
+    else:
+        live["categoryPath"] = ["另一父分类", CATEGORY["catName"]]
+    with pytest.raises(PublishCategoryError) as error:
+        resolve_publish_category(preferred, result)
+    assert error.value.to_data()["categoryRefreshRequired"] is True
+
+
+def test_same_category_is_symmetric_and_respects_shared_keys():
+    a = {"catId": "91000001", "channelCatId": "92000001"}
+    b = {"catId": "91000001"}
+    assert same_category(a, b) is True
+    assert same_category(b, a) is True
+
+    c = {"catId": "91000001", "channelCatId": "92000002"}
+    assert same_category(a, c) is False
+    assert same_category(c, a) is False
+
+    d = {"catId": "91000002", "channelCatId": "92000001"}
+    assert same_category(a, d) is False
+    assert same_category(d, a) is False
+
+    assert same_category({}, a) is False
+    assert same_category(None, a) is False
+
+
+def test_fish_shop_publish_snapshot_preserves_resolved_category():
+    from app.api.v1.routes.fish_shop import _build_publish_snapshot
+    internal_obj = {"itemCatDTO": CATEGORY}
+    req = {"title": "测试商品", "price": "10", "categoryInfo": {"catName": "原始分类"}}
+    snapshot = _build_publish_snapshot(req, internal_obj, [{"priceInCent": 1000}])
+    assert snapshot["category"] == CATEGORY
+    assert snapshot["categoryInfo"] == CATEGORY

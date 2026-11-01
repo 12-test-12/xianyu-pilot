@@ -51,7 +51,7 @@ from ..deps import get_current_user
 from ....services.xianyu_goods_sync import XianyuItemOperator
 
 from ....services.publish_options import ordinary_shipping_error, publish_location_error
-from ....services.publish_category import category_request
+from ....services.publish_category import category_request, PublishCategoryError
 
 from ....services.remote_goods_delete import (
 
@@ -213,7 +213,7 @@ def _operation_key(raw: object) -> str:
 
 
 
-def _operation_response(outcome, *, success_message: str):
+def _operation_response(outcome, *, success_message: str, recovery_data=None):
 
     status_code = {
 
@@ -232,6 +232,8 @@ def _operation_response(outcome, *, success_message: str):
     }[outcome.status]
 
     data = outcome.to_data()
+    if outcome.status == "failed" and recovery_data:
+        data.update(recovery_data)
 
     if status_code != 200:
 
@@ -1027,7 +1029,7 @@ async def publish_item(
 
         from ....services.xianyu_goods_sync import XianyuItemPublisher, persist_published_goods
 
-        publisher = XianyuItemPublisher(cookie_str)
+        publisher = XianyuItemPublisher(cookie_str, account_id=account_id)
 
         target_local_id = None
 
@@ -1085,6 +1087,8 @@ async def publish_item(
 
 
 
+        category_recovery = {}
+
         async def remote_publish() -> RemoteOperationResult:
 
             # Validate only on the remote path. Already-confirmed intents must
@@ -1096,6 +1100,10 @@ async def publish_item(
             try:
 
                 result = await asyncio.to_thread(publisher.publish, item_data)
+
+            except PublishCategoryError as exc:
+                category_recovery.update(exc.to_data())
+                return RemoteOperationResult.failed("category_refresh_required", str(exc), retry_safe=True)
 
             except RuntimeError as exc:
 
@@ -1129,6 +1137,8 @@ async def publish_item(
 
                 detail = (result.get("message") if isinstance(result, dict) else "") or "平台明确拒绝发布，请检查账号状态或商品资料后重试"
 
+                if isinstance(result, dict) and result.get("categoryRecovery"):
+                    category_recovery.update(result["categoryRecovery"])
                 if isinstance(result, dict) and result.get("retrySafe") is True:
                     return RemoteOperationResult.failed("platform_rejected", detail, retry_safe=True)
                 # Missing/malformed receipts cannot prove that no item was created.
@@ -1210,7 +1220,7 @@ async def publish_item(
 
         logger.info("商品发布操作结束: accountId=%d state=%s", account_id, outcome.status)
 
-        return _operation_response(outcome, success_message="发布成功并已保存到本地商品库")
+        return _operation_response(outcome, success_message="发布成功并已保存到本地商品库", recovery_data=category_recovery)
 
 
 

@@ -19,7 +19,8 @@ import re
 import requests
 from PIL import Image
 
-from .publish_category import normalize_publish_category, parse_publish_category_recommendation, resolve_publish_category, PublishCategoryError
+from .publish_category import (normalize_publish_category, parse_publish_category_recommendation, resolve_publish_category, PublishCategoryError, CATEGORY_REFRESH_CODES, current_category_candidates, category_request, same_category)
+from .category_cache import category_scope, desktop_category_cache
 
 from ..core.upload_security import (
     UnsafePathError,
@@ -2152,7 +2153,8 @@ class XianyuItemPublisher:
     IMAGE_UPLOAD_URL = "https://stream-upload.goofish.com/api/upload.api"
     IMAGE_UPLOAD_APPKEY = "xy_chat"
 
-    def __init__(self, cookie_str: str):
+    def __init__(self, cookie_str: str, *, account_id=None):
+        self.category_scope = category_scope(account_id, cookie_str)
         self.cookie_str = cookie_str
         self.token = extract_token_from_cookie(cookie_str)
         if not self.token:
@@ -2399,7 +2401,7 @@ class XianyuItemPublisher:
 
     # ---- Step 1: 类目推荐 ----
 
-    def category_recommend(self, title: str, desc: str, image_urls: list[str]) -> dict:
+    def category_recommend(self, title: str, desc: str, image_urls: list[str]) -> dict:
         """
         调用类目推荐 API 获取推荐类目和标签。
 
@@ -2428,6 +2430,38 @@ class XianyuItemPublisher:
         except Exception:
             logger.warning("类目推荐失败，请重新识别或选择有效的闲鱼叶子类目")
             return {"recommended": False, "candidates": [], "cardList": []}
+
+    def invalidate_category_cache(self):
+        cache = desktop_category_cache()
+        if cache:
+            cache.invalidate(self.category_scope)
+
+    def resolve_category_for_publish(self, item_data):
+        title = item_data.get("title", "")
+        desc = item_data.get("desc") or item_data.get("description", "")
+        images = item_data.get("imageUrls", [])
+        # Publishing needs current provider labels as well as category IDs.
+        # The UI can use its local cache; a platform write always checks live data.
+        recommendation = self.category_recommend(title, desc, images)
+        try:
+            return resolve_publish_category(category_request(item_data), recommendation)
+        except PublishCategoryError:
+            self.invalidate_category_cache()
+            raise
+
+    def refresh_rejected_category(self, item_data, rejected_category):
+        self.invalidate_category_cache()
+        try:
+            live = self.category_recommend(item_data.get("title", ""),
+                item_data.get("desc") or item_data.get("description", ""),
+                item_data.get("imageUrls", []))
+            candidates = [cat for cat in current_category_candidates(live)
+                          if not same_category(rejected_category, cat)]
+        except Exception:
+            candidates = []
+        # This only refreshes choices after a definitive refusal. Never republish.
+        return PublishCategoryError("分类已失效，请选择最新候选后发布", candidates=candidates,
+                                    rejected_category=rejected_category).to_data()
 
     def _build_item_label_ext_list(self, card_list: list) -> list:
         """将类目推荐返回的 cardList 转换为 itemLabelExtList"""
@@ -2659,9 +2693,7 @@ class XianyuItemPublisher:
 
         # ---- Step 1: 类目推荐 ----
         logger.info("Step 1/3: 类目推荐 titleLength=%d", len(title))
-        recommend_result = self.category_recommend(title, desc, image_urls)
-
-        category_info = resolve_publish_category(item_data.get("category"), recommend_result)
+        category_info = self.resolve_category_for_publish(item_data)
 
         # ---- Step 2: 图片上传到闲鱼 CDN ----
         logger.info("Step 2/3: 图片上传 - %d 张", len(image_urls))
@@ -2708,12 +2740,15 @@ class XianyuItemPublisher:
         # 闲鱼返回的 ret 格式通常为 "FAIL_XXX::中文描述"，把真实原因带给上层
         # 避免前端只看到"平台暂未接受该商品"而不知具体违规点
         friendly = _explain_publish_rejection(ret_msg, result.get("data"))
+        code = ret_msg.partition("::")[0].split("[", 1)[0].strip()
+        recovery = self.refresh_rejected_category(item_data, category_info) if code in CATEGORY_REFRESH_CODES else {}
         return {
             "success": False,
             "itemId": "",
             "errorCode": "PUBLISH_PROVIDER_REJECTED",
             "message": friendly,
             "retMsg": ret_msg,
+            "categoryRecovery": recovery,
             # Only an explicit platform rejection proves that publishing did not succeed.
             "retrySafe": (
                 ret_msg.partition("::")[0].split("[", 1)[0].strip() in PUBLISH_REJECT_CODE_MAP

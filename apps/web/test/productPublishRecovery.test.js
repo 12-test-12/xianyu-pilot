@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
 import { canEditFailedPublishIntent } from '../src/utils/productPublishState.js'
+import { isCategoryRecoveryCurrent } from '../src/utils/publishCategory.js'
 
 // Execute the page's actual recovery/request handlers with controlled I/O.
 const page = readFileSync(new URL('../src/pages/ProductPublishPage.vue', import.meta.url), 'utf8')
@@ -11,10 +12,11 @@ const ref = value => ({ value })
 
 function flow({ outcome = null, publish, confirm = async () => true } = {}) {
   const storage = new Map()
-  const payload = { xianyuAccountId: 1, title: '原商品', price: '1', shippingMode: 'free' }
+  const payload = { xianyuAccountId: 1, title: '原商品', description: '描述', imageUrls: ['image'], price: '1', shippingMode: 'free' }
   const state = {
     publishIntent: { idempotencyKey: 'original-key', payload },
     publishOutcome: ref(outcome), submitting: ref(false), accountsAvailable: ref(true),
+    categoryRevision: 0, isCategoryRecoveryCurrent,
     error: ref(''), warning: ref(''), success: ref(''),
     PUBLISH_INTENT_KEY: 'intent',
     sessionStorage: {
@@ -23,7 +25,7 @@ function flow({ outcome = null, publish, confirm = async () => true } = {}) {
       removeItem: key => storage.delete(key),
     },
     form: { accountId: 1, title: '修改后的商品', description: '描述', imageUrls: ['image'], price: '2', stock: 1 },
-    shippingMode: ref('free'), selectedAddress: ref(null), selectedCategoryName: ref('分类'),
+    shippingMode: ref('free'), selectedAddress: ref(null), selectedCategoryName: ref('分类'), selectedCategoryPath: ref('分类'), setShipping: () => {},
     selectedPublishCategory: ref({ catId: '91000002', catName: '分类', channelCatId: '92000002', tbCatId: '93000002', source: 'xianyu', isLeaf: true }),
     normalizePublishAddress: () => null,
     validate: () => true, ensureSelectedAccountCookieValid: async () => true,
@@ -33,6 +35,8 @@ function flow({ outcome = null, publish, confirm = async () => true } = {}) {
     confirmAction: confirm,
     publishItem: publish,
   }
+  state.productAsyncContext = () => ({ accountId: state.form.accountId, title: state.form.title, description: state.form.description, coverImageUrl: state.form.imageUrls[0] })
+  state.applyAutoCategory = cat => { state.selectedPublishCategory.value = cat; state.selectedCategoryName.value = cat.catName }
   state.canEditFailedIntent = { get value() {
     return canEditFailedPublishIntent({ submitting: state.submitting.value, hasIntent: Boolean(state.publishIntent.payload), outcome: state.publishOutcome.value })
   } }
@@ -119,4 +123,51 @@ test('disposed category requires returning to editing rather than repeating the 
   await state.submit()
   assert.equal(requests.length, 2)
   assert.equal(requests[1].idempotencyKey, 'new-key')
+})
+
+test('category rejection codes mark category invalid and prevent repeating', async () => {
+  for (const code of ['FAIL_BIZ_ITEM_CATEGORY_INVALID', 'FAIL_BIZ_ITEM_CATEGORY_NOT_MATCH']) {
+    const { state } = flow({ publish: async () => {
+      throw { message: `分类不匹配（错误码：${code}）`, data: { status: 'failed', retrySafe: true } }
+    } })
+    await state.submit()
+    assert.equal(state.publishOutcome.value.categoryInvalid, true)
+  }
+})
+
+test('category recovery preserves content and only replaces the selection after an explicit click', async () => {
+  const candidate = { catId: '91000999', catName: '新候选分类', isLeaf: true }
+  const { state } = flow({ publish: async () => {
+    throw { message: '类目需要更新', data: { status: 'failed', retrySafe: true, categoryRefreshRequired: true, categoryCandidates: [candidate] } }
+  } })
+  state.form.title = '原商品'
+  const originalName = state.selectedCategoryName.value
+  await state.submit()
+  assert.equal(state.selectedCategoryName.value, originalName)
+  assert.equal(state.selectedPublishCategory.value.invalidated, true)
+  assert.equal(state.publishOutcome.value.categoryCandidates[0].catId, '91000999')
+  state.chooseRecoveredCategory(candidate)
+  assert.equal(state.selectedPublishCategory.value.catId, '91000999')
+  assert.equal(state.form.title, '原商品')
+  assert.equal(state.publishIntent.payload, null)
+})
+
+test('old recovery choices cannot be applied after the account or product changes', () => {
+  const { state } = flow({ outcome: { status: 'failed', retrySafe: true, categoryInvalid: true } })
+  const original = state.selectedPublishCategory.value
+  state.chooseRecoveredCategory({ catId: '91000999', catName: '旧请求候选' })
+  assert.equal(state.selectedPublishCategory.value, original)
+  assert.equal(state.publishIntent.idempotencyKey, 'original-key')
+})
+
+test('restoring a failed intent into an empty form keeps its category invalid until reselected', () => {
+  const { state } = flow({ outcome: { status: 'failed', retrySafe: true, categoryInvalid: true } })
+  state.form.title = ''
+  state.selectedCategoryName.value = ''
+  state.selectedPublishCategory.value = null
+  state.publishIntent.payload.category = '旧分类'
+  state.publishIntent.payload.categoryInfo = { catId: '91000001', catName: '旧分类', isLeaf: true }
+  state.editFailedPublish()
+  assert.equal(state.form.title, '原商品')
+  assert.equal(state.selectedPublishCategory.value.invalidated, true)
 })

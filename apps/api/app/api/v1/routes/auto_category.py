@@ -136,6 +136,8 @@ async def auto_category(
             image_data=image_data,
             title=title,
             description=description,
+            account_id=account_id,
+            force_refresh=body.get("forceRefresh") is True,
         )
 
         return ResultObject.success(result)
@@ -197,6 +199,7 @@ async def auto_category_upload(
             image_data=image_data,
             title=title,
             description=description,
+            account_id=account_id,
         )
 
         return ResultObject.success(result)

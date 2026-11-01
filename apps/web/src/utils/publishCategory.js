@@ -7,8 +7,18 @@ export function publishCategoryFromNode(node, source = 'local') {
     channelCatId: String(node.channelCatId || ''),
     tbCatId: String(node.tbCatId || ''),
     isLeaf: node.isLeaf !== false && !(node.children?.length),
+    invalidated: node.invalidated === true,
+    categoryPath: Array.isArray(node.categoryPath) ? [...node.categoryPath] : [node.channelCat1Name, node.channelCat2Name, node.channelCat3Name, node.catName || node.label || node.title || node.name].filter(Boolean),
     source,
   }
+}
+
+export function isCategoryRecoveryCurrent(payload, current) {
+  if (!payload || !current) return false
+  return String(payload.xianyuAccountId ?? '') === String(current.accountId ?? '')
+    && String(payload.title || '') === String(current.title || '')
+    && String(payload.description || '') === String(current.description || '')
+    && String(payload.imageUrls?.[0] || '') === String(current.coverImageUrl || '')
 }
 
 export function categoryNodeAtPath(tree, ids) {

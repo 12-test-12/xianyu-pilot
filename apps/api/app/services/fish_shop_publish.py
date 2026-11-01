@@ -26,7 +26,7 @@ import time
 import uuid
 from typing import Any, Iterable, List, Optional
 
-from .publish_category import normalize_publish_category, PublishCategoryError
+from .publish_category import normalize_publish_category, PublishCategoryError, CATEGORY_REFRESH_CODES
 
 from .xianyu_goods_sync import (
     APP_KEY,
@@ -626,6 +626,9 @@ def call_fish_shop_api(cookie_str: str, api_name: str, version: str,
             api_name, is_edit, ret_msg, result.get("traceId", ""),
         )
         friendly = _explain_publish_rejection(ret_msg, result.get("data"))
+        code = str(ret_msg).partition("::")[0].split("[", 1)[0].strip()
+        if code in CATEGORY_REFRESH_CODES:
+            raise PublishCategoryError(friendly, rejected_category=internal_obj.get("itemCatDTO"))
         raise RuntimeError(friendly or f"鱼小铺接口调用失败：{ret_msg}")
 
     data_body = result.get("data", {})

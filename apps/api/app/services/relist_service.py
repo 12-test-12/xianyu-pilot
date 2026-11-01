@@ -48,6 +48,7 @@ from .xianyu_goods_sync import (
     persist_published_goods,
     extract_token_from_cookie,
 )
+from .publish_category import PublishCategoryError
 from .fish_shop_publish import (
     FISH_SHOP_PUBLISH_API,
     FISH_SHOP_PUBLISH_VERSION,
@@ -212,11 +213,9 @@ async def _publish_via_fish_shop(
     if validation_error:
         raise RuntimeError(f"鱼小铺重发校验失败: {validation_error}")
 
-    # Reuse the snapshot category without mixing in unrelated default IDs.
-    category_info = snapshot.get("category") or {}
-
     # 复用 XianyuItemPublisher 上传图片（避免重复实现）
-    publisher = XianyuItemPublisher(cookie_str)
+    publisher = XianyuItemPublisher(cookie_str, account_id=account_id)
+    category_info = await asyncio.to_thread(publisher.resolve_category_for_publish, publish_req)
     image_urls = publish_req.get("imageUrls", [])
     # 快照中可能为 http:// 的闲鱼 CDN 图片，归一化为 https；且 upload 内部使用 asyncio.run()，
     # 必须在线程中执行（本函数处于 async 上下文）
@@ -229,10 +228,14 @@ async def _publish_via_fish_shop(
         raise RuntimeError("鱼小铺重发图片上传失败")
 
     internal_obj = build_internal_item_object(publish_req, xianyu_image_urls, category_info, is_edit=False)
-    result = call_fish_shop_api(
-        cookie_str, FISH_SHOP_PUBLISH_API, FISH_SHOP_PUBLISH_VERSION,
-        internal_obj, is_edit=False,
-    )
+    try:
+        result = call_fish_shop_api(
+            cookie_str, FISH_SHOP_PUBLISH_API, FISH_SHOP_PUBLISH_VERSION,
+            internal_obj, is_edit=False,
+        )
+    except PublishCategoryError:
+        publisher.invalidate_category_cache()
+        raise
     new_item_id = extract_response_item_id(result)
     if not new_item_id:
         raise RuntimeError("鱼小铺重发成功但未返回 itemId")
@@ -271,7 +274,7 @@ async def _publish_via_normal(
     if snapshot.get("postFee"):
         item_data["postFee"] = snapshot.get("postFee")
 
-    publisher = XianyuItemPublisher(cookie_str)
+    publisher = XianyuItemPublisher(cookie_str, account_id=account_id)
     # publish 内部使用 asyncio.run() 下载图片，必须在线程中执行（本函数处于 async 上下文）
     result = await asyncio.to_thread(publisher.publish, item_data)
     if not result.get("success"):
