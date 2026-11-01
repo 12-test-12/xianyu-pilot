@@ -220,6 +220,9 @@
             已选分类：{{ selectedCategoryPath || '请选择分类' }}
             <span v-if="aiCategoryMessage" class="ai-category-tip">{{ aiCategoryMessage }}</span>
           </p>
+          <p v-if="selectedCategoryNeedsPlatformConfirm" class="ai-unconfigured-tip">
+            ⚠️ 当前分类缺少平台类目 ID（本地分类目录只有显示用的节点 ID），无法发布。请点击「重新识别分类」，再从“推荐分类”里选一个平台叶子分类（商品内容会保留）。
+          </p>
         </div>
       </CardPanel>
 
@@ -456,6 +459,10 @@ const favoriteCategories = ref([])
 const selectedCategoryPath = ref('')
 const selectedCategoryName = ref('')
 const selectedPublishCategory = ref(null)
+// Local tree nodes carry only a display id. Publishing needs the marketplace's
+// own catId/channelCatId, so this selection can never reach a successful publish.
+const selectedCategoryNeedsPlatformConfirm = computed(() =>
+  Boolean(selectedCategoryName.value) && !selectedPublishCategory.value?.catId)
 const selectedCategoryIds = ref([])
 const deeperCategoryOptions = computed(() => {
   if (!level3Id.value) return []
@@ -1121,7 +1128,7 @@ const checks = computed(() => [
   { text: '标题已填写', ok: form.title.trim().length > 0 },
   { text: '商品描述已填写', ok: form.description.trim().length > 0 },
   { text: '已上传商品图片', ok: form.imageUrls.length > 0 },
-  { text: '已选择完整的叶子分类', ok: !!selectedCategoryName.value && selectedPublishCategory.value?.isLeaf === true && selectedPublishCategory.value?.invalidated !== true },
+  { text: '已选择平台叶子分类', ok: !!selectedCategoryName.value && selectedPublishCategory.value?.isLeaf === true && selectedPublishCategory.value?.invalidated !== true && Boolean(selectedPublishCategory.value?.catId) },
   { text: '发布地区完整有效', ok: isPublishAddressComplete(selectedAddress.value) },
   { text: '交付方式有效', ok: (['free', 'none'].includes(shippingMode.value) || (form.multiSpecEnabled && shippingMode.value === 'fixed')) && (shippingMode.value !== 'none' || !form.supportSelfPick) },
   { text: '价格已填写', ok: form.multiSpecEnabled ? multiSpecValidSkus.value.length > 0 : Number(form.price) > 0 },
@@ -1448,6 +1455,12 @@ function validate() {
     error.value = '账号列表状态未知，重新加载成功前禁止发布。'
     return false
   }
+  // Stop before the request: a category without a marketplace catId can never
+  // be published, and the server refusal is far less actionable than this hint.
+  if (selectedCategoryNeedsPlatformConfirm.value) {
+    error.value = '当前分类没有平台类目 ID（本地分类目录只有显示用的节点 ID），发布会被平台拒回。请点击「重新识别分类」，从“推荐分类”里选一个平台叶子分类；商品内容会保留。'
+    return false
+  }
   const miss = checks.value.find(i => !i.ok)
   if (miss) { error.value = `"${miss.text}" 检查未通过，请完善后再提交`; return false }
   return true
@@ -1710,7 +1723,13 @@ async function submitPublishIntent() {
     } else if (state === 'failed' && publishOutcome.value.retrySafe !== true) {
       error.value = `${e.message || '发布失败'}。可重新检查原请求；服务端确认可安全重试后才会再次发布。`
     } else if (state === 'failed' && publishOutcome.value.categoryInvalid) {
-      error.value = `${e.message || '分类需要更新'}。请在最新候选中选择分类，或返回编辑重新识别；商品内容已保留。`
+      // The server already says why and usually that the content was kept;
+      // only append the next step so the sentence is not repeated twice.
+      const notice = String(e?.message || '分类需要更新').trim()
+      const lead = /[。！？.!?]$/.test(notice) ? notice : `${notice}。`
+      error.value = notice.includes('商品内容已保留')
+        ? `${lead}请在最新候选中选择分类，或返回编辑重新识别；商品内容已保留。`
+        : `${lead}请在最新候选中选择分类，或返回编辑重新识别。`
     } else if (state === 'failed') {
       error.value = `${e.message || '发布失败'}。处理后可使用原请求重试，或点击“返回编辑”修改商品。`
     } else {

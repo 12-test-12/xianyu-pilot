@@ -93,6 +93,31 @@ def test_removed_or_ambiguous_categories_are_never_silently_retargeted(change):
     assert error.value.to_data()["categoryRefreshRequired"] is True
 
 
+def test_identical_platform_ids_survive_a_moved_display_path():
+    # catId/channelCatId are the platform's own identity; a renamed parent path
+    # must not turn the same category into an unconfirmable selection.
+    preferred = {**CATEGORY, "source": "xianyu", "categoryPath": ["服务", "旧父分类", CATEGORY["catName"]]}
+    live = {**CATEGORY, "categoryPath": ["服务", "新父分类", CATEGORY["catName"]]}
+    resolved = resolve_publish_category(preferred, {"recommended": False, "candidates": [live]})
+    assert normalize_publish_category(resolved) == CATEGORY
+
+
+def test_local_tree_selection_is_refused_for_missing_platform_ids():
+    local = {"id": 5893, "catName": "本地分类", "source": "local", "categoryPath": ["本地分类"]}
+    with pytest.raises(PublishCategoryError) as error:
+        resolve_publish_category(local, {"recommended": False, "candidates": [OTHER]})
+    assert "平台类目 ID" in str(error.value) and "重新识别分类" in str(error.value)
+    candidates = error.value.to_data()["categoryCandidates"]
+    assert [candidate["catId"] for candidate in candidates] == [OTHER["catId"]]
+
+
+def test_unavailable_recommendation_is_reported_apart_from_a_stale_selection():
+    with pytest.raises(PublishCategoryError) as error:
+        resolve_publish_category(CATEGORY, {"recommended": False, "candidates": []})
+    assert "未能获取平台最新的分类候选" in str(error.value)
+    assert error.value.to_data()["categoryRefreshFailed"] is True
+
+
 def test_same_category_is_symmetric_and_respects_shared_keys():
     a = {"catId": "91000001", "channelCatId": "92000001"}
     b = {"catId": "91000001"}
