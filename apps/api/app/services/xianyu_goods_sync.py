@@ -160,6 +160,7 @@ SESSION_EXPIRED = "FAIL_SYS_SESSION_EXPIRED"
 # 闲鱼发布 API 常见业务错误码 → 中文友好提示
 # 用于把 ret_msg 中的 FAIL_XXX::描述 翻译成用户能看懂的原因
 PUBLISH_REJECT_CODE_MAP = {
+    "FAIL_BIZ_STRONG_VALID_VERIFY_INFO": "当前账号未完成平台要求的认证或协议签署。请用同一账号打开闲鱼 App，进入发布流程并按平台提示完成认证及协议签署，再回到本页手动重试；若仍提示登录异常，请到账号管理重新登录",
     "FAIL_BIZ_ITEM_PICTURE_VIOLATION": "商品图片涉嫌违规（涉黄/涉暴/涉政/水印等）",
     "FAIL_BIZ_ITEM_TITLE_VIOLATION": "商品标题含有违禁词或敏感词",
     "FAIL_BIZ_ITEM_DESC_VIOLATION": "商品描述含有违禁词或敏感词",
@@ -2779,4 +2780,6 @@ class XianyuItemPublisher:
             "errorCode": "PUBLISH_PROVIDER_REJECTED",
             "message": friendly,
             "retMsg": ret_msg,
+            # Only an explicit platform rejection proves that publishing did not succeed.
+            "retrySafe": ret_msg.partition("::")[0].split("[", 1)[0].strip() in PUBLISH_REJECT_CODE_MAP,
         }

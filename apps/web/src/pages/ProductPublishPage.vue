@@ -8,11 +8,14 @@
         <b>当前是恢复中的已持久化发布意图</b>
         <span>本次操作固定使用下列数据和原幂等键；页面表单的后续改动不会进入该恢复请求。</span>
         <pre>{{ persistedIntentSummary }}</pre>
+        <button v-if="canEditFailedIntent" type="button" class="clear-draft-btn" @click="editFailedPublish">返回编辑（保留商品内容）</button>
+        <button v-else-if="unsafePublishFailure" type="button" class="clear-draft-btn" :disabled="submitting || accountsAvailable !== true" @click="submit">重新检查并重试原请求</button>
+        <span v-if="publishOutcome?.status === 'failed'">请先按错误提示处理账号认证或修改商品资料，再手动发布。</span>
       </div>
 
       <div class="draft-toolbar">
         <span class="draft-tip">📝 草稿会自动保存本页已输入内容，仅保留上一次未发布的草稿</span>
-        <button type="button" class="clear-draft-btn" @click="clearAllData">清空数据</button>
+        <button type="button" class="clear-draft-btn" :disabled="submitting" @click="clearAllData">清空数据</button>
       </div>
 
       <CardPanel title="宝贝基础信息">
@@ -341,6 +344,8 @@
 
     <div class="bottom-actions">
       <AppButton @click="handleCancel">取消</AppButton>
+      <AppButton v-if="canEditFailedIntent" @click="editFailedPublish">返回编辑（保留商品内容）</AppButton>
+      <AppButton v-else-if="unsafePublishFailure" :disabled="submitting || accountsAvailable !== true" @click="submit">重新检查并重试原请求</AppButton>
       <AppButton type="primary" :loading="submitting" :disabled="publishSubmitDisabled" @click="submit">{{ publishSubmitLabel }}</AppButton>
     </div>
   </div>
@@ -371,6 +376,7 @@ import { aiRewriteGoods } from '../api/workflow.js'
 import {
   buildPublishIntentSummary,
   canSubmitPublishIntent,
+  canEditFailedPublishIntent,
   captureProductAsyncContext,
   isProductAsyncRequestCurrent,
   markPendingProductSync,
@@ -397,6 +403,11 @@ const unsafePublishFailure = computed(() => {
   const outcome = publishOutcome.value
   return outcome?.status === 'failed' && outcome?.retrySafe !== true
 })
+const canEditFailedIntent = computed(() => canEditFailedPublishIntent({
+  submitting: submitting.value,
+  hasIntent: Boolean(publishIntent.payload),
+  outcome: publishOutcome.value,
+}))
 const publishSubmitDisabled = computed(() => !canSubmitPublishIntent({
   accountsAvailable: accountsAvailable.value,
   submitting: submitting.value,
@@ -1501,7 +1512,25 @@ function clearPublishIntent() {
   try { sessionStorage.removeItem(PUBLISH_INTENT_KEY) } catch { /* Optional storage. */ }
 }
 
+function editFailedPublish() {
+  if (!canEditFailedIntent.value) return
+  clearPublishIntent()
+  error.value = ''
+  warning.value = '已返回编辑，商品内容已保留。请处理失败原因后重新发布。'
+  success.value = ''
+}
+
 async function submit() {
+  if (submitting.value || accountsAvailable.value !== true || ['unknown', 'in_progress'].includes(publishOutcome.value?.status)) return
+  submitting.value = true
+  try {
+    await submitPublishIntent()
+  } finally {
+    submitting.value = false
+  }
+}
+
+async function submitPublishIntent() {
   error.value = ''
   warning.value = ''
   success.value = ''
@@ -1518,7 +1547,6 @@ async function submit() {
     dangerous: true
   })
   if (!ok) return
-  submitting.value = true
   try {
     const finalPrice = form.price
     const finalStock = Number(form.stock) || 1
@@ -1620,12 +1648,12 @@ async function submit() {
     } else if (state === 'in_progress') {
       warning.value = '同一发布意图正在执行，请勿重复提交。'
     } else if (state === 'failed' && publishOutcome.value.retrySafe !== true) {
-      error.value = `${e.message || '发布失败'}。服务端未授权安全重试，当前意图已锁定。`
+      error.value = `${e.message || '发布失败'}。可重新检查原请求；服务端确认可安全重试后才会再次发布。`
+    } else if (state === 'failed') {
+      error.value = `${e.message || '发布失败'}。处理后可使用原请求重试，或点击“返回编辑”修改商品。`
     } else {
       error.value = e.message || '发布失败'
     }
-  } finally {
-    submitting.value = false
   }
 }
 
@@ -1780,6 +1808,7 @@ async function navigationGuardFn() {
 }
 
 async function clearAllData() {
+  if (submitting.value) return
   const ok = await confirmAction({
     title: '清空本页所有数据？',
     description: '将一键清除已填写的标题、描述、图片、分类、位置、价格等全部内容，且会删除已保存的草稿。此操作不可撤销。',
@@ -1787,6 +1816,8 @@ async function clearAllData() {
     dangerous: true,
   })
   if (!ok) return
+  // Only a definitive, retryable failure can release the persisted request.
+  if (canEditFailedIntent.value) clearPublishIntent()
   isRestoring.value = true
   try {
     form.title = ''

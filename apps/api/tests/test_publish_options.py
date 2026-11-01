@@ -16,6 +16,8 @@ from app.services import xianyu_goods_sync
 from app.services.fish_shop_publish import build_internal_item_object
 from app.services.publish_options import publish_location_error
 
+REAL_PUBLISH = xianyu_goods_sync.XianyuItemPublisher.publish
+
 
 REGION = dict(prov="北京市", city="北京市", area="东城区", divisionId="110101",
               gps="116.418757,39.917544", poiName="东城区", poiId="")
@@ -103,6 +105,71 @@ async def test_unknown_online_publish_is_never_replayed(publish_context, monkeyp
         assert body["data"]["status"] == "unknown"
         assert body["data"]["retrySafe"] is False
     assert calls == ["started"]
+
+
+def mock_platform_receipts(monkeypatch, receipts, calls):
+    monkeypatch.setattr(xianyu_goods_sync.XianyuItemPublisher, "publish", REAL_PUBLISH)
+    monkeypatch.setattr(xianyu_goods_sync, "_refresh_m_h5_tk", lambda cookie: cookie)
+    monkeypatch.setattr(xianyu_goods_sync.XianyuItemPublisher, "category_recommend", lambda *args: {})
+    monkeypatch.setattr(xianyu_goods_sync.XianyuItemPublisher, "upload_images_to_xianyu", lambda *args: ["https://example.com/image.jpg"])
+
+    def receipt(*args):
+        calls.append("remote")
+        return receipts.pop(0)
+
+    monkeypatch.setattr(xianyu_goods_sync.XianyuItemPublisher, "_call_api", receipt)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", ["FAIL_BIZ_STRONG_VALID_VERIFY_INFO", "FAIL_BIZ_ITEM_TITLE_VIOLATION"])
+async def test_explicit_refusal_can_retry_original_key_after_remediation(publish_context, monkeypatch, code):
+    request, session, calls, local_calls = publish_context
+    mock_platform_receipts(monkeypatch, [
+        {"ret": [f"{code}::未签署相关认证协议"], "data": {}},
+        {"ret": ["SUCCESS::调用成功"], "data": {"itemId": "after-remediation"}},
+    ], calls)
+    body = response_body(await items.publish_item(request, session, None))
+    assert body["data"]["status"] == "failed"
+    assert body["data"]["retrySafe"] is True
+    assert not local_calls
+    if code == "FAIL_BIZ_STRONG_VALID_VERIFY_INFO":
+        assert "同一账号" in body["msg"] and "协议签署" in body["msg"]
+    for _ in range(2):
+        body = response_body(await items.publish_item(request, session, None))
+        assert body["data"]["status"] == "confirmed"
+    assert calls == ["remote", "remote"]
+    assert len(local_calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("saved_state", ["failed", "unknown"])
+async def test_previously_locked_auth_refusal_recovers_with_original_key(publish_context, monkeypatch, saved_state):
+    request, session, calls, _ = publish_context
+    mock_platform_receipts(monkeypatch, [
+        {"ret": ["FAIL_BIZ_STRONG_VALID_VERIFY_INFO::未签署相关认证协议"], "data": {}},
+        {"ret": ["SUCCESS::调用成功"], "data": {"itemId": "recovered"}},
+    ], calls)
+    body = response_body(await items.publish_item(request, session, None))
+    attempt = await session.get(ExternalOperationAttempt, body["data"]["attemptId"])
+    attempt.retry_safe = 0  # Persisted by the previous release.
+    attempt.state = saved_state
+    await session.commit()
+    body = response_body(await items.publish_item(request, session, None))
+    assert body["data"]["status"] == ("confirmed" if saved_state == "failed" else "unknown")
+    assert calls == (["remote", "remote"] if saved_state == "failed" else ["remote"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("receipt", [{}, {"ret": ["SUCCESS::调用成功"], "data": {}}, {"ret": ["FAIL_SYS_UNKNOWN::unknown"], "data": {}}])
+async def test_missing_or_ambiguous_receipt_never_republishes(publish_context, monkeypatch, receipt):
+    request, session, calls, local_calls = publish_context
+    mock_platform_receipts(monkeypatch, [receipt], calls)
+    for _ in range(2):
+        body = response_body(await items.publish_item(request, session, None))
+        assert body["data"]["status"] == "unknown"
+        assert body["data"]["retrySafe"] is False
+    assert calls == ["remote"]
+    assert not local_calls
 
 
 @pytest.mark.asyncio

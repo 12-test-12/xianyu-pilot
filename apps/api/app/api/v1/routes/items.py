@@ -1128,15 +1128,10 @@ async def publish_item(
 
                 detail = (result.get("message") if isinstance(result, dict) else "") or "平台明确拒绝发布，请检查账号状态或商品资料后重试"
 
-                return RemoteOperationResult.failed(
-
-                    "platform_rejected",
-
-                    detail,
-
-                    retry_safe=False,
-
-                )
+                if isinstance(result, dict) and result.get("retrySafe") is True:
+                    return RemoteOperationResult.failed("platform_rejected", detail, retry_safe=True)
+                # Missing/malformed receipts cannot prove that no item was created.
+                return RemoteOperationResult.unknown("publish_result_unknown", detail)
 
             item_id = str(result.get("itemId") or "").strip()
 

@@ -230,6 +230,19 @@ class SqlExternalOperationStore:
                     "幂等键已用于不同操作，请刷新后重试",
                 )
 
+            # Older releases permanently locked explicit authentication refusals.
+            # Recover only that known refusal, under the existing row lock and
+            # original digest; never reopen ambiguous or remotely confirmed work.
+            if (
+                attempt.operation_type == "publish"
+                and attempt.state == "failed"
+                and attempt.last_error_code == "platform_rejected"
+                and "FAIL_BIZ_STRONG_VALID_VERIFY_INFO" in (attempt.error_message or "")
+                and not attempt.remote_confirmed_at
+                and not attempt.remote_reference_id
+            ):
+                attempt.retry_safe = 1
+
             # A final result is always replayable by its original key, even if
             # later update-price intents exist for the same goods row.
             if self._is_final(attempt):

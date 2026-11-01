@@ -1,9 +1,20 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { isPublishAddressComplete, normalizePublishAddress } from '../src/utils/publishAddress.js'
-import { buildPublishIntentSummary, canSubmitPublishIntent, recoverPublishIntent } from '../src/utils/productPublishState.js'
+import { buildPublishIntentSummary, canSubmitPublishIntent, canEditFailedPublishIntent, recoverPublishIntent } from '../src/utils/productPublishState.js'
 
 const region = { prov: '北京市', city: '北京市', area: '东城区', divisionId: '110101', gps: '116.418757,39.917544', poiName: '东城区', poiId: '' }
+
+test('returning to editing requires a definitive refusal and preserves ambiguous intents', () => {
+  const options = { hasIntent: true, submitting: false, outcome: { status: 'failed', retrySafe: true } }
+  assert.equal(canEditFailedPublishIntent(options), true)
+  assert.equal(canEditFailedPublishIntent({ ...options, submitting: true }), false)
+  assert.equal(canEditFailedPublishIntent({ ...options, hasIntent: false }), false)
+  for (const status of ['unknown', 'in_progress', 'remote_confirmed', 'confirmed', 'pending']) {
+    assert.equal(canEditFailedPublishIntent({ ...options, outcome: { status, retrySafe: true } }), false)
+  }
+  assert.equal(canEditFailedPublishIntent({ ...options, outcome: { status: 'failed', retrySafe: false } }), false)
+})
 
 test('a dictionary region works without inventing a venue POI ID', () => {
   assert.equal(isPublishAddressComplete(region), true)

@@ -11,6 +11,11 @@ export function canSubmitPublishIntent({
   return true
 }
 
+export function canEditFailedPublishIntent({ submitting, hasIntent, outcome } = {}) {
+  return !submitting && Boolean(hasIntent)
+    && outcome?.status === 'failed' && outcome?.retrySafe === true
+}
+
 export function captureProductAsyncContext({
   accountId,
   title,
