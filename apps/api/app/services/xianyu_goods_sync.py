@@ -19,7 +19,7 @@ import re
 import requests
 from PIL import Image
 
-from .publish_category import (normalize_publish_category, parse_publish_category_recommendation, resolve_publish_category, PublishCategoryError, CATEGORY_REFRESH_CODES, current_category_candidates, category_request, same_category)
+from .publish_category import (normalize_publish_category, parse_publish_category_recommendation, resolve_publish_category, PublishCategoryError, CATEGORY_REFRESH_CODES, current_category_candidates, category_request, same_category, merge_category_recommendations, prefer_richer_error)
 from .category_cache import category_scope, desktop_category_cache
 
 from ..core.upload_security import (
@@ -2156,6 +2156,9 @@ class XianyuItemPublisher:
     def __init__(self, cookie_str: str, *, account_id=None):
         self.category_scope = category_scope(account_id, cookie_str)
         self.cookie_str = cookie_str
+        self._cover_size = None
+        self._last_upload_size = None
+        self._cover_cdn_url = ""
         self.token = extract_token_from_cookie(cookie_str)
         if not self.token:
             raise RuntimeError("Cookie 中缺少 _m_h5_tk，无法签名")
@@ -2302,6 +2305,11 @@ class XianyuItemPublisher:
 
                 # 2. 压缩图片
                 img_data = self._compress_image(img_data)
+                try:
+                    with Image.open(io.BytesIO(img_data)) as probe:
+                        self._last_upload_size = probe.size
+                except Exception:
+                    self._last_upload_size = None
 
                 # 3. 构建 multipart 请求体
                 boundary = "----WebKitFormBoundary" + hashlib.md5(str(time.time()).encode()).hexdigest()[:16]
@@ -2391,19 +2399,30 @@ class XianyuItemPublisher:
         raise RuntimeError("图片上传失败，请稍后重试")
 
     def upload_images_to_xianyu(self, image_urls: list[str]) -> list[str]:
-        """批量上传图片到闲鱼 CDN"""
+        """批量上传图片到闲鱼 CDN，并记录封面 CDN 地址供类目核对复用"""
         xianyu_urls = []
-        for url in image_urls:
+        for index, url in enumerate(image_urls):
             result_url = self.upload_image_to_xianyu(url)
             xianyu_urls.append(result_url)
+            if index == 0:
+                # 第一张即封面：只固定封面的真实尺寸，后续图片不覆盖
+                self._cover_size = getattr(self, "_last_upload_size", None)
             time.sleep(random.uniform(0.3, 0.8))
+        # 第一张即封面：类目核对用它构造与“识别分类”完全相同的请求体
+        self._cover_cdn_url = xianyu_urls[0] if xianyu_urls else ""
         return xianyu_urls
 
     # ---- Step 1: 类目推荐 ----
 
-    def category_recommend(self, title: str, desc: str, image_urls: list[str]) -> dict:
+    def category_recommend(self, title: str, desc: str, image_urls: list[str],
+                           *, cdn_cover: str = "", cover_size=None) -> dict:
         """
         调用类目推荐 API 获取推荐类目和标签。
+
+        关键：识别分类（auto_category）用的是 imageInfos + CDN 封面图，发布核对
+        必须复用完全相同的请求体，否则同一接口在不同入参下会返回不同候选集，
+        用户选中的分类就会被误判为“已失效 / 不在候选中”。
+        因此只要拿得到已上传的 CDN 封面图，就优先使用识别同构请求。
 
         返回:
         {
@@ -2415,46 +2434,88 @@ class XianyuItemPublisher:
         }
         """
         try:
-            data = {
-                "itemInfo": {
-                    "title": title,
-                    "desc": desc,
-                    "images": image_urls[:3],  # 最多传 3 张
+            if cdn_cover:
+                width, height = cover_size or (1024, 1024)
+                unique_code = f"{int(time.time() * 1000)}{int(time.time() * 1000000) % 100000}"
+                data = {
+                    "lockCpv": False,
+                    "multiSKU": False,
+                    "publishScene": "mainPublish",
+                    "scene": "newPublishChoice",
+                    "imageInfos": [
+                        {
+                            "extraInfo": {"isH": "false", "isT": "false", "raw": "false"},
+                            "isQrCode": False,
+                            "url": cdn_cover,
+                            "heightSize": height,
+                            "widthSize": width,
+                            "major": True,
+                            "type": 0,
+                            "status": "done",
+                        }
+                    ],
+                    "uniqueCode": unique_code,
                 }
-            }
-
-            logger.info("调用类目推荐 API: titleLength=%d", len(title))
+                logger.info("调用类目推荐 API（识别同构）: cover=%dx%d", width, height)
+            else:
+                data = {
+                    "itemInfo": {
+                        "title": title,
+                        "desc": desc,
+                        "images": image_urls[:3],  # 最多传 3 张
+                    }
+                }
+                logger.info("调用类目推荐 API: titleLength=%d", len(title))
             result = self._call_api(self.CATEGORY_RECOMMEND_API, self.CATEGORY_RECOMMEND_VERSION, data)
 
-            return parse_publish_category_recommendation(result)
+            return parse_publish_category_recommendation(result)
         except Exception:
-            logger.warning("类目推荐失败，请重新识别或选择有效的闲鱼叶子类目")
-            return {"recommended": False, "candidates": [], "cardList": []}
-
+            logger.warning("类目推荐失败，请重新识别或选择有效的闲鱼叶子类目")
+            return {"recommended": False, "candidates": [], "cardList": []}
+
     def invalidate_category_cache(self):
         cache = desktop_category_cache()
         if cache:
             cache.invalidate(self.category_scope)
 
-    def resolve_category_for_publish(self, item_data):
-        title = item_data.get("title", "")
-        desc = item_data.get("desc") or item_data.get("description", "")
-        images = item_data.get("imageUrls", [])
-        # Publishing needs current provider labels as well as category IDs.
-        # The UI can use its local cache; a platform write always checks live data.
-        recommendation = self.category_recommend(title, desc, images)
-        try:
-            return resolve_publish_category(category_request(item_data), recommendation)
-        except PublishCategoryError:
-            self.invalidate_category_cache()
-            raise
-
+    def resolve_category_for_publish(self, item_data, *, cdn_cover: str = "", cover_size=None):
+        title = item_data.get("title", "")
+        desc = item_data.get("desc") or item_data.get("description", "")
+        images = item_data.get("imageUrls", [])
+        # Publishing needs current provider labels as well as category IDs.
+        # The UI can use its local cache; a platform write always checks live data.
+        # Reuse the identification request shape whenever an uploaded CDN cover is
+        # available, so the candidate set matches the one the user picked from.
+        cover = cdn_cover or getattr(self, "_cover_cdn_url", "")
+        size = cover_size or self._cover_size
+        recommendation = self.category_recommend(title, desc, images,
+                                                 cdn_cover=cover, cover_size=size)
+        try:
+            return resolve_publish_category(category_request(item_data), recommendation)
+        except PublishCategoryError as first_error:
+            # The platform's recall is not stable across identical requests, and the
+            # identification shape may not carry the title/description signal at all.
+            # Ask once more with the metadata shape and merge both candidate sets
+            # before refusing, so a live category is never reported as unavailable
+            # just because one of the two request shapes missed it.
+            if cover:
+                merged = self.category_recommend(title, desc, images)
+                combined = merge_category_recommendations(recommendation, merged)
+                try:
+                    return resolve_publish_category(category_request(item_data), combined)
+                except PublishCategoryError as second_error:
+                    first_error = prefer_richer_error(first_error, second_error)
+            self.invalidate_category_cache()
+            raise first_error
+
     def refresh_rejected_category(self, item_data, rejected_category):
         self.invalidate_category_cache()
         try:
             live = self.category_recommend(item_data.get("title", ""),
                 item_data.get("desc") or item_data.get("description", ""),
-                item_data.get("imageUrls", []))
+                item_data.get("imageUrls", []),
+                cdn_cover=getattr(self, "_cover_cdn_url", ""),
+                cover_size=self._cover_size)
             candidates = [cat for cat in current_category_candidates(live)
                           if not same_category(rejected_category, cat)]
         except Exception:
@@ -2691,13 +2752,15 @@ class XianyuItemPublisher:
         if not image_urls:
             raise RuntimeError("至少需要一张商品图片")
 
-        # ---- Step 1: 类目推荐 ----
-        logger.info("Step 1/3: 类目推荐 titleLength=%d", len(title))
-        category_info = self.resolve_category_for_publish(item_data)
-
-        # ---- Step 2: 图片上传到闲鱼 CDN ----
-        logger.info("Step 2/3: 图片上传 - %d 张", len(image_urls))
+        # ---- Step 1: 上传图片到闲鱼 CDN（第一张即封面，供类目核对复用）----
+        logger.info("Step 1/3: 图片上传 - %d 张", len(image_urls))
         xianyu_image_urls = self.upload_images_to_xianyu(image_urls)
+        if not xianyu_image_urls:
+            raise RuntimeError("图片上传到闲鱼失败，请稍后重试")
+
+        # ---- Step 2: 类目推荐（与识别阶段完全相同的请求体，避免候选集漂移）----
+        logger.info("Step 2/3: 类目推荐 titleLength=%d", len(title))
+        category_info = self.resolve_category_for_publish(item_data)
 
         # ---- Step 3: 构建发布数据并调用 API ----
         logger.info("Step 3/3: 构建发布数据并调用发布 API")

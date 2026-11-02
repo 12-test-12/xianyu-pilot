@@ -142,6 +142,46 @@ def parse_publish_category_recommendation(result: object) -> dict:
     return {**(selected or {}), "recommended": bool(selected), "candidates": candidates, "cardList": cards}
 
 
+def merge_category_recommendations(primary: dict, secondary: dict) -> dict:
+    """Union two recommendation payloads from different request shapes.
+
+    The platform's recall depends on the request body, so the identification
+    shape and the metadata shape can each return categories the other misses.
+    Merging keeps the primary selection authoritative and only widens the
+    candidate set; it never retargets the user's chosen category.
+    """
+    primary = primary if isinstance(primary, dict) else {}
+    secondary = secondary if isinstance(secondary, dict) else {}
+    if not secondary.get("candidates") and not secondary.get("recommended"):
+        return primary
+    merged = current_category_candidates(secondary)
+    seen = {(cat["catId"], cat["channelCatId"]) for cat in merged}
+    for cat in current_category_candidates(primary):
+        key = (cat["catId"], cat["channelCatId"])
+        if key not in seen:
+            merged.append(cat)
+            seen.add(key)
+    cards = list(primary.get("cardList") or [])
+    for card in secondary.get("cardList") or []:
+        if card not in cards:
+            cards.append(card)
+    result = dict(primary)
+    result["candidates"] = merged
+    result["cardList"] = cards
+    return result
+
+
+def prefer_richer_error(first, second):
+    """Report the refusal that carries more actionable candidates."""
+    if first is None:
+        return second
+    if second is None:
+        return first
+    if len(second.candidates) > len(first.candidates):
+        return second
+    return first
+
+
 def resolve_publish_category(preferred: object, recommendation: dict) -> dict:
     preferred = preferred if isinstance(preferred, dict) else {"catName": str(preferred or "")}
     candidates = current_category_candidates(recommendation)

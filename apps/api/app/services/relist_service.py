@@ -215,7 +215,6 @@ async def _publish_via_fish_shop(
 
     # 复用 XianyuItemPublisher 上传图片（避免重复实现）
     publisher = XianyuItemPublisher(cookie_str, account_id=account_id)
-    category_info = await asyncio.to_thread(publisher.resolve_category_for_publish, publish_req)
     image_urls = publish_req.get("imageUrls", [])
     # 快照中可能为 http:// 的闲鱼 CDN 图片，归一化为 https；且 upload 内部使用 asyncio.run()，
     # 必须在线程中执行（本函数处于 async 上下文）
@@ -226,6 +225,9 @@ async def _publish_via_fish_shop(
     xianyu_image_urls = await asyncio.to_thread(publisher.upload_images_to_xianyu, upload_sources)
     if not xianyu_image_urls:
         raise RuntimeError("鱼小铺重发图片上传失败")
+    # 类目核对放在图片上传之后：复用封面 CDN 地址，与“识别分类”使用同一请求体，
+    # 避免同一接口因入参不同返回不同候选集而误判“分类已失效”。
+    category_info = await asyncio.to_thread(publisher.resolve_category_for_publish, publish_req)
 
     internal_obj = build_internal_item_object(publish_req, xianyu_image_urls, category_info, is_edit=False)
     try:

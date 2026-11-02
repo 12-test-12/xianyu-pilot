@@ -381,11 +381,10 @@ async def publish_fish_shop_item(
         if location_error:
             return ResultObject.validate_failed(location_error)
 
-        # 4) 类目推荐（复用现有能力）
+        # 4) 图片上传到闲鱼 CDN（复用现有能力）
+        #    先上传：类目核对复用封面 CDN 地址，与“识别分类”使用同一请求体，
+        #    避免同一接口因入参不同返回不同候选集而误判“分类已失效”。
         publisher = XianyuItemPublisher(cookie_str, account_id=account_id)
-        category_info = await asyncio.to_thread(publisher.resolve_category_for_publish, req)
-
-        # 5) 图片上传到闲鱼 CDN（复用现有能力）
         #    编辑/回显场景下闲鱼 CDN 图片可能为 http://，统一归一化为 https:// 再上传
         #    （download_public_image 仅允许公网 HTTPS 图片）
         upload_sources = [
@@ -396,6 +395,9 @@ async def publish_fish_shop_item(
         xianyu_image_urls = await asyncio.to_thread(publisher.upload_images_to_xianyu, upload_sources)
         if not xianyu_image_urls:
             return ResultObject.failed("图片上传到闲鱼失败，请重试")
+
+        # 5) 类目推荐（使用已上传封面，与识别阶段同构）
+        category_info = await asyncio.to_thread(publisher.resolve_category_for_publish, req)
 
         # 6) 构造内部商品对象（发布场景，不带 itemId）
         internal_obj = build_internal_item_object(
@@ -538,11 +540,9 @@ async def edit_fish_shop_item(
         if location_error:
             return ResultObject.validate_failed(location_error)
 
-        # 4) 类目推荐
+        # 4) 图片上传（http 图片 URL 归一化为 https，download_public_image 仅允许公网 HTTPS）
+        #    先上传：类目核对复用封面 CDN 地址，与“识别分类”使用同一请求体。
         publisher = XianyuItemPublisher(cookie_str, account_id=account_id)
-        category_info = await asyncio.to_thread(publisher.resolve_category_for_publish, req)
-
-        # 5) 图片上传（http 图片 URL 归一化为 https，download_public_image 仅允许公网 HTTPS）
         upload_sources = [
             u.replace("http://", "https://", 1) if str(u).startswith("http://") else u
             for u in image_urls
@@ -551,6 +551,9 @@ async def edit_fish_shop_item(
         xianyu_image_urls = await asyncio.to_thread(publisher.upload_images_to_xianyu, upload_sources)
         if not xianyu_image_urls:
             return ResultObject.failed("图片上传到闲鱼失败，请重试")
+
+        # 5) 类目推荐（使用已上传封面，与识别阶段同构）
+        category_info = await asyncio.to_thread(publisher.resolve_category_for_publish, req)
 
         # 6) 构造内部对象（编辑场景，携带 itemId）
         internal_obj = build_internal_item_object(
