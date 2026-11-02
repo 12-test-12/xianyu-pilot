@@ -154,9 +154,9 @@ def merge_category_recommendations(primary: dict, secondary: dict) -> dict:
     secondary = secondary if isinstance(secondary, dict) else {}
     if not secondary.get("candidates") and not secondary.get("recommended"):
         return primary
-    merged = current_category_candidates(secondary)
+    merged = current_category_candidates(primary)
     seen = {(cat["catId"], cat["channelCatId"]) for cat in merged}
-    for cat in current_category_candidates(primary):
+    for cat in current_category_candidates(secondary):
         key = (cat["catId"], cat["channelCatId"])
         if key not in seen:
             merged.append(cat)
@@ -177,7 +177,9 @@ def prefer_richer_error(first, second):
         return second
     if second is None:
         return first
-    if len(second.candidates) > len(first.candidates):
+    first_candidates = getattr(first, "candidates", None) or ()
+    second_candidates = getattr(second, "candidates", None) or ()
+    if len(second_candidates) > len(first_candidates):
         return second
     return first
 

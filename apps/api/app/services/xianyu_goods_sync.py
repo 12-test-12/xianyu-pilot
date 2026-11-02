@@ -2414,8 +2414,8 @@ class XianyuItemPublisher:
 
     # ---- Step 1: 类目推荐 ----
 
-    def category_recommend(self, title: str, desc: str, image_urls: list[str],
-                           *, cdn_cover: str = "", cover_size=None) -> dict:
+    def category_recommend(self, title: str = "", desc: str = "", image_urls: list[str] = None,
+                           cdn_cover: str = "", cover_size=None, **kwargs) -> dict:
         """
         调用类目推荐 API 获取推荐类目和标签。
 
@@ -2434,6 +2434,7 @@ class XianyuItemPublisher:
         }
         """
         try:
+            image_urls = image_urls or []
             if cdn_cover:
                 width, height = cover_size or (1024, 1024)
                 unique_code = f"{int(time.time() * 1000)}{int(time.time() * 1000000) % 100000}"
@@ -2488,8 +2489,11 @@ class XianyuItemPublisher:
         # available, so the candidate set matches the one the user picked from.
         cover = cdn_cover or getattr(self, "_cover_cdn_url", "")
         size = cover_size or self._cover_size
-        recommendation = self.category_recommend(title, desc, images,
-                                                 cdn_cover=cover, cover_size=size)
+        if cover:
+            recommendation = self.category_recommend(title, desc, images,
+                                                     cdn_cover=cover, cover_size=size)
+        else:
+            recommendation = self.category_recommend(title, desc, images)
         try:
             return resolve_publish_category(category_request(item_data), recommendation)
         except PublishCategoryError as first_error:
@@ -2511,11 +2515,17 @@ class XianyuItemPublisher:
     def refresh_rejected_category(self, item_data, rejected_category):
         self.invalidate_category_cache()
         try:
-            live = self.category_recommend(item_data.get("title", ""),
-                item_data.get("desc") or item_data.get("description", ""),
-                item_data.get("imageUrls", []),
-                cdn_cover=getattr(self, "_cover_cdn_url", ""),
-                cover_size=self._cover_size)
+            cover = getattr(self, "_cover_cdn_url", "")
+            if cover:
+                live = self.category_recommend(item_data.get("title", ""),
+                    item_data.get("desc") or item_data.get("description", ""),
+                    item_data.get("imageUrls", []),
+                    cdn_cover=cover,
+                    cover_size=self._cover_size)
+            else:
+                live = self.category_recommend(item_data.get("title", ""),
+                    item_data.get("desc") or item_data.get("description", ""),
+                    item_data.get("imageUrls", []))
             candidates = [cat for cat in current_category_candidates(live)
                           if not same_category(rejected_category, cat)]
         except Exception:

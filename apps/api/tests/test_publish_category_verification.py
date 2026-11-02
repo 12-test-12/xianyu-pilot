@@ -85,6 +85,7 @@ def test_merge_widens_candidates_without_retargeting_the_selection():
     secondary = parse_publish_category_recommendation(recommendation(CATEGORY))
     merged = merge_category_recommendations(primary, secondary)
     assert merged["catId"] == DECOY["catId"]
+    assert merged["candidates"][0]["catId"] == DECOY["catId"]
     assert {cat["catId"] for cat in merged["candidates"]} == {DECOY["catId"], CATEGORY["catId"]}
     assert resolve_publish_category({**CATEGORY, "source": "xianyu"}, merged)["catId"] == CATEGORY["catId"]
 
@@ -97,6 +98,19 @@ def test_richer_refusal_wins_so_the_ui_gets_actionable_choices():
     poor, rich = refusal([DECOY]), refusal([DECOY, CATEGORY])
     assert prefer_richer_error(poor, rich) is rich
     assert prefer_richer_error(rich, poor) is rich
+    assert prefer_richer_error(rich, None) is rich
+    assert prefer_richer_error(None, rich) is rich
+    assert prefer_richer_error(Exception("plain"), rich) is rich
+
+
+def test_category_recommend_accepts_flexible_signatures_and_safely_falls_back():
+    publisher = Publisher()
+    # Call without keywords (metadata shape)
+    res = publisher.category_recommend("title", "desc", ["http://example.com/a.jpg"])
+    assert res["recommended"] is True
+    # Call with positional cover (identification shape)
+    res = publisher.category_recommend("title", "desc", ["http://example.com/a.jpg"], COVER, (1080, 1080))
+    assert res["recommended"] is True
 
 
 def test_batch_upload_pins_the_cover_and_keeps_its_real_size():
