@@ -184,17 +184,32 @@ def prefer_richer_error(first, second):
     return first
 
 
+def _path_is_suffix(old_path: list, candidate_path: list) -> bool:
+    """A shorter remembered path still identifies a deeper live path."""
+    if not isinstance(old_path, list) or not isinstance(candidate_path, list):
+        return False
+    if not old_path or len(candidate_path) < len(old_path):
+        return False
+    return candidate_path[-len(old_path):] == old_path
+
+
 def resolve_publish_category(preferred: object, recommendation: dict) -> dict:
     preferred = preferred if isinstance(preferred, dict) else {"catName": str(preferred or "")}
     candidates = current_category_candidates(recommendation)
     name = str(preferred.get("catName") or "").strip()
     category = None
-    if name:
-        # IDs from a saved draft or template are hints, not permanent authority.
+    # Marketplace catId/channelCatId are the platform's own identity, so they are
+    # checked before the display name: a renamed category or a moved display path
+    # must never turn an unchanged selection into an "unconfirmed category".
+    # IDs from the local category tree are display identifiers, never platform IDs.
+    if preferred.get("source") != "local":
+        identical = [cat for cat in candidates if same_category(preferred, cat)]
+        if len(identical) == 1:
+            category = identical[0]
+    if category is None and name:
+        # Without trusted IDs the display name is all that is left; it is only a
+        # hint, so ambiguity still refuses instead of silently retargeting.
         matches = [cat for cat in candidates if cat["catName"] == name]
-        # A marketplace catId/channelCatId pair is the platform's own identity:
-        # identical IDs are the same category even when the display path moved,
-        # so path equality is only a tiebreaker for candidates whose IDs changed.
         identical = [cat for cat in matches if same_category(preferred, cat)]
         if len(identical) == 1:
             category = identical[0]
@@ -202,10 +217,10 @@ def resolve_publish_category(preferred: object, recommendation: dict) -> dict:
             old_path = preferred.get("categoryPath")
             path_scoped = matches
             if preferred.get("source") != "local" and isinstance(old_path, list) and len(old_path) > 1:
-                path_scoped = [cat for cat in matches if cat["categoryPath"] == old_path]
+                path_scoped = [cat for cat in matches if _path_is_suffix(old_path, cat["categoryPath"])]
             if len(path_scoped) == 1:
                 category = path_scoped[0]
-    else:
+    if category is None and not name:
         category = category_option(recommendation) if recommendation.get("recommended") else None
     if not category:
         raise PublishCategoryError(category_failure_message(preferred, candidates), candidates=candidates)

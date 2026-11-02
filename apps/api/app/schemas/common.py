@@ -39,6 +39,9 @@ class ItemDTO(CamelModel):
 class ItemListRespDTO(CamelModel):
     items: List[ItemDTO] = []
     total: int = 0
+    # 商品列表附带同步状态，供前端展示"上次同步时间/正在同步"，无需额外请求
+    last_sync_time: Optional[str] = None
+    sync_state: str = "idle"
 
 
 class ItemDetailRespDTO(CamelModel):

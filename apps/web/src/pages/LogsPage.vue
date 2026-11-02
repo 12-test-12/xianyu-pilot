@@ -8,7 +8,7 @@
         <StatCard title="当前页条数" :value="metricValue(rows.length)" change="本页统计" icon="shield" color="green" />
         <StatCard title="操作类型" :value="metricValue(operationTypeCount)" change="本页去重" icon="record" />
         <StatCard title="操作人" :value="metricValue(operatorCount)" change="本页去重" icon="account" color="green" />
-        <StatCard title="待人工核对" :value="metricValue(reconciliationCount)" change="结果未知或未完成" icon="shield" color="orange" />
+        <StatCard title="待人工核对" :value="metricValue(reconciliationCount)" :change="reconciliationChange" icon="shield" color="orange" />
       </div>
       <CardPanel title="操作日志">
         <div class="toolbar">
@@ -48,9 +48,10 @@
         </div>
         <div class="option-line"><span>操作时间</span><b>{{ formatDateTime(detail.createdTime) }}</b></div>
         <div class="option-line"><span>目标ID</span><b>{{ detail.targetId || '-' }}</b></div>
+        <div v-if="detail.durationMs !== null && detail.durationMs !== undefined" class="option-line"><span>耗时</span><b>{{ detail.durationMs }} ms</b></div>
         <p v-if="detail.description" class="subtle">描述：{{ detail.description }}</p>
         <div v-if="detail.requiresReconciliation" class="global-notice warn" role="status">
-          该写操作没有可验证的最终结果。请按请求编号核对业务数据与外部平台，确认前不要重复执行。
+          该操作没有可验证的最终结果。请按订单号/请求编号核对业务数据与外部平台，确认前不要重复执行。
         </div>
         <div v-if="detail.requestParams" class="json-section">
           <div class="json-section-head">
@@ -153,6 +154,13 @@ const OPERATION_TYPE_MAP = {
   RULE_SAVE: '保存规则',
   RULE_DELETE: '删除规则',
   AUDIT_RETENTION: '审计留存清理',
+  ORDER_SYNCED: '订单同步',
+  ORDER_PAID: '订单付款',
+  DELIVERY_STARTED: '开始自动发货',
+  DELIVERY_SUCCEEDED: '自动发货成功',
+  DELIVERY_FAILED: '自动发货失败',
+  GOODS_SYNCED: '商品同步',
+  ITEM_PUBLISHED: '商品发布',
   HTTP_MUTATION_STARTED: '写操作（待核对）',
   HTTP_MUTATION_COMPLETED: '写请求（已结束）',
   HTTP_MUTATION_REJECTED: '写请求（已拒绝）',
@@ -172,6 +180,13 @@ const typeOptions = [
   { value: 'PUBLISH_PRODUCT', label: '发布商品' },
   { value: 'CARD_IMPORT', label: '卡密导入' },
   { value: 'AUDIT_RETENTION', label: '审计留存清理' },
+  { value: 'ORDER_SYNCED', label: '订单同步' },
+  { value: 'ORDER_PAID', label: '订单付款' },
+  { value: 'DELIVERY_STARTED', label: '开始自动发货' },
+  { value: 'DELIVERY_SUCCEEDED', label: '自动发货成功' },
+  { value: 'DELIVERY_FAILED', label: '自动发货失败' },
+  { value: 'GOODS_SYNCED', label: '商品同步' },
+  { value: 'ITEM_PUBLISHED', label: '商品发布' },
   { value: 'HTTP_MUTATION_STARTED', label: '写操作（待核对）' },
   { value: 'HTTP_MUTATION_RESULT_UNKNOWN', label: '写操作（结果未知）' },
   { value: 'HTTP_MUTATION_REJECTED', label: '写请求（已拒绝）' },
@@ -214,11 +229,24 @@ const cols = [
 
 const operationTypeCount = computed(() => new Set(rows.value.map(row => row.operationType).filter(Boolean)).size)
 const operatorCount = computed(() => new Set(rows.value.map(row => row.operator).filter(Boolean)).size)
-const reconciliationCount = computed(() => rows.value.filter(row => row.requiresReconciliation).length)
+// 后端返回全量待核对计数时以其为准；老后端未返回则退化为当前页统计（不造假）。
+const reconciliationTotal = ref(null)
+const reconciliationCount = computed(() => {
+  if (reconciliationTotal.value !== null && reconciliationTotal.value !== undefined) return reconciliationTotal.value
+  return rows.value.filter(row => row.requiresReconciliation).length
+})
+const reconciliationChange = computed(() =>
+  reconciliationTotal.value !== null && reconciliationTotal.value !== undefined
+    ? '全量统计（结果未知/未完成）'
+    : '本页统计（结果未知/未完成）'
+)
 
 function auditStatusType(row) {
   if (row?.requiresReconciliation) return 'orange'
+  const statusText = String(row?.status || '')
+  if (statusText === '执行失败' || statusText === '请求已拒绝') return 'red'
   if (String(row?.operationType || '').toUpperCase() === 'HTTP_MUTATION_REJECTED') return 'red'
+  if (statusText === '执行成功') return 'green'
   return 'gray'
 }
 
@@ -238,11 +266,14 @@ async function load() {
     })
     rows.value = recordsOf(res.data)
     total.value = totalOf(res.data, rows.value.length)
+    const reconciliation = res.data?.requiresReconciliationTotal
+    reconciliationTotal.value = typeof reconciliation === 'number' ? reconciliation : null
     dataAvailable.value = true
   } catch (e) {
     error.value = e.message || '日志加载失败'
     rows.value = []
     total.value = 0
+    reconciliationTotal.value = null
     detail.value = null
     dataAvailable.value = false
   } finally {

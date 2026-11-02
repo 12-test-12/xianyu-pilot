@@ -656,11 +656,21 @@ async def list_goods(
         )
         for goods in goods_list
     ]
+    # 商品列表附带同步状态，前端可显示"上次同步时间/正在同步"，进页面无需额外请求
+    from .items import goods_sync_snapshot
+
+    try:
+        sync_snapshot = await goods_sync_snapshot(db, account_filter)
+    except Exception:
+        _logger.warning("读取商品同步快照失败 accountFilter=%s", account_filter, exc_info=True)
+        sync_snapshot = {"lastSyncTime": None, "syncState": "idle"}
     return ResultObject.success({
         "records": records,
         "total": total,
         "current": current,
         "size": size,
+        "lastSyncTime": sync_snapshot["lastSyncTime"],
+        "syncState": sync_snapshot["syncState"],
     })
 
 

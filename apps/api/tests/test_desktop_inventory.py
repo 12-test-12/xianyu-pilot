@@ -201,7 +201,8 @@ def test_upgrade_keeps_existing_stock_and_rejects_duplicates_without_data_loss(t
     with sqlite3.connect(path) as conn:
         conn.execute("INSERT INTO card_group(id,group_name,deleted) VALUES(1,'old',0)")
         conn.execute("INSERT INTO card_item(group_id,card_key,deleted) VALUES(1,'existing',0)")
-    assert DesktopStore(path).initialize()["version"] == "006_full_console.sql"
+    latest_version = sorted(path.name for path in MIGRATIONS.glob("*.sql"))[-1]
+    assert DesktopStore(path).initialize()["version"] == latest_version
     assert DesktopStore(path).initialize()["current"]
     with sqlite3.connect(path) as conn:
         assert conn.execute("SELECT card_key FROM card_item").fetchall() == [("existing",)]

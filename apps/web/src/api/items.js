@@ -21,6 +21,10 @@ export const isSyncing = accountId => request.get(`/item/syncing/${accountId}`)
 // 同步任务历史：直接查 DB，同步后可能数据量大，给 60s 超时
 export const getSyncTasks = params => request.get('/item/syncTasks', { params, timeout: 60000 })
 
+// 商品自动同步：进页面/切账号时调用，服务端按 60s 阈值节流并后台执行，立即返回
+// 返回 { started, syncing, status, lastSyncTime, syncId, syncIds, intervalSeconds, message }
+export const autoSyncItems = data => request.post('/item/autoSync', data || {}, { timeout: 15000 })
+
 // ---- 自动分类相关 ----
 // 自动分类涉及图片下载+CDN上传+MTOP调用，设置较长超时（120s）
 export const autoCategory = (accountId, data) => request.post(`/xianyu/accounts/${accountId}/auto-category`, data, { timeout: 120000 })

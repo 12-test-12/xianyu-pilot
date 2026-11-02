@@ -127,10 +127,24 @@ async def _run_account_orders_sync(account_id: int) -> None:
         from .xianyu_order_sync import sync_orders_for_account
 
         result = await sync_orders_for_account(account_id)
-        logger.info(
-            "WS 消息触发账号订单同步完成 accountId=%d result=%s",
-            account_id, result,
-        )
+        # 同步是 upsert，重复执行不会产生脏数据；这里区分成功/失败日志，
+        # 失败时明确告警（远端接口失败不会抛异常，只会返回 success=False）
+        if result.get("success"):
+            logger.info(
+                "WS 消息触发账号订单同步完成 accountId=%d total=%d inserted=%d updated=%d failed=%d",
+                account_id,
+                result.get("total", 0),
+                result.get("inserted", 0),
+                result.get("updated", 0),
+                result.get("failed", 0),
+            )
+        else:
+            logger.warning(
+                "WS 消息触发账号订单同步未成功 accountId=%d errorCode=%s error=%s",
+                account_id,
+                result.get("errorCode", "ORDER_SYNC_FAILED"),
+                result.get("error", ""),
+            )
     except Exception as exc:
         logger.error(
             "WS 消息触发账号订单同步失败 accountId=%d: %s",

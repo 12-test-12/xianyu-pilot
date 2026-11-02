@@ -189,11 +189,6 @@ RETIRED_SURFACES = (
     ),
     RetiredSurface(
         "POST",
-        "/api/order/batchRefresh",
-        "仅回读本地数据的旧刷新桩已移除；请使用 POST /api/orders/sync 后重新查询订单。",
-    ),
-    RetiredSurface(
-        "POST",
         "/api/item/batch/remoteDelete",
         "不安全的批量远程删除接口已移除；请逐件调用 POST /api/item/remoteDelete，并检查 confirmed/unknown/remote_confirmed 状态。",
     ),

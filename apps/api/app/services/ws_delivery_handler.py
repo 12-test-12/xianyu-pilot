@@ -14,6 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.database import async_session
+from .operation_log_service import record_delivery_outcome
 from .realtime_delivery import (
     RealtimeDeliveryCommand,
     RealtimeDeliveryCoordinator,
@@ -528,15 +529,17 @@ async def _process_delivery(
         )
         return None
 
-    rule = await resolve_realtime_delivery_rule(
+    rule, rule_error_code, rule_error_message = await resolve_realtime_delivery_rule_diagnosis(
         db,
         account_id=account_id,
         external_goods_id=item_id,
     )
     if not rule:
+        # 不再把“没匹配到规则”当成“发货模式停用”：这里保留准确的诊断错误码与
+        # 可操作中文文案，交给协调器写入失败记录，避免误导用户。
         logger.warning(
-            "Realtime delivery no rule matched accountId=%d itemId=%s orderId=%s",
-            account_id, item_id, external_order_id,
+            "Realtime delivery no usable rule accountId=%d itemId=%s orderId=%s errorCode=%s",
+            account_id, item_id, external_order_id, _safe_log_code(rule_error_code or "unknown"),
         )
     else:
         logger.info(
@@ -562,6 +565,10 @@ async def _process_delivery(
             )
 
     mode = _normalize_delivery_mode(rule.get("delivery_mode") if rule else "unconfigured")
+    # 规则可用但模式是历史遗留的 api/custom（含 SKU 覆盖后的结果）时，单独给出
+    # “发货模式已停用”的诊断，而不是让协调器把问题算到别的配置上。
+    if not rule_error_code:
+        rule_error_code, rule_error_message = _delivery_mode_unsupported_diagnosis(rule)
     content = str((rule or {}).get("delivery_content") or "")
     content = _render_delivery_content(
         content,
@@ -611,6 +618,8 @@ async def _process_delivery(
         card_group_id=_optional_int((rule or {}).get("card_group_id")),
         auto_confirm_shipment=_truthy((rule or {}).get("auto_confirm_shipment")),
         segments=(rule or {}).get("segments") or None,
+        failure_error_code=rule_error_code,
+        failure_message=rule_error_message or "",
     )
     coordinator = RealtimeDeliveryCoordinator(
         store=SqlRealtimeDeliveryStore(db),
@@ -624,9 +633,81 @@ async def _process_delivery(
         outcome.status,
         _safe_log_code(outcome.error_code or "none"),
     )
+    await _record_delivery_audit(
+        db,
+        account_id=account_id,
+        external_order_id=external_order_id,
+        item_id=item_id,
+        peer_id=peer_id,
+        quantity=quantity,
+        rule=rule,
+        mode=mode,
+        outcome=outcome,
+    )
     if outcome.status in {"failed", "unknown", "message_sent"}:
         await _notify_realtime_delivery_attention(db, account_id, outcome)
     return outcome
+
+
+async def _record_delivery_audit(
+    db: AsyncSession,
+    *,
+    account_id: int,
+    external_order_id: str,
+    item_id: str,
+    peer_id: str,
+    quantity: int,
+    rule: Optional[dict],
+    mode: str,
+    outcome: RealtimeDeliveryOutcome,
+) -> None:
+    """把这次自动发货写进操作日志（HTTP 之外的业务事件）。
+
+    操作日志页原本只能看到 HTTP 变更，WS 里的付款/发货事件完全不可见；
+    这里补一条带订单号/商品/买家/结果/失败原因的记录。重复事件（repeated）
+    不再重复记账，避免同一笔交易刷屏。日志写入失败不影响发货结果。
+    """
+
+    if outcome.repeated:
+        return
+    amount = await _lookup_order_amount(db, account_id, external_order_id)
+    if amount is None:
+        amount = _optional_float((rule or {}).get("price"))
+    try:
+        await record_delivery_outcome(
+            db,
+            order_id=str(external_order_id or ""),
+            outcome_status=outcome.status,
+            item_id=item_id,
+            buyer=peer_id,
+            amount=amount,
+            attempt_id=outcome.attempt_id,
+            delivery_mode=mode,
+            error_code=outcome.error_code,
+            error_message=outcome.message,
+            message_confirmed=outcome.message_confirmed,
+            platform_confirmed=outcome.platform_confirmed,
+            retry_safe=outcome.retry_safe,
+            retry_scope=outcome.retry_scope,
+            repeated=outcome.repeated,
+            operator="自动发货",
+            request_params={
+                "accountId": account_id,
+                "externalOrderId": external_order_id,
+                "itemId": item_id,
+                "buyerId": peer_id,
+                "quantity": quantity,
+                "ruleId": (rule or {}).get("id"),
+                "deliveryMode": mode,
+            },
+        )
+    except Exception as exc:  # pragma: no cover - 审计失败绝不影响发货
+        logger.warning(
+            "Delivery audit log skipped accountId=%d orderId=%s errorType=%s",
+            account_id,
+            external_order_id,
+            type(exc).__name__,
+        )
 
 
 async def resolve_realtime_delivery_rule(
@@ -645,11 +726,41 @@ async def _match_delivery_rule(
     account_id: int,
     external_goods_id: str,
 ) -> Optional[dict]:
+    rule, _error_code, _error_message = await resolve_realtime_delivery_rule_diagnosis(
+        db,
+        account_id=account_id,
+        external_goods_id=external_goods_id,
+    )
+    return rule
+
+
+async def resolve_realtime_delivery_rule_diagnosis(
+    db: AsyncSession,
+    *,
+    account_id: int,
+    external_goods_id: str,
+) -> tuple[Optional[dict], Optional[str], Optional[str]]:
+    """匹配发货规则，并在匹配不到时给出可操作的诊断（错误码 + 中文原因）。
+
+    返回值三元组：(可用规则, 诊断错误码, 诊断文案)。规则可用时后两项为 None；
+    规则不可用时第一项为 None，后两项说明具体是“没有规则”“规则不匹配该商品”
+    还是“命中的规则仍是 api/custom 等已停用模式”。
+    """
+
     goods = await _find_goods_for_delivery(db, account_id, external_goods_id)
+    unsupported: tuple[str, Optional[int], str] | None = None
+    goods_config_state = "missing"
     if goods:
         goods_rule = await _load_goods_delivery_rule(db, goods)
         if goods_rule:
-            return goods_rule
+            if _is_usable_delivery_mode(goods_rule.get("delivery_mode")):
+                return goods_rule, None, None
+            unsupported = (
+                "goods_config",
+                _optional_int(goods_rule.get("id")),
+                str(goods_rule.get("delivery_mode") or ""),
+            )
+        goods_config_state = await _goods_delivery_config_state(db, goods)
 
     local_goods_id = int(goods["id"]) if goods and goods.get("id") is not None else 0
     rows = (
@@ -671,20 +782,155 @@ async def _match_delivery_rule(
                     ELSE 3
                   END,
                   id DESC
-                LIMIT 1
+                LIMIT 8
                 """
             ),
             {"account_id": account_id, "goods_id": local_goods_id},
         )
     ).mappings().all()
-    if not rows:
-        return None
-    rule = dict(rows[0])
-    rule["delivery_mode"] = _normalize_delivery_mode(rule.get("delivery_mode"))
-    # 旧版 delivery_rule 表无 auto_confirm_shipment 字段，无法自动确认发货；
-    # 自动确认发货仅在 delivery_goods_config（新版配置）路径下生效。
-    rule["auto_confirm_shipment"] = 0
-    return rule
+    # 按优先级逐条检查：跳过历史遗留的 api/custom 等停用模式，继续找下一条可用规则，
+    # 避免“有全局文本规则却因为一条坏规则而报模式停用”。
+    for row in rows:
+        rule = dict(row)
+        raw_mode = str(rule.get("delivery_mode") or "").strip()
+        rule["delivery_mode"] = _normalize_delivery_mode(raw_mode)
+        # 旧版 delivery_rule 表无 auto_confirm_shipment 字段，无法自动确认发货；
+        # 自动确认发货仅在 delivery_goods_config（新版配置）路径下生效。
+        rule["auto_confirm_shipment"] = 0
+        if _is_usable_delivery_mode(raw_mode):
+            return rule, None, None
+        if unsupported is None:
+            unsupported = ("delivery_rule", _optional_int(rule.get("id")), raw_mode)
+
+    if unsupported is not None:
+        source, rule_id, raw_mode = unsupported
+        if source == "goods_config":
+            where = "该商品的发货配置"
+        else:
+            where = f"发货规则 #{rule_id}" if rule_id else "该商品的发货规则"
+        return (
+            None,
+            "delivery_mode_unsupported",
+            f"{where}发货模式为 {_delivery_mode_label(raw_mode)}，请到「自动发货」页改为文本或卡密发货",
+        )
+
+    active_rule_count, total_rule_count = await _count_delivery_rules(db)
+    return (
+        None,
+        *_diagnose_delivery_rule_absence(
+            active_rule_count=active_rule_count,
+            total_rule_count=total_rule_count,
+            goods_config_state=goods_config_state,
+            external_goods_id=external_goods_id,
+        ),
+    )
+
+
+async def _count_delivery_rules(db: AsyncSession) -> tuple[int, int]:
+    """返回 (启用中的规则数, 未删除的规则总数)，用于区分“从未配置”和“规则被停用”。"""
+
+    row = (
+        await db.execute(
+            text(
+                """
+                SELECT
+                    SUM(CASE WHEN status = 1 THEN 1 ELSE 0 END) AS active_total,
+                    COUNT(*) AS all_total
+                FROM delivery_rule
+                WHERE deleted = 0
+                """
+            )
+        )
+    ).mappings().first()
+    active_raw = (row or {}).get("active_total")
+    all_raw = (row or {}).get("all_total")
+    try:
+        active = int(active_raw or 0)
+    except (TypeError, ValueError):
+        active = 0
+    try:
+        all_total = int(all_raw or 0)
+    except (TypeError, ValueError):
+        all_total = 0
+    return active, all_total
+
+
+async def _goods_delivery_config_state(db: AsyncSession, goods: dict) -> str:
+    """返回该商品发货配置的状态：missing / disabled / incomplete。"""
+
+    goods_id = goods.get("id") if isinstance(goods, dict) else None
+    if goods_id is None:
+        return "missing"
+    row = (
+        await db.execute(
+            text(
+                """
+                SELECT config_json FROM delivery_goods_config
+                WHERE goods_id = :goods_id AND deleted = 0
+                LIMIT 1
+                """
+            ),
+            {"goods_id": int(goods_id)},
+        )
+    ).mappings().first()
+    if not row:
+        return "missing"
+    config = _json_object(row.get("config_json"))
+    timing_config = config.get("payDelivery")
+    if not isinstance(timing_config, dict) or not _truthy(timing_config.get("enabled")):
+        return "disabled"
+    return "incomplete"
+
+
+def _diagnose_delivery_rule_absence(
+    *,
+    active_rule_count: int,
+    total_rule_count: int,
+    goods_config_state: str,
+    external_goods_id: str,
+) -> tuple[str, str]:
+    goods_hint = str(external_goods_id or "").strip() or "该商品"
+    if goods_config_state == "disabled":
+        return (
+            "delivery_rule_not_matched",
+            f"商品 {goods_hint} 的自动发货已停用，请到「自动发货」页开启该商品的发货配置后重试",
+        )
+    if goods_config_state == "incomplete":
+        return (
+            "delivery_rule_not_matched",
+            f"商品 {goods_hint} 的自动发货配置不完整（发货内容或卡密分组为空），请到「自动发货」页补全后重试",
+        )
+    if total_rule_count <= 0:
+        return (
+            "delivery_rule_missing",
+            "尚未配置任何自动发货规则，请到「自动发货」页为该商品设置文本或卡密发货",
+        )
+    if active_rule_count <= 0:
+        return (
+            "delivery_rule_missing",
+            "已有的发货规则均处于停用状态，请到「自动发货」页启用或新建文本/卡密发货规则",
+        )
+    return (
+        "delivery_rule_not_matched",
+        f"未找到匹配商品 {goods_hint} 的发货规则，请到「自动发货」页为该商品绑定规则，或配置一条账号级/全局文本规则",
+    )
+
+
+def _delivery_mode_unsupported_diagnosis(rule: Optional[dict]) -> tuple[Optional[str], Optional[str]]:
+    """检查已匹配规则（含 SKU 覆盖结果）的模式是否仍可用。"""
+
+    if not isinstance(rule, dict):
+        return None, None
+    # 归一化结果与原始值分开取：原始值为空 = 未配置，原始值为 api/custom = 历史遗留非法值。
+    normalized_mode, raw_mode = _delivery_mode_state(rule.get("delivery_mode"))
+    if normalized_mode in {MODE_TEXT, MODE_CARD}:
+        return None, None
+    rule_id = _optional_int(rule.get("id"))
+    where = f"发货规则 #{rule_id}" if rule_id else "该商品的发货规则"
+    return (
+        "delivery_mode_unsupported",
+        f"{where}发货模式为 {_delivery_mode_label(raw_mode)}，请到「自动发货」页改为文本或卡密发货",
+    )
 
 
 async def _find_goods_for_delivery(
@@ -1313,6 +1559,31 @@ def _normalize_delivery_mode(value: Any) -> str:
     return normalized or "unconfigured"
 
 
+def _delivery_mode_state(value: Any) -> tuple[str, str]:
+    """返回 (归一化模式, 原始值)。
+
+    保留归一化结果以兼容既有调用方，同时把原始值带出来，让上层能区分
+    “未配置发货模式”（原始值为空）与“历史遗留非法值”（api/custom 等）。
+    """
+
+    return _normalize_delivery_mode(value), str(value or "").strip()
+
+
+def _delivery_mode_label(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return "未配置"
+    if raw.lower() == MODE_API:
+        return f"API（{raw}）"
+    if raw.lower() == MODE_CUSTOM:
+        return f"自定义（{raw}）"
+    return raw
+
+
+def _is_usable_delivery_mode(value: Any) -> bool:
+    return _normalize_delivery_mode(value) in {MODE_TEXT, MODE_CARD}
+
+
 def _truthy(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
@@ -1324,6 +1595,51 @@ def _optional_int(value: Any) -> int | None:
         return int(value) if value not in (None, "") else None
     except (TypeError, ValueError):
         return None
+
+
+def _optional_float(value: Any) -> float | None:
+    try:
+        return float(str(value).strip()) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+
+
+async def _lookup_order_amount(
+    db: AsyncSession,
+    account_id: int,
+    external_order_id: str,
+) -> float | None:
+    """取这笔订单的实付金额，供操作日志展示“这笔账”的金额。"""
+
+    order_id = str(external_order_id or "").strip()
+    if not order_id:
+        return None
+    try:
+        row = (
+            await db.execute(
+                text(
+                    """
+                    SELECT total_amount FROM xianyu_trade_order
+                    WHERE account_id = :account_id
+                      AND external_order_id = :order_id
+                      AND deleted = 0
+                    LIMIT 1
+                    """
+                ),
+                {"account_id": account_id, "order_id": order_id},
+            )
+        ).first()
+    except Exception as exc:  # pragma: no cover - 金额只用于展示
+        logger.warning(
+            "Delivery audit amount lookup failed accountId=%d orderId=%s errorType=%s",
+            account_id,
+            order_id,
+            type(exc).__name__,
+        )
+        return None
+    if not row:
+        return None
+    return _optional_float(row[0])
 
 
 def _safe_log_code(value: Any) -> str:

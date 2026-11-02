@@ -108,7 +108,7 @@
               <button class="dropdown-item" @click="batchAction('export-selected')">导出选中</button>
             </div>
           </div>
-          <button class="action-btn icon-only" @click="loadOrders()" title="刷新">
+          <button class="action-btn icon-only" @click="refreshFromPlatform()" title="从平台刷新订单">
             <span class="refresh-icon">↻</span>
           </button>
           <button class="action-btn icon-only" title="设置">
@@ -382,6 +382,7 @@ import Pagination from '../components/Pagination.vue'
 import Icon from '../components/Icon.vue'
 import { getAccounts } from '../api/accounts.js'
 import { getOrderDetail, getOrders, getTodayOrderAmount, manualDeliverOrder, syncOrder, syncOrders } from '../api/orders.js'
+import { refreshOrders } from '../api/order.js'
 import { getDeliverySources } from '../api/autoDelivery.js'
 import { recordsOf, totalOf } from '../utils/apiData.js'
 import { confirmAction } from '../utils/confirmAction.js'
@@ -908,6 +909,49 @@ async function syncAllAccountsOrders() {
   }
 }
 
+// 从平台刷新订单：先让后端触发远程同步（batchRefresh），再回读本地列表。
+// 同步失败时后端把原因放在 syncErrors 中（HTTP 仍为成功），这里展示给用户。
+async function refreshFromPlatform(options = {}) {
+  if (syncingList.value) return
+  const silent = options.silent === true
+  if (!silent) clearNotice()
+  syncingList.value = true
+  let failureMessage = ''
+  let syncedCount = 0
+  try {
+    const payload = {}
+    if (query.accountId) payload.xianyuAccountId = Number(query.accountId)
+    const res = await refreshOrders(payload)
+    const data = res?.data || {}
+    const syncErrors = Array.isArray(data.syncErrors) ? data.syncErrors : []
+    syncedCount = Number(data.syncedCount || 0)
+    if (syncErrors.length > 0) {
+      const reasons = syncErrors
+        .map(item => item?.error)
+        .filter(Boolean)
+        .slice(0, 3)
+        .join('；')
+      failureMessage = `平台订单同步未完全成功${reasons ? `：${reasons}` : ''}`
+    }
+  } catch (requestError) {
+    failureMessage = requestError.message || '从平台刷新订单失败'
+  } finally {
+    syncingList.value = false
+  }
+  await loadOrders({ sync: false, silent: true })
+  if (failureMessage) {
+    if (ordersAvailable.value === true) {
+      appendWarning(failureMessage)
+    } else {
+      error.value = error.value ? `${failureMessage} ${error.value}` : failureMessage
+    }
+  } else if (!silent) {
+    success.value = syncedCount > 0
+      ? `已从平台同步 ${syncedCount} 条订单`
+      : '已从平台刷新订单，暂无新增订单'
+  }
+}
+
 function onSyncButtonClick() {
   if (query.accountId) {
     return syncAccountOrders()
@@ -992,7 +1036,7 @@ function onClickOutside(e) {
 }
 
 function onHeaderAction(event) {
-  if (event.detail === 'orders-refresh') loadOrders()
+  if (event.detail === 'orders-refresh') refreshFromPlatform()
 }
 
 let ordersPollTimer = null
@@ -1025,7 +1069,13 @@ onMounted(() => {
   window.addEventListener('xya-header-action', onHeaderAction)
   document.addEventListener('visibilitychange', onVisibilityChange)
   document.addEventListener('click', onClickOutside)
-  loadOrders()
+  // 首次进入：先读本地缓存；若本地没有订单，自动从平台同步一次，
+  // 避免用户必须手动点"同步"才能看到平台侧已发货的订单。
+  loadOrders().then(() => {
+    if (ordersAvailable.value === true && orders.value.length === 0) {
+      refreshFromPlatform({ silent: true })
+    }
+  })
   startOrdersPolling()
 })
 

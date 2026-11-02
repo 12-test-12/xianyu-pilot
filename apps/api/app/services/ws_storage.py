@@ -12,7 +12,7 @@ import logging
 import re
 import time
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 from urllib.parse import urlparse
 
 from sqlalchemy import bindparam, text
@@ -24,6 +24,508 @@ from ..models.entities import XianyuChatMessage
 from .ws_protocol import normalize_peer_name, extract_username_from_reminder
 
 logger = logging.getLogger(__name__)
+
+# 闲鱼 WS 的 contentType 是数字枚举。前端需要可读文案，后端需要语义类型，
+# 因此在这里集中维护映射表，避免各处散落 `2 if image else 1` 的压缩逻辑。
+# 1 文本、2 图片、3 语音、4 视频、5 表情、6 文件、7 位置、8 商品卡片、
+# 9 红包、10 转账、11 业务通知（发送失败等）、26 订单系统通知。
+MESSAGE_CONTENT_TYPE_MAP: dict[int, str] = {
+    1: "text",
+    2: "image",
+    3: "audio",
+    4: "video",
+    5: "emoji",
+    6: "file",
+    7: "location",
+    8: "goods_card",
+    9: "red_packet",
+    10: "transfer",
+    11: "business_notice",
+    26: "order_notice",
+}
+
+MESSAGE_CONTENT_TYPE_LABELS: dict[str, str] = {
+    "text": "文本",
+    "image": "图片",
+    "audio": "语音",
+    "video": "视频",
+    "emoji": "表情",
+    "file": "文件",
+    "location": "位置",
+    "goods_card": "商品卡片",
+    "red_packet": "红包",
+    "transfer": "转账",
+    "business_notice": "业务通知",
+    "order_notice": "订单通知",
+    "unknown": "未知类型",
+}
+
+MESSAGE_CONTENT_TYPE_PLACEHOLDERS: dict[str, str] = {
+    "text": "[文本]",
+    "image": "[图片]",
+    "audio": "[语音]",
+    "video": "[视频]",
+    "emoji": "[表情]",
+    "file": "[文件]",
+    "location": "[位置]",
+    "goods_card": "[商品卡片]",
+    "red_packet": "[红包]",
+    "transfer": "[转账]",
+    "business_notice": "[业务通知]",
+    "order_notice": "[订单通知]",
+    "unknown": "[暂不支持的消息类型]",
+}
+
+# 兼容历史数据里以英文标签存储的 message_type（如 "image" / "text"）。
+_CONTENT_TYPE_ALIASES: dict[str, int] = {
+    "text": 1,
+    "txt": 1,
+    "image": 2,
+    "img": 2,
+    "pic": 2,
+    "audio": 3,
+    "voice": 3,
+    "sound": 3,
+    "video": 4,
+    "emoji": 5,
+    "sticker": 5,
+    "file": 6,
+    "location": 7,
+    "goods": 8,
+    "card": 8,
+    "item": 8,
+    "red_packet": 9,
+    "redpacket": 9,
+    "transfer": 10,
+    "notice": 11,
+    "business_notice": 11,
+    "order": 26,
+    "order_notice": 26,
+}
+
+# 需要递归进入的 JSON 容器键（complete_msg / rawPayload / extension / extraInfo 等）。
+_JSON_CONTAINER_KEYS: tuple[str, ...] = (
+    "completeMsg",
+    "complete_msg",
+    "rawPayload",
+    "raw_payload",
+    "raw",
+    "extension",
+    "ext",
+    "extraInfo",
+    "extra_info",
+    "content",
+    "custom",
+    "message",
+    "sessionInfo",
+    "session_info",
+    "extensions",
+    "data",
+    "reminder",
+    "text",
+    "audio",
+    "image",
+    "sessionArouse",
+    "session_arouse",
+)
+
+# 正文候选键，按可读性优先级排列。
+_MESSAGE_TEXT_KEYS: tuple[str, ...] = (
+    "displayText",
+    "display_text",
+    "msgContent",
+    "msg_content",
+    "reminderContent",
+    "reminder_content",
+    "title",
+    "template",
+    "summary",
+    "degrade",
+    "desc",
+    "description",
+    "text",
+    "content",
+    "message",
+    "extraInfo",
+    "extra_info",
+)
+
+_MESSAGE_PLACEHOLDER_TEXTS: frozenset[str] = frozenset(
+    list(MESSAGE_CONTENT_TYPE_PLACEHOLDERS.values())
+    + ["[非文本消息]", "[语音消息]", "[卡片消息]", "语音消息（暂不支持播放）"]
+)
+
+
+def _coerce_content_type(value: object) -> int:
+    """把 contentType 归一成 int：缺失按文本(1)，非法值归 0（未知）。"""
+    if value is None or value == "":
+        return 1
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        try:
+            return int(value)
+        except (TypeError, ValueError, OverflowError):
+            return 0
+    text_value = str(value).strip()
+    if not text_value:
+        return 1
+    if text_value.lstrip("+-").isdigit():
+        try:
+            return int(text_value)
+        except (TypeError, ValueError):
+            return 0
+    return _CONTENT_TYPE_ALIASES.get(text_value.lower(), 0)
+
+
+def _content_type_kind(value: object) -> str:
+    """contentType → 语义类型，未收录的归 "unknown"。"""
+    return MESSAGE_CONTENT_TYPE_MAP.get(_coerce_content_type(value), "unknown")
+
+
+def _content_type_label(value: object) -> str:
+    return MESSAGE_CONTENT_TYPE_LABELS[_content_type_kind(value)]
+
+
+def _message_content_type(message: dict[str, Any]) -> int:
+    for key in (
+        "contentType",
+        "content_type",
+        "messageType",
+        "message_type",
+        "lastContentType",
+        "last_content_type",
+    ):
+        if key in message and message.get(key) not in (None, ""):
+            return _coerce_content_type(message.get(key))
+    return 1
+
+
+def _clean_message_text(value: object) -> str:
+    """过滤占位文案、纯 URL、JSON 片段，只保留可读正文。"""
+    text_value = str(value or "").strip()
+    if not text_value or text_value in _MESSAGE_PLACEHOLDER_TEXTS:
+        return ""
+    if text_value.startswith("{") or text_value.startswith('["') or text_value.startswith("[{"):
+        return ""
+    if re.fullmatch(r"https?://\S+", text_value) or re.fullmatch(r"//\S+", text_value):
+        return ""
+    return text_value
+
+
+def _iter_message_json_objects(value: object, *, max_nodes: int = 64) -> Iterator[dict[str, Any]]:
+    """广度优先遍历消息里的 JSON 容器（字符串形式的 JSON 会被解析，失败即跳过）。"""
+    queue: list[object] = [value]
+    visited = 0
+    while queue and visited < max_nodes:
+        visited += 1
+        current = queue.pop(0)
+        if isinstance(current, str):
+            current = _parse_json_object(current)
+        if isinstance(current, list):
+            for entry in current[:16]:
+                if isinstance(entry, (dict, list, str)):
+                    queue.append(entry)
+            continue
+        if not isinstance(current, dict):
+            continue
+        yield current
+        for key in _JSON_CONTAINER_KEYS:
+            child = current.get(key)
+            if isinstance(child, (dict, list, str)):
+                queue.append(child)
+
+
+def _extract_json_text_fallback(message: object) -> str:
+    """从 extraInfo / reminderContent / extension / complete_msg 等 JSON 兜底提取正文。
+
+    任何解析失败都静默跳过，不抛异常（WS 消息形态不稳定）。
+    """
+    if not isinstance(message, (dict, list, str)):
+        return ""
+    for container in _iter_message_json_objects(message):
+        for key in _MESSAGE_TEXT_KEYS:
+            if key not in container:
+                continue
+            cleaned = _clean_message_text(container.get(key))
+            if cleaned:
+                return cleaned
+    return ""
+
+
+def _looks_like_image_url(value: object) -> bool:
+    text_value = str(value or "").strip()
+    if not text_value or not text_value.startswith(("http://", "https://", "//", "/")):
+        return False
+    lowered = text_value.lower()
+    if re.search(r"\.(?:jpg|jpeg|png|webp|gif|bmp)(?:[?#].*)?$", lowered):
+        return True
+    return any(host in lowered for host in ("alicdn.com", "taobao.com"))
+
+
+def _append_image_url(results: list[str], value: object, *, allow_bare: bool = False) -> None:
+    text_value = str(value or "").strip()
+    if not text_value or not text_value.startswith(("http://", "https://", "//", "/")):
+        return
+    normalized = _normalize_image_url(text_value)
+    if not normalized or normalized in results:
+        return
+    if allow_bare or _looks_like_image_url(normalized):
+        results.append(normalized)
+
+
+def _collect_message_image_urls(message: dict[str, Any], content_type: int = 1) -> list[str]:
+    """从消息本体与 complete_msg 等 JSON 中收集图片 URL（输出层派生，不落库）。"""
+    results: list[str] = []
+    for key in ("imageUrls", "image_urls", "images"):
+        value = message.get(key)
+        if isinstance(value, (list, tuple)):
+            for entry in value:
+                _append_image_url(results, entry, allow_bare=True)
+        elif isinstance(value, str):
+            _append_image_url(results, value, allow_bare=True)
+    if content_type == 2:
+        for key in ("msgContent", "msg_content", "content", "text"):
+            _append_image_url(results, message.get(key), allow_bare=True)
+    for container in _iter_message_json_objects(message):
+        image_root = container.get("image")
+        if isinstance(image_root, dict):
+            pics = image_root.get("pics")
+            if isinstance(pics, list):
+                for pic in pics:
+                    if isinstance(pic, dict):
+                        _append_image_url(results, pic.get("url"))
+            _append_image_url(results, image_root.get("url"))
+        for key, value in container.items():
+            if not isinstance(key, str) or key in ("imageUrls", "image_urls", "images"):
+                continue
+            normalized_key = key.replace("_", "").lower()
+            if not any(
+                hint in normalized_key
+                for hint in ("imageurl", "picurl", "itemmainpic", "itempic", "itemimage", "image")
+            ):
+                continue
+            if isinstance(value, str):
+                _append_image_url(results, value)
+            elif isinstance(value, (list, tuple)):
+                for entry in value:
+                    _append_image_url(results, entry)
+    return results
+
+
+def _coerce_duration_seconds(value: object) -> int:
+    if value in (None, ""):
+        return 0
+    try:
+        number = float(str(value).strip())
+    except (TypeError, ValueError):
+        match = re.search(r"\d+(?:\.\d+)?", str(value))
+        if not match:
+            return 0
+        number = float(match.group(0))
+    if number <= 0:
+        return 0
+    if number > 1000:  # 毫秒单位
+        number = number / 1000
+    return int(round(number))
+
+
+def _collect_message_audio_media(message: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """提取语音消息的播放地址与时长；没有地址也返回占位 media，保证前端不空白。"""
+    url = ""
+    duration = 0
+    for container in _iter_message_json_objects(message):
+        audio_root = container.get("audio")
+        if isinstance(audio_root, dict):
+            for key in (
+                "url",
+                "fileUrl",
+                "file_url",
+                "downloadUrl",
+                "download_url",
+                "audioUrl",
+                "audio_url",
+                "voiceUrl",
+                "voice_url",
+            ):
+                candidate = str(audio_root.get(key) or "").strip()
+                if candidate:
+                    url = url or candidate
+            for key in (
+                "duration",
+                "time",
+                "length",
+                "audioDuration",
+                "audio_duration",
+                "voiceLength",
+                "voice_length",
+            ):
+                seconds = _coerce_duration_seconds(audio_root.get(key))
+                if seconds:
+                    duration = duration or seconds
+        for key, value in container.items():
+            if not isinstance(key, str) or not isinstance(value, str):
+                continue
+            normalized_key = key.replace("_", "").lower()
+            if normalized_key in ("audiourl", "voiceurl", "audioconfig", "voiceconfig"):
+                continue
+            if ("audio" in normalized_key or "voice" in normalized_key) and value.startswith(
+                ("http://", "https://", "//")
+            ):
+                url = url or value.strip()
+            if normalized_key in ("audioduration", "voicelength", "duration"):
+                duration = duration or _coerce_duration_seconds(value)
+    if not url and not duration:
+        return None
+    return {"type": "audio", "url": _normalize_image_url(url) if url else "", "duration": duration}
+
+
+def _build_message_goods_card(message: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """从 contentType=8 消息的 extensions/sessionInfo 中派生商品卡片字段。"""
+    title = ""
+    image = ""
+    price = ""
+    item_id = ""
+    existing_card = message.get("card")
+    if isinstance(existing_card, dict):
+        # 幂等：已经派生过的 card 直接复用。
+        title = str(existing_card.get("title") or "").strip()
+        image = str(existing_card.get("image") or "").strip()
+        price = str(existing_card.get("price") or "").strip()
+        item_id = str(existing_card.get("itemId") or "").strip()
+    for container in _iter_message_json_objects(message):
+        for key, value in container.items():
+            if not isinstance(key, str) or not isinstance(value, str):
+                continue
+            normalized_key = key.replace("_", "").lower()
+            cleaned = value.strip()
+            if not cleaned:
+                continue
+            if not title and normalized_key in ("itemtitle", "goodstitle", "title", "itemname"):
+                title = _clean_message_text(cleaned)
+            elif not image and normalized_key in ("itemmainpic", "itempic", "itemimage", "itemmainpicurl"):
+                image = _normalize_image_url(cleaned)
+            elif not price and normalized_key in ("itemprice", "price", "soldprice", "itempricevalue"):
+                price = cleaned
+            elif not item_id and normalized_key in ("itemid", "goodsid"):
+                item_id = str(_normalize_goods_id(cleaned) or cleaned)
+    if not title:
+        title = _clean_message_text(message.get("msgContent") or message.get("msg_content"))
+    if not (title or image or price or item_id):
+        return None
+    return {
+        "title": title,
+        "image": image,
+        "price": price,
+        "itemId": item_id,
+        "subtitle": f"商品ID: {item_id}" if item_id else "",
+    }
+
+
+def _message_body_text(message: dict[str, Any]) -> str:
+    for key in (
+        "displayText",
+        "display_text",
+        "msgContent",
+        "msg_content",
+        "content",
+        "text",
+        "reminderContent",
+        "reminder_content",
+    ):
+        cleaned = _clean_message_text(message.get(key))
+        if cleaned:
+            return cleaned
+    return _extract_json_text_fallback(message)
+
+
+def _build_message_display_text(
+    content_type: int,
+    kind: str,
+    message: dict[str, Any],
+    image_urls: list[str],
+    media: Optional[dict[str, Any]],
+    card: Optional[dict[str, Any]],
+) -> str:
+    body = _message_body_text(message)
+    if kind == "text":
+        if body:
+            return body
+        # 纯链接等被 _clean_message_text 过滤掉的正文，对文本消息仍应原样展示。
+        raw_body = str(
+            message.get("msgContent") or message.get("msg_content") or message.get("content") or ""
+        ).strip()
+        if raw_body and raw_body not in _MESSAGE_PLACEHOLDER_TEXTS and not raw_body.startswith(("{", '["', "[{")):
+            return raw_body
+        return MESSAGE_CONTENT_TYPE_PLACEHOLDERS["text"]
+    if kind == "image":
+        count = len(image_urls)
+        return f"[图片] 共 {count} 张" if count > 1 else "[图片]"
+    if kind == "audio":
+        duration = int(media.get("duration") or 0) if isinstance(media, dict) else 0
+        return f"[语音] 时长 {duration}s" if duration > 0 else "[语音]"
+    if kind == "goods_card":
+        card_title = str((card or {}).get("title") or "").strip()
+        card_price = str((card or {}).get("price") or "").strip()
+        if not card_title and not card_price:
+            # 已派生过 displayText 的二次调用（幂等）或缺少卡片信息时，直接用正文/占位。
+            return body or MESSAGE_CONTENT_TYPE_PLACEHOLDERS["goods_card"]
+        segments = ["[商品卡片]"]
+        if card_title:
+            segments.append(card_title)
+        if card_price:
+            segments.append(card_price)
+        return " ".join(segments)
+    label = MESSAGE_CONTENT_TYPE_LABELS.get(kind, MESSAGE_CONTENT_TYPE_LABELS["unknown"])
+    if body:
+        return body if body.startswith(f"[{label}]") else f"[{label}] {body}"
+    if kind == "unknown":
+        if content_type:
+            return f"[暂不支持的消息类型]（contentType={content_type}）"
+        return MESSAGE_CONTENT_TYPE_PLACEHOLDERS["unknown"]
+    return MESSAGE_CONTENT_TYPE_PLACEHOLDERS.get(kind, MESSAGE_CONTENT_TYPE_PLACEHOLDERS["unknown"])
+
+
+def _build_message_display_fields(message: dict[str, Any]) -> dict[str, Any]:
+    """输出层派生 displayText / imageUrls / media / card，兼容 MySQL 与 SQLite（不改库内 msg_content）。"""
+    if not isinstance(message, dict):
+        return {}
+    content_type = _message_content_type(message)
+    kind = _content_type_kind(content_type)
+    image_urls = _collect_message_image_urls(message, content_type)
+    media: Optional[dict[str, Any]] = None
+    if kind == "audio":
+        media = _collect_message_audio_media(message) or {"type": "audio", "url": "", "duration": 0}
+    card: Optional[dict[str, Any]] = None
+    if kind == "goods_card":
+        card = _build_message_goods_card(message)
+    fields: dict[str, Any] = {
+        "contentType": content_type,
+        "contentTypeLabel": MESSAGE_CONTENT_TYPE_LABELS.get(kind, MESSAGE_CONTENT_TYPE_LABELS["unknown"]),
+        "displayText": _build_message_display_text(content_type, kind, message, image_urls, media, card),
+    }
+    # 仅图片消息输出 imageUrls：商品卡片/语音等若也塞图片，前端会先命中图片分支，
+    # 反而看不到卡片标题与语音时长。
+    if image_urls and kind == "image":
+        fields["imageUrls"] = image_urls
+    if media is not None:
+        fields["media"] = media
+    if card is not None:
+        fields["card"] = card
+    return fields
+
+
+def _decorate_context_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """对返回给前端的消息统一补齐可读字段（幂等，不修改入参）。"""
+    decorated: list[dict[str, Any]] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            decorated.append(message)
+            continue
+        item = dict(message)
+        item.update(_build_message_display_fields(item))
+        decorated.append(item)
+    return decorated
 
 
 def _is_misplaced_pnm_sender_message(message: dict[str, Any]) -> bool:
@@ -237,10 +739,7 @@ def _extract_live_image_urls(decoded: dict[str, Any]) -> list[str]:
 
 def _extract_live_message_content(decoded: dict[str, Any], fallback_summary: str = "") -> tuple[int, str, list[str]]:
     raw_content_type = decoded.get("contentType")
-    try:
-        content_type = int(raw_content_type)
-    except (TypeError, ValueError):
-        content_type = 1
+    content_type = _coerce_content_type(raw_content_type)
 
     if (content_type == 2) or decoded.get("image") or decoded.get("picUrl") or decoded.get("imageUrl"):
         image_urls = _extract_live_image_urls(decoded)
@@ -263,7 +762,16 @@ def _extract_live_message_content(decoded: dict[str, Any], fallback_summary: str
 
     if fallback_summary:
         return content_type if content_type > 0 else 1, fallback_summary, []
-    return content_type if content_type > 0 else 1, "", []
+
+    # 系统通知类（26）等消息正文常藏在 extraInfo/reminderContent 里，先做 JSON 兜底提取。
+    fallback_text = _extract_json_text_fallback(decoded)
+    if fallback_text:
+        return content_type if content_type > 0 else 0, fallback_text, []
+
+    # 未知/未收录类型：仍然给出可读中文占位，避免前端落回 "[非文本消息]"。
+    kind = _content_type_kind(content_type)
+    placeholder = MESSAGE_CONTENT_TYPE_PLACEHOLDERS.get(kind, MESSAGE_CONTENT_TYPE_PLACEHOLDERS["unknown"])
+    return content_type if content_type > 0 else 0, placeholder, []
 
 
 def _extract_live_goods_fields(extension: dict[str, Any]) -> dict[str, str]:
@@ -405,6 +913,7 @@ def _parse_live_history_message(
         "completeMsg": _serialize_json_document(message),
         "raw": model,
     }
+    parsed.update(_build_message_display_fields(parsed))
     if not _is_displayable_message(parsed):
         return None
     return parsed
@@ -1016,7 +1525,7 @@ async def _load_ai_reply_context_messages(
             "id": f"legacy_auto_{row.get('id')}",
             "pnmId": "",
             "sid": sid,
-            "contentType": 2 if str(row.get("message_type") or "") == "image" else 1,
+            "contentType": _coerce_content_type(row.get("message_type")),
             "msgContent": str(row.get("content") or ""),
             "senderUserId": str(row.get("from_user_id") or ""),
             "receiverUserId": str(row.get("to_user_id") or ""),
@@ -1029,6 +1538,7 @@ async def _load_ai_reply_context_messages(
         }
         if _context_message_identity(candidate) in existing_keys:
             continue
+        candidate.update(_build_message_display_fields(candidate))
         messages.append(candidate)
     return messages
 
@@ -1304,7 +1814,7 @@ async def _finalize_context_messages(
     # offset=0 返回最新 limit 条；offset=limit 返回更旧的 limit 条
     start = max(0, total - offset - limit)
     end = max(0, total - offset)
-    return merged[start:end], total
+    return _decorate_context_messages(merged[start:end]), total
 
 
 async def _backfill_online_conversation_records(

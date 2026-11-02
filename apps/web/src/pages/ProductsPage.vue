@@ -64,6 +64,7 @@
             </div>
           </div>
           <div class="toolbar-actions">
+            <span class="muted sync-freshness" :title="'商品列表每 60 秒自动从闲鱼同步一次'">{{ syncing || autoSyncState.active ? '正在同步…' : lastSyncLabel }}</span>
             <AppButton type="danger" :disabled="!itemsAvailable || selectedKeys.length === 0 || batchDeleting" @click="batchDeleteProducts">
               {{ batchDeleteBtnText }}
             </AppButton>
@@ -258,7 +259,7 @@ import { getLiteAccounts } from '../api/accounts.js'
 import { getBusinessSettings } from '../api/businessSettings.js'
 import { updateProductAutoReplyScope } from '../api/autoReplyScope.js'
 import { deleteGoodsLocal, getGoodsDetail, getGoods, getGoodsStats, updateGoods } from '../api/goods.js'
-import { refreshItems, getSyncProgress, getSyncTasks, publishItem, offShelfItem, updateItemPrice, remoteDeleteItem, toggleAutoRelist as toggleAutoRelistApi } from '../api/items.js'
+import { refreshItems, autoSyncItems, getSyncProgress, getSyncTasks, publishItem, offShelfItem, updateItemPrice, remoteDeleteItem, toggleAutoRelist as toggleAutoRelistApi } from '../api/items.js'
 import { accountName, formatMoney, formatNumber, shortText } from '../utils/format.js'
 import { accountAuthState } from '../utils/accountAuth.js'
 import { resolveTrustedMediaUrl } from '../utils/safeMediaUrl.js'
@@ -518,9 +519,11 @@ function onAccountChange(){
   query.pageNum = 1
   selectedKeys.value = []
   syncQuery.current = 1
+  lastSyncAt.value = readLastSyncTime(query.xianyuAccountId)
   loadSyncTasks()
   loadGoodsStats()
-  // 切换账号时重新检查自动同步条件
+  // 切换账号后先展示该账号库里已有商品，再按服务端阈值判定是否需要同步
+  loadItems()
   autoTriggerSync()
 }
 
@@ -539,9 +542,13 @@ async function loadAccountsData() {
   }
 }
 async function loadItems(options = {}) {
-  loading.value = true
-  listLoadError.value = ''
-  itemsAvailable.value = false
+  // silent=true：同步过程中的静默刷新，不闪 loading、不重置空态，避免表格闪烁
+  const silent = Boolean(options.silent)
+  if (!silent) {
+    loading.value = true
+    listLoadError.value = ''
+    itemsAvailable.value = false
+  }
   try {
     const selectedGoodsId = selected.value?.raw?.id ?? selected.value?.id ?? null
     const params = { pageNum: query.pageNum, pageSize: query.pageSize, keyword: query.keyword || undefined }
@@ -564,13 +571,17 @@ async function loadItems(options = {}) {
     reconcileOffShelfIntents(items.value)
     selected.value = products.value.find(product => Number(product.raw?.id || product.id) === Number(selectedGoodsId)) || products.value[0] || null
     itemsAvailable.value = true
+    // 服务端附带的同步状态：比本地时间戳更可靠（换设备/清缓存后依然准确）
+    applyServerSyncState(Array.isArray(data) ? null : data)
     return true
   } catch (e) {
-    items.value = []
-    totalCount.value = 0
-    selected.value = null
-    selectedKeys.value = []
-    listLoadError.value = e.message || '商品列表加载失败'
+    if (!silent) {
+      items.value = []
+      totalCount.value = 0
+      selected.value = null
+      selectedKeys.value = []
+      listLoadError.value = e.message || '商品列表加载失败'
+    }
     return false
   }
   finally { loading.value = false }
@@ -631,7 +642,9 @@ async function init(){
   }
   try { await loadSyncTasks() } catch(e) { if (import.meta.env.DEV) console.warn('[ProductsPage] 同步任务历史加载失败', e) }
   try { loadGoodsStats() } catch(e) { if (import.meta.env.DEV) console.warn('[ProductsPage] 商品统计加载失败', e) }
-  // 进入页面后自动触发闲鱼商品同步（无需用户手动点击）
+  // 先用库里的数据把列表铺满，用户进入页面立刻有内容可看（不等平台接口）
+  try { await loadItems() } catch(e) { if (import.meta.env.DEV) console.warn('[ProductsPage] 商品列表加载失败', e) }
+  // 再自动触发闲鱼商品同步：服务端按 60 秒阈值节流，必要时后台拉取并轮询刷新
   autoTriggerSync()
 }
 function showAllProducts() {
@@ -1390,48 +1403,112 @@ function onHeader(e){ if(e.detail === 'sync-products') syncProducts() }
 // localStorage 键名常量
 const LS_LAST_SYNC_TIME = 'xianyu_last_sync_time'
 const LS_PENDING_SYNC = 'xianyu_pending_sync'
-// 同步冷却期：3 小时（毫秒）
-const SYNC_COOLDOWN_MS = 3 * 60 * 60 * 1000
+// 单账号的 60 秒节流由服务端 /item/autoSync 统一判定（多标签页/多入口共享同一阈值），
+// 前端只负责发起与跟随，避免两侧阈值不一致导致漏同步。
+// 页面停留时的自动刷新间隔：60 秒（服务端再按 60 秒阈值节流，不会重复打平台接口）
+const AUTO_REFRESH_INTERVAL_MS = 60 * 1000
 
-async function autoTriggerSync() {
-  // 自动触发同步：进入页面或切换账号时调用，不阻止用户操作
-  if (!query.xianyuAccountId) {
-    // 没有选中账号时正常加载已有数据
-    loadItems()
-    loadGoodsStats()
-    return
-  }
+function syncStampKey(accountId) {
+  const normalized = Number(accountId)
+  return Number.isFinite(normalized) && normalized > 0 ? `${LS_LAST_SYNC_TIME}:${normalized}` : `${LS_LAST_SYNC_TIME}:all`
+}
+function readLastSyncTime(accountId) {
+  const scoped = Number(localStorage.getItem(syncStampKey(accountId)))
+  if (Number.isFinite(scoped) && scoped > 0) return scoped
+  // 兼容旧版本写入的全局键
+  const legacy = Number(localStorage.getItem(LS_LAST_SYNC_TIME))
+  return Number.isFinite(legacy) && legacy > 0 ? legacy : 0
+}
+const lastSyncAt = ref(readLastSyncTime(query.xianyuAccountId))
+function markLastSyncTime(accountId = query.xianyuAccountId) {
+  const now = Date.now()
+  localStorage.setItem(syncStampKey(accountId), String(now))
+  lastSyncAt.value = readLastSyncTime(query.xianyuAccountId)
+}
+const lastSyncLabel = computed(() => {
+  if (!lastSyncAt.value) return '尚未自动同步'
+  const date = new Date(lastSyncAt.value)
+  const pad = value => String(value).padStart(2, '0')
+  return `最后同步 ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+})
 
-  // 检查是否有待同步标记（用户在其他页面发布了商品）
-  const hasPendingSync = localStorage.getItem(LS_PENDING_SYNC) === 'true'
+// 服务端同步状态：idle（无同步在跑）/ syncing（有同步在跑）
+const serverSyncState = ref('idle')
 
-  if (!hasPendingSync) {
-    // 检查冷却期：3 小时内同步过则跳过
-    const lastSyncTime = localStorage.getItem(LS_LAST_SYNC_TIME)
-    if (lastSyncTime) {
-      const elapsed = Date.now() - Number(lastSyncTime)
-      if (elapsed < SYNC_COOLDOWN_MS) {
-        // 冷却期内：直接加载已有商品数据，不触发自动同步
-        loadItems()
-        loadGoodsStats()
-        return
-      }
-    }
-  }
+// 用服务端返回的权威同步状态刷新本地展示：
+// - lastSyncTime 是平台数据真正落库完成的时间，比前端本地戳更准确
+// - syncState 让页面知道"服务端此刻是否正在同步"，用于决定是否继续轮询
+function applyServerSyncState(data) {
+  if (!data || typeof data !== 'object') return
+  const state = data.syncState || data.sync_state
+  if (state) serverSyncState.value = String(state)
+  const rawTime = data.lastSyncTime || data.last_sync_time
+  if (!rawTime) return
+  const parsed = Date.parse(String(rawTime))
+  if (!Number.isFinite(parsed) || parsed <= 0) return
+  localStorage.setItem(syncStampKey(query.xianyuAccountId), String(parsed))
+  lastSyncAt.value = readLastSyncTime(query.xianyuAccountId)
+}
 
-  // 清除待同步标记
-  localStorage.removeItem(LS_PENDING_SYNC)
-
-  // 重置自动同步状态
+// 跟随服务端已启动的同步：每 3 秒静默刷新一次列表（列表响应自带 syncState），
+// 同步结束后再刷新一次列表与统计，用户无需手动点击。
+async function followServerSync(maxAttempts = 20, intervalMs = 3000) {
   autoSyncState.active = true
   autoSyncState.completed = false
   autoSyncState.error = ''
   autoSyncState.progress = 0
   autoSyncState.summary = emptySyncSummary()
-  // 清空原有商品数据，避免展示历史数据
-  items.value = []
-  totalCount.value = 0
-  await syncProducts(true)
+  try {
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      if (syncPollCanceled) break
+      await new Promise(resolve => setTimeout(resolve, intervalMs))
+      if (syncPollCanceled) break
+      await loadItems({ silent: true })
+      // 列表响应里的 syncState 变成 idle 即代表平台数据已落库
+      if (serverSyncState.value !== 'syncing') break
+    }
+    if (!syncPollCanceled) {
+      query.pageNum = 1
+      await loadItems({ silent: true })
+      loadGoodsStats()
+      try { await loadSyncTasks() } catch(e) { if (import.meta.env.DEV) console.warn('[ProductsPage] 同步后任务历史刷新失败', e) }
+    }
+  } finally {
+    autoSyncState.active = false
+  }
+}
+
+async function autoTriggerSync(options = {}) {
+  // 自动触发同步：进入页面、切换账号、定时轮询都会调用，不阻止用户操作。
+  // 是否真的同步由服务端 /item/autoSync 按 60 秒阈值判定，多标签页/多入口共享同一阈值，
+  // 已有同步在跑时服务端直接返回 running，不会重复打平台接口。
+  if (syncing.value || autoSyncState.active) {
+    loadItems({ silent: true })
+    loadGoodsStats()
+    return
+  }
+  const accountId = query.xianyuAccountId ? Number(query.xianyuAccountId) : 0
+  // 其他页面发布/改价后写入的待同步标记：清掉并让服务端再判定一次
+  const hasPendingSync = localStorage.getItem(LS_PENDING_SYNC) === 'true'
+  try {
+    const res = await autoSyncItems(accountId ? { xianyuAccountId: accountId } : {})
+    const data = res?.data || {}
+    applyServerSyncState(data)
+    if (hasPendingSync || options.force) localStorage.removeItem(LS_PENDING_SYNC)
+    if (data.started || data.syncing) {
+      // 服务端已启动（或已有）同步：轮询到结束，完成后自动刷新列表
+      await followServerSync()
+      return
+    }
+    // 阈值内 / 无可用账号：服务端未启动同步，直接展示库里最新数据
+    await loadItems({ silent: true })
+    loadGoodsStats()
+  } catch(e) {
+    // 自动同步失败不能影响用户浏览商品：退回本地数据并静默记录
+    if (import.meta.env.DEV) console.warn('[ProductsPage] 自动同步请求失败', e)
+    await loadItems({ silent: true })
+    loadGoodsStats()
+  }
 }
 
 async function syncProducts(isAuto = false, overrideAccountId = null){
@@ -1535,9 +1612,7 @@ async function syncAllAccounts() {
   autoSyncState.accountTotal = accountList.length
   autoSyncState.accountLabel = ''
   autoSyncState.failedAccounts = []
-  // 清空原数据避免与同步过程混淆
-  items.value = []
-  totalCount.value = 0
+  // 不再清空列表：同步过程中继续展示上一轮数据，避免列表闪空
 
   // 共享进度数组，每个账号独立更新自己的进度，总进度为所有账号平均值
   const progresses = new Array(accountList.length).fill(0)
@@ -1594,7 +1669,7 @@ async function syncAllAccounts() {
       showNotice('success', `全部 ${accountList.length} 个账号同步完成`)
     }
     if (autoSyncState.completed) {
-      localStorage.setItem(LS_LAST_SYNC_TIME, String(Date.now()))
+      markLastSyncTime()
       localStorage.removeItem(LS_PENDING_SYNC)
     }
   } finally {
@@ -1669,7 +1744,7 @@ async function pollSyncProgress(syncId, manageLifecycle = true, parallel = null)
         throw new Error('同步完成结果缺少有效统计')
       }
       if (manageLifecycle) {
-        localStorage.setItem(LS_LAST_SYNC_TIME, String(Date.now()))
+        markLastSyncTime()
         localStorage.removeItem(LS_PENDING_SYNC)
         autoSyncState.active = false
         autoSyncState.completed = true
@@ -1691,6 +1766,28 @@ async function pollSyncProgress(syncId, manageLifecycle = true, parallel = null)
   if (syncPollCanceled) return null
   throw new Error('同步状态查询超时，请刷新页面查看任务历史')
 }
+// 页面停留时每 60 秒自动从平台刷新一次商品，保证列表始终是最新数据（无需手动点“同步”）
+let autoRefreshTimer = null
+function onDocumentVisibilityChange() {
+  // 从后台切回前台时立即补一次刷新，避免看到过期数据
+  if (document.visibilityState === 'visible') autoTriggerSync()
+}
+function startAutoRefreshTimer() {
+  stopAutoRefreshTimer()
+  autoRefreshTimer = setInterval(() => {
+    if (document.visibilityState === 'hidden') return
+    if (syncing.value || autoSyncState.active) return
+    autoTriggerSync()
+  }, AUTO_REFRESH_INTERVAL_MS)
+  document.addEventListener('visibilitychange', onDocumentVisibilityChange)
+}
+function stopAutoRefreshTimer() {
+  document.removeEventListener('visibilitychange', onDocumentVisibilityChange)
+  if (autoRefreshTimer) {
+    clearInterval(autoRefreshTimer)
+    autoRefreshTimer = null
+  }
+}
 // 跳转到自动发货配置页面
 const goToAutoDelivery = (row = null) => {
   const goodsId = row?.raw?.id ?? row?.id
@@ -1699,8 +1796,8 @@ const goToAutoDelivery = (row = null) => {
   }
   emit('navigate', 'auto-delivery')
 }
-onMounted(()=>{ restoreExternalOperationIntents(); window.addEventListener('xya-header-action', onHeader); init() })
-onBeforeUnmount(()=>{ syncPollCanceled = true; window.removeEventListener('xya-header-action', onHeader) })
+onMounted(()=>{ restoreExternalOperationIntents(); window.addEventListener('xya-header-action', onHeader); init(); startAutoRefreshTimer() })
+onBeforeUnmount(()=>{ syncPollCanceled = true; stopAutoRefreshTimer(); window.removeEventListener('xya-header-action', onHeader) })
 </script>
 <style scoped>
 .products-page {
@@ -1767,6 +1864,10 @@ onBeforeUnmount(()=>{ syncPollCanceled = true; window.removeEventListener('xya-h
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
+}
+.sync-freshness {
+  font-size: 12px;
+  white-space: nowrap;
 }
 .tabs.products-tabs {
   margin: 0;

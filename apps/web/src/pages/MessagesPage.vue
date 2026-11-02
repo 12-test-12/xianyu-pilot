@@ -171,7 +171,7 @@
                     <template v-else-if="m.media?.type === 'audio'">
                       <div class="xya-msg-audio-wrap">
                         <audio v-if="m.media?.url || m.media?.fileUrl || m.media?.downloadUrl" :src="m.media.url || m.media.fileUrl || m.media.downloadUrl" controls preload="none" class="xya-msg-audio-player"></audio>
-                        <span v-else>语音消息（暂不支持播放）</span>
+                        <span v-else>{{ voicePlaceholderText(m) }}</span>
                       </div>
                     </template>
                     <template v-else-if="m.card?.title || m.card?.subtitle">
@@ -180,11 +180,31 @@
                         <div class="xya-msg-card-info">
                           <b>{{ m.card.title }}</b>
                           <p v-if="m.card.subtitle">{{ m.card.subtitle }}</p>
+                          <p v-if="m.card.price" class="xya-msg-card-price">¥{{ m.card.price }}</p>
                         </div>
                       </div>
                     </template>
+                    <template v-else-if="m.contentType === 26">
+                      <div class="xya-msg-order-bubble">
+                        <span class="xya-msg-order-tag">订单通知</span>
+                        <span class="xya-msg-order-text">{{ m.displayText || m.reminderContent || m.msgContent || '[订单通知]' }}</span>
+                        <button v-if="hasRawMessage(m)" type="button" class="xya-msg-raw-btn" @click="openRawMessageModal(m)">查看原始内容</button>
+                      </div>
+                    </template>
+                    <template v-else-if="isUnsupportedMessage(m)">
+                      <div class="xya-msg-type-placeholder">
+                        <span>{{ m.displayText || messageTypePlaceholder(m.contentType) }}</span>
+                        <button v-if="hasRawMessage(m)" type="button" class="xya-msg-raw-btn" @click="openRawMessageModal(m)">查看原始内容</button>
+                      </div>
+                    </template>
+                    <template v-else-if="isTypedPlaceholderMessage(m)">
+                      <div class="xya-msg-type-placeholder">
+                        <span>{{ m.displayText || messageTypePlaceholder(m.contentType) }}</span>
+                        <button v-if="hasRawMessage(m)" type="button" class="xya-msg-raw-btn" @click="openRawMessageModal(m)">查看原始内容</button>
+                      </div>
+                    </template>
                     <template v-else>
-                      {{ m.displayText || m.msgContent || '[非文本消息]' }}
+                      {{ m.displayText || m.msgContent || '[暂不支持的消息类型]' }}
                     </template>
                   </div>
                   <div class="xya-msg-bubble-meta" :class="{ me: m.isMe }">
@@ -463,6 +483,23 @@
             <button type="button" class="xya-msg-icon-btn" @click="closeImagePreview">关闭</button>
           </div>
           <img :src="previewImageUrl" class="xya-msg-image-preview-img" alt="聊天图片预览" />
+        </div>
+      </div>
+
+      <div v-if="rawMessageModal.visible" class="xya-msg-modal-mask xya-msg-raw-mask" @click.self="closeRawMessageModal">
+        <div class="xya-msg-modal xya-msg-raw-modal">
+          <div class="xya-msg-modal-head">
+            <h3>{{ rawMessageModal.title }}</h3>
+            <button type="button" class="xya-msg-icon-btn" @click="closeRawMessageModal">关闭</button>
+          </div>
+          <div class="xya-msg-modal-body">
+            <div class="xya-msg-raw-summary">
+              <span class="xya-msg-raw-chip">contentType {{ rawMessageModal.contentType }}</span>
+              <span class="xya-msg-raw-chip">{{ rawMessageModal.label }}</span>
+              <span v-if="rawMessageModal.time" class="xya-msg-raw-chip">{{ formatMessageDay(rawMessageModal.time) }}</span>
+            </div>
+            <pre class="xya-msg-raw-json">{{ rawMessageModal.json }}</pre>
+          </div>
         </div>
       </div>
 
@@ -796,6 +833,7 @@ const conversationRefreshNotice = ref('')
 const contextRefreshNotice = ref('')
 const showEmojiPanel = ref(false)
 const previewImageUrl = ref('')
+const rawMessageModal = reactive({ visible: false, title: '', json: '', contentType: 0, label: '', time: 0 })
 const statusUpdating = ref(false)
 const visibleConversationCount = ref(DEFAULT_VISIBLE_CONVERSATIONS)
 const messagesContainer = ref(null)
@@ -1483,6 +1521,150 @@ function closeImagePreview() {
 function openImagePreviewInNewTab() {
   if (!previewImageUrl.value) return
   openExternalUrl(previewImageUrl.value)
+}
+
+// 闲鱼 WS 的 contentType 数字枚举 → 中文标签（与后端 ws_storage.MESSAGE_CONTENT_TYPE_MAP 保持一致）
+const MESSAGE_TYPE_LABELS = {
+  1: '文本',
+  2: '图片',
+  3: '语音',
+  4: '视频',
+  5: '表情',
+  6: '文件',
+  7: '位置',
+  8: '商品卡片',
+  9: '红包',
+  10: '转账',
+  11: '业务通知',
+  26: '订单通知'
+}
+const MESSAGE_TYPE_KINDS = {
+  1: 'text',
+  2: 'image',
+  3: 'audio',
+  4: 'video',
+  5: 'emoji',
+  6: 'file',
+  7: 'location',
+  8: 'goods_card',
+  9: 'red_packet',
+  10: 'transfer',
+  11: 'business_notice',
+  26: 'order_notice'
+}
+const MESSAGE_TYPE_PLACEHOLDERS = {
+  text: '[文本]',
+  image: '[图片]',
+  audio: '[语音]',
+  video: '[视频]',
+  emoji: '[表情]',
+  file: '[文件]',
+  location: '[位置]',
+  goods_card: '[商品卡片]',
+  red_packet: '[红包]',
+  transfer: '[转账]',
+  business_notice: '[业务通知]',
+  order_notice: '[订单通知]',
+  unknown: '[暂不支持的消息类型]'
+}
+const TYPED_PLACEHOLDER_KINDS = ['video', 'emoji', 'file', 'location', 'red_packet', 'transfer', 'business_notice']
+
+function resolveMessageContentType(message) {
+  const raw = message?.contentType ?? message?.content_type ?? message?.messageType ?? message?.message_type ?? 1
+  const num = Number(raw)
+  return Number.isFinite(num) && num > 0 ? num : 0
+}
+
+function messageTypeKind(contentType) {
+  return MESSAGE_TYPE_KINDS[Number(contentType)] || 'unknown'
+}
+
+function messageTypeLabel(contentType) {
+  return MESSAGE_TYPE_LABELS[Number(contentType)] || '未知类型'
+}
+
+function messageTypePlaceholder(contentType) {
+  const kind = messageTypeKind(contentType)
+  if (kind === 'unknown') {
+    return Number(contentType) ? `[暂不支持的消息类型]（contentType=${contentType}）` : MESSAGE_TYPE_PLACEHOLDERS.unknown
+  }
+  return MESSAGE_TYPE_PLACEHOLDERS[kind] || MESSAGE_TYPE_PLACEHOLDERS.unknown
+}
+
+function isUnsupportedMessage(message) {
+  return messageTypeKind(resolveMessageContentType(message)) === 'unknown'
+}
+
+function isTypedPlaceholderMessage(message) {
+  return TYPED_PLACEHOLDER_KINDS.includes(messageTypeKind(resolveMessageContentType(message)))
+}
+
+function voicePlaceholderText(message) {
+  const duration = Number(message?.media?.duration || message?.media?.time || 0)
+  return duration > 0 ? `[语音] 时长 ${duration}s` : '[语音]'
+}
+
+// 仅当后端未提供 displayText 时，前端按 contentType 本地兜底，避免再落回 "[非文本消息]"
+function buildLocalDisplayText(contentType, message) {
+  const kind = messageTypeKind(contentType)
+  const body = String(message?.msgContent || message?.reminderContent || message?.content || '').trim()
+  if (kind === 'text') return body || MESSAGE_TYPE_PLACEHOLDERS.text
+  if (kind === 'image') {
+    const count = Array.isArray(message?.imageUrls) ? message.imageUrls.length : 0
+    return count > 1 ? `[图片] 共 ${count} 张` : '[图片]'
+  }
+  if (kind === 'audio') return voicePlaceholderText(message)
+  if (kind === 'goods_card') {
+    const card = message?.card || {}
+    const parts = ['[商品卡片]']
+    if (card.title) parts.push(String(card.title))
+    if (card.price) parts.push(String(card.price))
+    return parts.join(' ')
+  }
+  const label = messageTypeLabel(contentType)
+  if (body) return body.startsWith(`[${label}]`) ? body : `[${label}] ${body}`
+  return messageTypePlaceholder(contentType)
+}
+
+function extractRawMessagePayload(message) {
+  const candidates = [message?.completeMsg, message?.complete_msg, message?.rawPayload, message?.raw_payload, message?.raw]
+  for (const candidate of candidates) {
+    if (!candidate) continue
+    if (typeof candidate === 'string') {
+      try { return JSON.parse(candidate) } catch { continue }
+    }
+    if (typeof candidate === 'object') return candidate
+  }
+  return null
+}
+
+function hasRawMessage(message) {
+  return Boolean(extractRawMessagePayload(message))
+}
+
+function openRawMessageModal(message) {
+  const contentType = resolveMessageContentType(message)
+  const payload = extractRawMessagePayload(message)
+  const json = serializeMessagePayload(payload, message)
+  rawMessageModal.visible = true
+  rawMessageModal.title = `原始消息（${messageTypeLabel(contentType)}）`
+  rawMessageModal.json = json
+  rawMessageModal.contentType = contentType
+  rawMessageModal.label = messageTypeLabel(contentType)
+  rawMessageModal.time = message?.messageTime || 0
+}
+
+function serializeMessagePayload(payload, message) {
+  try {
+    return JSON.stringify(payload || message, null, 2)
+  } catch {
+    return '原始内容无法序列化'
+  }
+}
+
+function closeRawMessageModal() {
+  rawMessageModal.visible = false
+  rawMessageModal.json = ''
 }
 
 function avatarText(name) {
@@ -2248,27 +2430,40 @@ function normalizeMessages(data) {
     return ta - tb
   })
   return sorted.map(item => {
-    const contentType = Number(item.contentType ?? item.messageType ?? 1)
+    const contentType = resolveMessageContentType(item)
+    const kind = messageTypeKind(contentType)
     const rawContent = extractMessageDisplayText(item)
-    const inferredImages = extractImageMessageUrls(item)
+    // 商品卡片/语音/订单通知消息的 completeMsg 里也带图片，若一并收进 imageUrls，
+    // 模板的图片分支会先命中，卡片标题与语音时长就看不到，因此这几类不派生图片。
+    const inferredImages = ['goods_card', 'audio', 'order_notice'].includes(kind)
+      ? []
+      : extractImageMessageUrls(item)
     // 解析 contentType=8 商品卡片消息：从 completeMsg.rawPayload.sessionInfo.extensions 提取商品信息
-    const productCard = extractProductCardFromMessage(item)
+    const productCard = extractProductCardFromMessage(item) || (item.card && typeof item.card === 'object' ? item.card : null)
+    const media = item.media && typeof item.media === 'object'
+      ? item.media
+      : (messageTypeKind(contentType) === 'audio'
+        ? { type: 'audio', url: '', duration: Number(item.audioDuration || item.voiceLength || 0) || 0 }
+        : null)
+    const serverDisplayText = String(item.displayText || '').trim()
     return {
       ...item,
       id: item.id || item.messageId || stableGeneratedMessageId(item, rawContent),
       pnmId: item.pnmId || item.messageUid || item.uuid || '',
       imageUrls: inferredImages,
       msgContent: rawContent,
-      displayText: extractMessageDisplayText(item, rawContent),
+      displayText: serverDisplayText || buildLocalDisplayText(contentType, { ...item, imageUrls: inferredImages, card: productCard, media }),
       senderUserId: item.senderUserId || item.fromUserId || '',
       receiverUserId: item.receiverUserId || item.toUserId || '',
       peerExternalUid: item.peerExternalUid || item.peerUserId || '',
       contentType,
+      contentTypeLabel: item.contentTypeLabel || messageTypeLabel(contentType),
       messageTime: parseMessageTimestamp(item.messageTime || item.createdTime || item.sendTime || item.time || Date.now()),
       readStatus: item.readStatus ?? item.isRead ?? item.read ?? 0,
       direction: String(item.direction || '').toUpperCase() || 'IN',
       isAutoReply: Number(item.isAutoReply ?? item.is_auto_reply ?? 0),
-      card: productCard
+      card: productCard,
+      media
     }
   })
 }
@@ -4516,6 +4711,100 @@ watch(() => selected.value?.xyGoodsId, () => {
   border-radius: 22px;
   background: rgba(15, 23, 42, 0.18);
   box-shadow: 0 24px 72px rgba(15, 23, 42, 0.28);
+}
+
+/* 非文本消息类型占位（视频/表情/文件/位置/红包/转账/业务通知/未知类型） */
+.xya-msg-type-placeholder {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.xya-msg-order-bubble {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.xya-msg-order-tag {
+  align-self: flex-start;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: rgba(37, 99, 235, 0.12);
+  color: #1d4ed8;
+  font-size: 12px;
+}
+
+.xya-msg-order-text {
+  color: #1f2937;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.xya-msg-card-price {
+  margin: 2px 0 0;
+  color: #e11d48;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.xya-msg-raw-btn {
+  align-self: flex-start;
+  padding: 1px 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  background: #fff;
+  color: #475569;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.xya-msg-raw-btn:hover {
+  border-color: #94a3b8;
+  color: #1f2937;
+}
+
+.xya-msg-raw-mask {
+  z-index: 1200;
+}
+
+.xya-msg-raw-modal {
+  max-width: 720px;
+}
+
+.xya-msg-raw-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.xya-msg-raw-chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 12px;
+}
+
+.xya-msg-raw-json {
+  max-height: 56vh;
+  margin: 0;
+  padding: 12px;
+  border-radius: 12px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 
 /* === 移动端适配 (max-width: 900px) === */

@@ -10,11 +10,13 @@ import hashlib
 
 import json
 
+import weakref
+
 import datetime
 
 from decimal import Decimal, ROUND_DOWN
 
-from typing import Literal
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, Request
 
@@ -98,6 +100,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/item")
 
 _item_sync_tasks: set[asyncio.Task[None]] = set()
+
+# 商品自动同步的最小触发间隔（秒）：页面打开时若距上次成功同步不足该值，则复用上次结果，
+# 避免用户反复进入页面把平台接口打爆。
+_AUTO_SYNC_MIN_INTERVAL_SECONDS = 60
 
 
 
@@ -435,7 +441,24 @@ async def list_items(
 
         item_list = [goods_to_dto(i) for i in items]
 
-        return ResultObject.success(ItemListRespDTO(items=item_list, total=total))
+        # 列表直接附带同步状态：前端无需额外请求即可显示"上次同步时间/正在同步"
+        sync_snapshot = await goods_sync_snapshot(db, req.xianyu_account_id)
+
+        return ResultObject.success(
+
+            ItemListRespDTO(
+
+                items=item_list,
+
+                total=total,
+
+                last_sync_time=sync_snapshot["lastSyncTime"],
+
+                sync_state=sync_snapshot["syncState"],
+
+            )
+
+        )
 
     except Exception as e:
 
@@ -2241,6 +2264,199 @@ async def is_syncing(
 
 
 
+
+
+# ==================== 商品自动同步 ====================
+# 同进程内串行化"判定 + 触发"，避免并发请求同时判定可触发而重复打平台接口；
+# 数据库里的 queued/running 任务状态是第二道闸，保证服务重启/多实例下也不会重复。
+# asyncio.Lock 首次使用后会绑定当前事件循环，桌面端/测试会多次创建事件循环，
+# 因此按事件循环分别持有锁，避免"bound to a different event loop"错误。
+_auto_sync_locks: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def _auto_sync_lock() -> asyncio.Lock:
+    """取当前事件循环对应的自动同步互斥锁（同一循环内全局唯一）。"""
+    loop = asyncio.get_running_loop()
+    lock = _auto_sync_locks.get(loop)
+    if lock is None:
+        lock = asyncio.Lock()
+        _auto_sync_locks[loop] = lock
+    return lock
+
+
+def _parse_sync_time(value: Optional[str]) -> Optional[datetime.datetime]:
+    """把快照里的 ISO 时间串解析回 datetime；解析失败按"从未同步"处理。"""
+    if not value:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+
+
+async def goods_sync_snapshot(db: AsyncSession, account_id: Optional[int] = None) -> dict:
+    """读取商品同步快照，供商品列表接口与自动同步接口共用。
+    返回 {"lastSyncTime": ISO 字符串或 None, "syncState": "syncing" | "idle"}。
+    """
+    try:
+        running_query = select(func.count()).select_from(XianyuGoodsSyncTask).where(
+            XianyuGoodsSyncTask.deleted == 0,
+            XianyuGoodsSyncTask.status.in_(["queued", "running"]),
+        )
+        if account_id is not None:
+            running_query = running_query.where(XianyuGoodsSyncTask.account_id == account_id)
+        running_result = await db.execute(running_query)
+        sync_state = "syncing" if (running_result.scalar() or 0) > 0 else "idle"
+        last_query = select(XianyuGoodsSyncTask.finished_time).where(
+            XianyuGoodsSyncTask.deleted == 0,
+            XianyuGoodsSyncTask.status == "completed",
+        )
+        if account_id is not None:
+            last_query = last_query.where(XianyuGoodsSyncTask.account_id == account_id)
+        last_result = await db.execute(
+            last_query.order_by(desc(XianyuGoodsSyncTask.finished_time)).limit(1)
+        )
+        finished_time = last_result.scalar_one_or_none()
+        if finished_time is None:
+            last_sync_time = None
+        elif hasattr(finished_time, "isoformat"):
+            last_sync_time = finished_time.isoformat()
+        else:
+            last_sync_time = str(finished_time)
+        return {"lastSyncTime": last_sync_time, "syncState": sync_state}
+    except Exception:
+        logger.warning("读取商品同步快照失败 account_id=%s", account_id, exc_info=True)
+        return {"lastSyncTime": None, "syncState": "idle"}
+
+
+def _start_goods_sync(account_id: int, cookie_str: str, sync_id: str) -> asyncio.Task[None]:
+    """后台启动一次商品全量同步，执行语义与 /item/refresh 完全一致。"""
+    from ....services.xianyu_goods_sync import _persist_sync_task, sync_goods_for_account
+    async def _run_sync() -> None:
+        try:
+            await sync_goods_for_account(
+                account_id=account_id,
+                cookie_str=cookie_str,
+                sync_id=sync_id,
+                db_session_factory=None,
+                async_fetch_detail=True,
+            )
+        except asyncio.CancelledError:
+            await _persist_sync_task(
+                sync_id,
+                account_id=account_id,
+                status="failed",
+                progress=0,
+                error="服务关闭，同步已中断",
+            )
+            raise
+        except Exception as exc:
+            logger.error("后台自动同步失败 accountId=%d errorType=%s", account_id, type(exc).__name__)
+    task = asyncio.create_task(_run_sync(), name="items.goods-auto-sync")
+    _item_sync_tasks.add(task)
+    task.add_done_callback(_item_sync_done)
+    return task
+
+
+def _auto_sync_response(snapshot: dict, *, started: bool, status: str, sync_ids: list, message: str) -> dict:
+    """统一自动同步接口的返回结构（前端只依赖这几个字段，勿随意改名）。"""
+    return {
+        "started": started,
+        "syncing": status in ("syncing", "started"),
+        "status": status,
+        "lastSyncTime": snapshot.get("lastSyncTime"),
+        "syncId": sync_ids[0] if sync_ids else None,
+        "syncIds": list(sync_ids),
+        "intervalSeconds": _AUTO_SYNC_MIN_INTERVAL_SECONDS,
+        "message": message,
+    }
+
+
+@router.post("/autoSync")
+async def auto_sync_items(
+    req: dict = {},
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(verify_internal_token),
+):
+    """轻量自动同步入口：进入商品页时调用，立即返回，绝不阻塞请求。
+    - 该账号已有排队/运行中的同步：复用现有任务，返回 syncing=True
+    - 距上次成功同步不足 _AUTO_SYNC_MIN_INTERVAL_SECONDS 秒：不重复触发，返回 started=False
+    - 否则后台触发 sync_goods_for_account，返回 started=True
+    请求参数: { xianyu_account_id?: int }（缺省则对所有未删除且已登录的账号判定）
+    返回: { started, syncing, status, lastSyncTime, syncId, syncIds, intervalSeconds, message }
+    """
+    raw_account_id = req.get("xianyu_account_id") or req.get("xianyuAccountId")
+    account_id = int(raw_account_id) if raw_account_id else None
+    try:
+        snapshot = await goods_sync_snapshot(db, account_id)
+        if snapshot["syncState"] == "syncing":
+            return ResultObject.success(
+                _auto_sync_response(snapshot, started=False, status="syncing", sync_ids=[], message="已有同步任务正在运行，本次直接复用")
+            )
+        last_sync_at = _parse_sync_time(snapshot["lastSyncTime"])
+        if last_sync_at is not None:
+            elapsed = (datetime.datetime.now() - last_sync_at).total_seconds()
+            if 0 <= elapsed < _AUTO_SYNC_MIN_INTERVAL_SECONDS:
+                return ResultObject.success(
+                    _auto_sync_response(snapshot, started=False, status="fresh", sync_ids=[], message="距上次同步不足 %d 秒，本次跳过" % _AUTO_SYNC_MIN_INTERVAL_SECONDS)
+                )
+        async with _auto_sync_lock():
+            # 二次判定：并发请求可能在锁外同时通过上面的检查
+            snapshot = await goods_sync_snapshot(db, account_id)
+            if snapshot["syncState"] == "syncing":
+                return ResultObject.success(
+                    _auto_sync_response(snapshot, started=False, status="syncing", sync_ids=[], message="已有同步任务正在运行，本次直接复用")
+                )
+            last_sync_at = _parse_sync_time(snapshot["lastSyncTime"])
+            if last_sync_at is not None:
+                elapsed = (datetime.datetime.now() - last_sync_at).total_seconds()
+                if 0 <= elapsed < _AUTO_SYNC_MIN_INTERVAL_SECONDS:
+                    return ResultObject.success(
+                        _auto_sync_response(snapshot, started=False, status="fresh", sync_ids=[], message="距上次同步不足 %d 秒，本次跳过" % _AUTO_SYNC_MIN_INTERVAL_SECONDS)
+                    )
+            if account_id is not None:
+                target_ids = [account_id]
+            else:
+                accounts_result = await db.execute(select(XianyuAccount.id).where(XianyuAccount.deleted == 0))
+                target_ids = list(accounts_result.scalars().all())
+            pending: list[tuple[int, str, str]] = []
+            for target_id in target_ids:
+                auth = await _get_account_auth(db, int(target_id))
+                if not auth:
+                    continue
+                cookie_str = decrypt_cookie_if_needed(auth.encrypted_cookie)
+                if not cookie_str:
+                    continue
+                sync_id = str(uuid.uuid4())[:16]
+                now = datetime.datetime.now()
+                db.add(
+                    XianyuGoodsSyncTask(
+                        sync_id=sync_id,
+                        account_id=int(target_id),
+                        status="queued",
+                        progress=0,
+                        started_time=now,
+                        deleted=0,
+                        created_time=now,
+                        updated_time=now,
+                    )
+                )
+                pending.append((int(target_id), cookie_str, sync_id))
+            if not pending:
+                return ResultObject.success(
+                    _auto_sync_response(snapshot, started=False, status="no_account", sync_ids=[], message="没有可同步的账号（请先在账号管理完成登录）")
+                )
+            await db.commit()
+            for target_id, cookie_str, sync_id in pending:
+                _start_goods_sync(target_id, cookie_str, sync_id)
+            sync_ids = [item[2] for item in pending]
+        logger.info("商品自动同步已启动 accountIds=%s syncIds=%s", [item[0] for item in pending], sync_ids)
+        return ResultObject.success(
+            _auto_sync_response(snapshot, started=True, status="started", sync_ids=sync_ids, message="同步已启动")
+        )
+    except Exception:
+        logger.error("商品自动同步失败", exc_info=True)
+        return ResultObject.internal_error()
 
 
 # ==================== 内部辅助函数 ====================

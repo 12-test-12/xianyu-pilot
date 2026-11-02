@@ -74,9 +74,27 @@ class OrderVO(CamelModel):
     external_order_id: Optional[str] = None   # 原 order_id
     order_status: Optional[int] = None
     buyer_name: Optional[str] = None
+    buyer_id: Optional[str] = None
     total_amount: Optional[str] = None        # 原 total_price
     create_time: Optional[str] = None
     pay_time: Optional[str] = None
+    ship_time: Optional[str] = None
+    confirm_time: Optional[str] = None
+    buyer_message: Optional[str] = None
+    item_id: Optional[str] = None
+    is_bargain: Optional[int] = None
+    is_rated: Optional[int] = None
+    is_red_flower: Optional[int] = None
+    created_time: Optional[str] = None
+    updated_time: Optional[str] = None
+    # 商品维度字段（来自关联 xianyu_trade_order_item / xianyu_goods）
+    external_goods_id: Optional[str] = None
+    goods_id: Optional[int] = None
+    goods_image: Optional[str] = None
+    quantity: Optional[int] = None
+    goods_count_total: Optional[int] = None
+    sku_id: Optional[str] = None
+    sku_name: Optional[str] = None
     # 向后兼容字段
     xianyu_account_id: Optional[int] = None
     xy_goods_id: Optional[str] = None
@@ -93,3 +111,22 @@ class OrderListData(CamelModel):
     page_num: int = 1
     page_size: int = 20
     pages: int = 0
+
+
+class OrderBatchRefreshReqDTO(CamelModel):
+    """POST /order/batchRefresh 请求体。
+
+    兼容前端历史字段：orderIds / xianyuAccountId / accountId；
+    可选 sync 控制是否触发远程同步（默认 True）。
+    """
+    order_ids: List[str] = []
+    xianyu_account_id: Optional[int] = None
+    account_id: Optional[int] = None
+    sync: bool = True
+
+    @model_validator(mode="after")
+    def _normalize_ids(self) -> "OrderBatchRefreshReqDTO":
+        self.order_ids = [
+            str(item).strip() for item in (self.order_ids or []) if str(item).strip()
+        ]
+        return self

@@ -185,6 +185,44 @@ def _parse_remote_order_item(item: dict[str, Any]) -> Optional[dict[str, Any]]:
     }
 
 
+async def _replace_order_items(db: AsyncSession, order_id: int, items: list[Any]) -> None:
+    """替换订单项：先软删旧的再插入新的。
+
+    订单项写入失败不应连带丢弃订单主记录（平台已发货但商品信息缺失时尤其常见），
+    因此用 SAVEPOINT 隔离，失败只回滚订单项并记日志。
+    """
+    try:
+        async with db.begin_nested():
+            await db.execute(
+                text(
+                    "UPDATE xianyu_trade_order_item SET deleted = 1, updated_time = NOW() "
+                    "WHERE order_id = :oid AND deleted = 0"
+                ),
+                {"oid": order_id},
+            )
+            for item_data in items:
+                if not isinstance(item_data, dict):
+                    continue
+                db.add(XianyuTradeOrderItem(
+                    order_id=order_id,
+                    goods_id=item_data.get("goods_id"),
+                    goods_title=item_data.get("goods_title"),
+                    goods_name=item_data.get("goods_title"),
+                    goods_image=item_data.get("goods_image"),
+                    goods_price=item_data.get("goods_price"),
+                    goods_count=item_data.get("goods_count", 1),
+                    quantity=item_data.get("quantity", 1),
+                    deleted=0,
+                ))
+            await db.flush()
+    except Exception as exc:
+        logger.warning(
+            "订单项写入失败，保留订单主记录 orderId=%s errorType=%s",
+            order_id,
+            type(exc).__name__,
+        )
+
+
 async def _upsert_order(db: AsyncSession, account_id: int, parsed: dict[str, Any]) -> tuple[str, str]:
     """按 (account_id, external_order_id) upsert 订单，返回 ("inserted"|"updated", external_order_id)。"""
     external_order_id = parsed["external_order_id"]
@@ -221,24 +259,26 @@ async def _upsert_order(db: AsyncSession, account_id: int, parsed: dict[str, Any
         await db.flush()
         action = "inserted"
     else:
-        order.order_status = parsed["order_status"]
-        order.total_amount = parsed["total_amount"]
-        if parsed["buyer_name"]:
+        if parsed.get("order_status") is not None:
+            order.order_status = parsed["order_status"]
+        if parsed.get("total_amount"):
+            order.total_amount = parsed["total_amount"]
+        if parsed.get("buyer_name"):
             order.buyer_name = parsed["buyer_name"]
-        if parsed["buyer_id"]:
+        if parsed.get("buyer_id"):
             order.buyer_id = parsed["buyer_id"]
         # 时间字段用 COALESCE 语义：远程有值才覆盖，避免清空已有数据
-        if parsed["create_time"]:
+        if parsed.get("create_time"):
             order.create_time = parsed["create_time"]
-        if parsed["pay_time"]:
+        if parsed.get("pay_time"):
             order.pay_time = parsed["pay_time"]
-        if parsed["ship_time"]:
+        if parsed.get("ship_time"):
             order.ship_time = parsed["ship_time"]
-        if parsed["confirm_time"]:
+        if parsed.get("confirm_time"):
             order.confirm_time = parsed["confirm_time"]
-        if parsed["buyer_message"]:
+        if parsed.get("buyer_message"):
             order.buyer_message = parsed["buyer_message"]
-        if parsed["item_id"]:
+        if parsed.get("item_id"):
             order.item_id = parsed["item_id"]
         # 小刀标记：只置 True 不回退（参考商业版 order_service 逻辑）
         if parsed.get("is_bargain") and not order.is_bargain:
@@ -246,26 +286,8 @@ async def _upsert_order(db: AsyncSession, account_id: int, parsed: dict[str, Any
         order.updated_time = datetime.datetime.now()
         action = "updated"
 
-    # 替换订单项：先软删除旧的，再插入新的
-    await db.execute(
-        text(
-            "UPDATE xianyu_trade_order_item SET deleted = 1, updated_time = NOW() "
-            "WHERE order_id = :oid AND deleted = 0"
-        ),
-        {"oid": order.id},
-    )
-    for item_data in parsed.get("items", []):
-        db.add(XianyuTradeOrderItem(
-            order_id=order.id,
-            goods_id=item_data.get("goods_id"),
-            goods_title=item_data.get("goods_title"),
-            goods_name=item_data.get("goods_title"),
-            goods_image=item_data.get("goods_image"),
-            goods_price=item_data.get("goods_price"),
-            goods_count=item_data.get("goods_count", 1),
-            quantity=item_data.get("quantity", 1),
-            deleted=0,
-        ))
+    # 替换订单项：先软删除旧的，再插入新的（失败不影响订单主记录）
+    await _replace_order_items(db, order.id, parsed.get("items", []))
 
     return action, external_order_id
 
@@ -337,7 +359,10 @@ async def sync_orders_for_account(
                         if not parsed:
                             failed += 1
                             continue
-                        action, _ = await _upsert_order(db, account_id, parsed)
+                        # 单笔订单用 SAVEPOINT 隔离：某笔订单失败只回滚它自己，
+                        # 不影响同页其它订单落库（订单项失败已在 _replace_order_items 内兜底）
+                        async with db.begin_nested():
+                            action, _ = await _upsert_order(db, account_id, parsed)
                         if action == "inserted":
                             inserted += 1
                             # 新售订单插入成功，记录商品 ID 用于触发售整自动上架钩子
@@ -350,8 +375,10 @@ async def sync_orders_for_account(
                     except Exception as exc:
                         failed += 1
                         logger.warning(
-                            "订单入库失败 accountId=%d errorType=%s",
+                            "订单入库失败 accountId=%d externalOrderId=%s errorType=%s",
                             account_id,
+                            str((item or {}).get("commonData", {}).get("orderId", ""))[:200]
+                            if isinstance(item, dict) else "",
                             type(exc).__name__,
                         )
                 await db.commit()
@@ -404,5 +431,135 @@ async def sync_orders_for_account(
         return {
             "success": False,
             "error": "订单同步未完成，请检查账号状态后重试",
+            "errorCode": "ORDER_SYNC_FAILED",
+        }
+
+
+async def upsert_remote_order(
+    account_id: int,
+    item: dict[str, Any],
+    *,
+    commit: bool = True,
+) -> dict[str, Any]:
+    """把单条远程订单原始数据（mtop sold.get 的 items[] 元素）落库。
+
+    供 WebSocket 实时付款事件、单笔补录、批量刷新复用。幂等：按
+    (account_id, external_order_id) upsert；订单项写入失败不会丢弃订单主记录。
+
+    Returns:
+        {"success": True, "action": "inserted"|"updated", "externalOrderId": "..."}
+        或 {"success": False, "error": "...", "errorCode": "..."}
+    """
+    if not account_id:
+        return {"success": False, "error": "账号ID不能为空", "errorCode": "INVALID_ACCOUNT"}
+    try:
+        parsed = _parse_remote_order_item(item)
+        if not parsed:
+            return {
+                "success": False,
+                "error": "订单数据无法解析（缺少 orderId）",
+                "errorCode": "ORDER_PARSE_FAILED",
+            }
+        async with async_session() as db:
+            action, external_order_id = await _upsert_order(db, account_id, parsed)
+            if commit:
+                await db.commit()
+        logger.info(
+            "单笔订单落库完成 accountId=%d externalOrderId=%s action=%s",
+            account_id, external_order_id, action,
+        )
+        return {
+            "success": True,
+            "action": action,
+            "externalOrderId": external_order_id,
+            "orderStatus": parsed.get("order_status"),
+        }
+    except Exception as exc:
+        logger.error(
+            "单笔订单落库失败 accountId=%d errorType=%s",
+            account_id, type(exc).__name__, exc_info=True,
+        )
+        return {
+            "success": False,
+            "error": "订单写入失败，请稍后重试",
+            "errorCode": "ORDER_UPSERT_FAILED",
+        }
+
+
+async def sync_order_by_external_id(
+    account_id: int,
+    external_order_id: str,
+    max_pages: int = 10,
+    page_size: int = 30,
+) -> dict[str, Any]:
+    """按外部订单号补录单笔订单：分页扫描卖家已售订单直到命中该订单号。
+
+    平台没有按 orderId 查询单笔订单的 mtop 接口（sold.get 的 orderIds 参数
+    当前实现固定为空串），因此这里用分页扫描 + 命中即停的方式补录。
+
+    Returns:
+        {"success": True, "found": True, "action": "...", "externalOrderId": "..."}
+        / {"success": True, "found": False, "externalOrderId": "..."}
+        / {"success": False, "error": "...", "errorCode": "..."}
+    """
+    target = _text(external_order_id)
+    if not account_id:
+        return {"success": False, "error": "账号ID不能为空", "errorCode": "INVALID_ACCOUNT"}
+    if not target:
+        return {
+            "success": False,
+            "error": "订单号不能为空",
+            "errorCode": "INVALID_EXTERNAL_ORDER_ID",
+        }
+
+    page_number = 1
+    try:
+        while page_number <= max_pages:
+            page_result = await asyncio.to_thread(
+                fetch_sold_orders_page,
+                account_id=account_id,
+                page_number=page_number,
+                page_size=page_size,
+            )
+            if not page_result or not page_result.get("success"):
+                return {
+                    "success": False,
+                    "error": (page_result or {}).get("error", "订单平台接口暂不可用"),
+                    "errorCode": (page_result or {}).get(
+                        "errorCode", "ORDER_SYNC_UNAVAILABLE"
+                    ),
+                }
+
+            data = page_result.get("data", {})
+            items = data.get("items", [])
+            for item in items:
+                parsed = _parse_remote_order_item(item)
+                if not parsed:
+                    continue
+                if parsed["external_order_id"] != target:
+                    continue
+                result = await upsert_remote_order(account_id, item)
+                if result.get("success"):
+                    result["found"] = True
+                return result
+
+            if not data.get("nextPage", False) or len(items) < page_size:
+                break
+            page_number += 1
+            await asyncio.sleep(0.5)
+
+        logger.info(
+            "单笔订单补录未命中 accountId=%d externalOrderId=%s pages=%d",
+            account_id, target, page_number,
+        )
+        return {"success": True, "found": False, "externalOrderId": target}
+    except Exception as exc:
+        logger.error(
+            "单笔订单补录异常 accountId=%d errorType=%s",
+            account_id, type(exc).__name__, exc_info=True,
+        )
+        return {
+            "success": False,
+            "error": "订单补录未完成，请检查账号状态后重试",
             "errorCode": "ORDER_SYNC_FAILED",
         }

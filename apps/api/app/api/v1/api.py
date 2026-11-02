@@ -81,6 +81,8 @@ include_router_excluding(
 )
 # 订单管理（启用商业版同步过来的能力：确认发货、同步订单）
 api_router.include_router(order.router)
+# 订单批量刷新（先远程同步再回读本地，POST /api/order/batchRefresh）
+api_router.include_router(order.batch_refresh_router)
 # 退款管理（新增模块，参考商业版实现）
 api_router.include_router(refunds.router)
 # 评价管理（同步商业版评价管理 + 自动评价功能）

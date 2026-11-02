@@ -42,6 +42,19 @@ def _safe_error_code(value: object, fallback: str) -> str:
     return (normalized or fallback)[:64]
 
 
+_DELIVERY_MODE_LABELS = {"api": "API", "custom": "自定义"}
+
+
+def _mode_unsupported_message(mode: object) -> str:
+    """Explain a retired/unknown delivery mode without blaming unrelated settings."""
+    raw = str(mode or "").strip()
+    lowered = raw.lower()
+    if not lowered or lowered == "unconfigured":
+        return "该商品尚未配置发货模式，请到「自动发货」页为该商品设置文本或卡密发货"
+    label = _DELIVERY_MODE_LABELS.get(lowered, raw)
+    return f"发货模式为 {label}（{raw}）已停用；请到「自动发货」页改为文本或卡密发货"
+
+
 def build_realtime_delivery_event_key(
     *,
     account_id: int,
@@ -105,6 +118,10 @@ class RealtimeDeliveryCommand:
     card_group_id: int | None
     auto_confirm_shipment: bool
     segments: list = None
+    # 规则诊断信息：当发货规则缺失/未匹配/模式停用时，由调用方给出准确错误码与文案，
+    # 避免把“没匹配到规则”误报成“发货模式已停用”。
+    failure_error_code: str | None = None
+    failure_message: str = ""
 
 
 @dataclass(frozen=True)
@@ -382,8 +399,8 @@ class SqlRealtimeDeliveryStore:
 
         if mode not in {"card", "kami"}:
             return PreparedDeliveryMessage.failed(
-                "delivery_mode_unavailable",
-                "该发货模式已停用；仅支持文本或卡密发货",
+                "delivery_mode_unsupported",
+                _mode_unsupported_message(mode),
                 retry_safe=False,
             )
         if not command.card_group_id:
@@ -1067,24 +1084,16 @@ class RealtimeDeliveryCoordinator:
         lease = await self._store.acquire(command)
         if lease.action in {"return", "in_progress"}:
             return self._outcome(lease)
-        if str(command.delivery_mode or "").strip().lower() not in {
-            "text",
-            "card",
-            "kami",
-        }:
-            lease = await self._store.mark_message_failed(
-                lease,
-                ExternalDeliveryResult.failed(
-                    "delivery_mode_unavailable",
-                    "API/custom 发货模式已停用；仅支持文本或卡密发货",
-                    retry_safe=False,
-                ),
-            )
-            return self._outcome(lease)
         if lease.action not in {"send_message", "confirm_platform"}:
             raise RuntimeError("unsupported realtime delivery action")
 
         if lease.action == "send_message":
+            # 规则诊断优先：未配置规则/未匹配规则/模式停用由调用方给出准确错误码与文案，
+            # 只有完全没有诊断信息时才按“发货模式停用”兜底。
+            failure = self._delivery_blocker(command)
+            if failure is not None:
+                lease = await self._store.mark_message_failed(lease, failure)
+                return self._outcome(lease)
             prepared = await self._store.prepare_message(lease, command)
             if prepared.status != "ready" or not prepared.content:
                 result = ExternalDeliveryResult.failed(
@@ -1162,6 +1171,28 @@ class RealtimeDeliveryCoordinator:
             return self._outcome(lease)
         lease = await self._store.mark_success(lease)
         return self._outcome(lease)
+
+    @staticmethod
+    def _delivery_blocker(command: RealtimeDeliveryCommand) -> ExternalDeliveryResult | None:
+        """Return the precise failure for a delivery that must not be sent at all.
+
+        The rule diagnosis carried by the caller wins over the generic mode check so that
+        "no rule configured" is never reported as "delivery mode retired".
+        """
+        if command.failure_error_code:
+            return ExternalDeliveryResult.failed(
+                command.failure_error_code,
+                command.failure_message or _mode_unsupported_message(command.delivery_mode),
+                retry_safe=False,
+            )
+        mode = str(command.delivery_mode or "").strip().lower()
+        if mode in {"text", "card", "kami"}:
+            return None
+        return ExternalDeliveryResult.failed(
+            "delivery_mode_unsupported",
+            _mode_unsupported_message(command.delivery_mode),
+            retry_safe=False,
+        )
 
     @staticmethod
     def _outcome(lease: RealtimeDeliveryAttemptLease) -> RealtimeDeliveryOutcome:

@@ -10,6 +10,10 @@
     <div v-if="error" class="global-notice error">{{ error }}</div>
     <div v-if="dependenciesError" class="global-notice warn">{{ dependenciesError }}</div>
     <div v-if="statsError" class="global-notice warn">{{ statsError }}</div>
+    <div v-if="failureNotice" class="global-notice warn">
+      {{ failureNotice }}
+      <button class="link" style="margin-left:8px" @click="goDeliveryRecords">查看发货记录</button>
+    </div>
     <div v-if="sourcesError" class="global-notice warn">{{ sourcesError }}</div>
     <div v-if="success" class="global-notice success">{{ success }}</div>
 
@@ -706,6 +710,18 @@ async function loadStats() {
 
 function statsMetric(value) {
   return statsAvailable.value ? value : '—'
+}
+
+// 今日失败的可操作提示：失败原因（未绑定规则 / 规则未匹配 / 历史 api、custom 模式）
+// 由后端在发货记录里给出中文说明，这里只做引导，不在前端拼错误码。
+const failureNotice = computed(() => {
+  const failed = Number(stats.todayFail) || 0
+  if (!statsAvailable.value || failed <= 0) return ''
+  return `今日有 ${failed} 条自动发货失败。常见原因是商品未绑定发货规则、规则未匹配该商品，或发货模式仍是历史遗留的 API/自定义模式。请到「发货记录」查看具体原因，并在本页为对应商品重新配置文本或卡密发货。`
+})
+
+function goDeliveryRecords() {
+  emit('navigate', 'delivery-records')
 }
 
 function appendError(message) {

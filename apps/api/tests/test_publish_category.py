@@ -102,6 +102,23 @@ def test_identical_platform_ids_survive_a_moved_display_path():
     assert normalize_publish_category(resolved) == CATEGORY
 
 
+def test_identical_platform_ids_survive_a_renamed_category():
+    # The platform renames categories without changing catId/channelCatId. A
+    # saved selection must keep publishing instead of being rejected because
+    # its remembered display name no longer matches the live one.
+    preferred = {**CATEGORY, "source": "xianyu", "categoryPath": ["服务", CATEGORY["catName"]]}
+    live = {**CATEGORY, "catName": "平台改名后的分类", "categoryPath": ["服务", "平台改名后的分类"]}
+    resolved = resolve_publish_category(preferred, {"recommended": False, "candidates": [live]})
+    assert resolved["catId"] == CATEGORY["catId"] and resolved["channelCatId"] == CATEGORY["channelCatId"]
+    assert resolved["catName"] == live["catName"]
+
+
+def test_identical_platform_ids_resolve_even_without_a_display_name():
+    preferred = {"catId": CATEGORY["catId"], "channelCatId": CATEGORY["channelCatId"], "source": "xianyu"}
+    resolved = resolve_publish_category(preferred, {"recommended": False, "candidates": [CATEGORY]})
+    assert normalize_publish_category(resolved) == CATEGORY
+
+
 def test_local_tree_selection_is_refused_for_missing_platform_ids():
     local = {"id": 5893, "catName": "本地分类", "source": "local", "categoryPath": ["本地分类"]}
     with pytest.raises(PublishCategoryError) as error:

@@ -110,6 +110,7 @@
         </template>
         <template #errorMessage="{ row }">
           <span class="cell-ellipsis" :title="row.errorMessage || ''">{{ row.errorMessage || '-' }}</span>
+          <span v-if="row.failureHint" class="failure-hint">{{ row.failureHint }}</span>
         </template>
         <template #op="{ row }">
           <div class="inline-actions">
@@ -159,6 +160,7 @@
       <div class="panel-block">
         <div class="section-title">错误信息</div>
         <div class="content-box">{{ detailView.errorMessageText }}</div>
+        <div v-if="detailView.failureHint" class="failure-hint">{{ detailView.failureHint }}</div>
       </div>
 
       <div v-if="detailView.canRetry || detailView.canScheduleRedelivery" class="panel-block detail-actions">
@@ -428,9 +430,55 @@ const columns = [
   { key: 'op', title: '操作' }
 ]
 
-const rows = computed(() => records.value.map(buildDeliveryRecordRowViewModel))
+// 失败原因可操作提示：按错误文案/错误码给出中文指引，前端不直接暴露原始 code。
+const DELIVERY_FAILURE_HINTS = [
+  {
+    keywords: ['delivery_rule_missing', '尚未配置任何自动发货规则', '均处于停用状态'],
+    hint: '还没有可用的发货规则：请到「自动发货」页为商品设置文本或卡密发货。'
+  },
+  {
+    keywords: ['delivery_rule_not_matched', '未找到匹配商品', '自动发货已停用', '配置不完整'],
+    hint: '该商品的发货规则未匹配或未启用：请到「自动发货」页绑定规则，或配置账号级/全局文本规则。'
+  },
+  {
+    keywords: ['delivery_mode_unsupported', '发货模式为', '发货模式已停用'],
+    hint: '发货模式是历史遗留的 API/自定义模式：请到「自动发货」页改为文本或卡密发货。'
+  },
+  {
+    keywords: ['delivery_content_empty', '文本发货内容为空'],
+    hint: '文本发货内容为空：请到「自动发货」页补充发货文案或选择货源。'
+  },
+  {
+    keywords: ['card_group_missing', '未绑定卡密分组'],
+    hint: '卡密发货未绑定卡密分组：请到「自动发货」页选择卡密分组。'
+  },
+  {
+    keywords: ['card_inventory_insufficient', '卡密库存不足'],
+    hint: '卡密库存不足：请到「卡密管理」页补充卡密后再重试。'
+  }
+]
+
+function deliveryFailureHint(message) {
+  const text = String(message || '').trim()
+  if (!text || text === '-') return ''
+  for (const item of DELIVERY_FAILURE_HINTS) {
+    if (item.keywords.some((keyword) => text.includes(keyword))) return item.hint
+  }
+  return ''
+}
+
+const rows = computed(() =>
+  records.value.map((record) => {
+    const row = buildDeliveryRecordRowViewModel(record)
+    return { ...row, failureHint: deliveryFailureHint(row.errorMessage) }
+  })
+)
 const recordsRefreshing = computed(() => recordsLoading.value && recordsAvailable.value === true)
-const detailView = computed(() => (detail.value ? buildDeliveryRecordDetailViewModel(detail.value) : null))
+const detailView = computed(() => {
+  if (!detail.value) return null
+  const view = buildDeliveryRecordDetailViewModel(detail.value)
+  return { ...view, failureHint: deliveryFailureHint(view.errorMessageText) }
+})
 
 function onGoodsThumbError(_row, event) {
   if (event?.target) event.target.style.display = 'none'
@@ -883,6 +931,15 @@ onBeforeUnmount(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.failure-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #b45309;
+  white-space: normal;
 }
 
 .inline-actions {

@@ -45,6 +45,7 @@ from ....services.notification_test_attempt import (
     NotificationTestLease,
     SqlNotificationTestAttemptStore,
 )
+from ....services.operation_log_service import existing_columns as operation_log_columns
 from ....services.scheduled_task_runtime import (
     SUPPORTED_TASK_TYPES,
     ScheduledTaskError,
@@ -1036,17 +1037,144 @@ async def mark_notification_read(
 
 
 
-def _operation_audit_status(operation_type: str | None) -> tuple[str, bool]:
-    normalized = str(operation_type or "").upper()
-    if normalized == "HTTP_MUTATION_STARTED":
-        return "执行结果待核对", True
-    if normalized == "HTTP_MUTATION_RESULT_UNKNOWN":
-        return "执行结果未知", True
-    if normalized == "HTTP_MUTATION_REJECTED":
-        return "请求已拒绝", False
-    if normalized == "HTTP_MUTATION_COMPLETED":
-        return "请求已结束", False
-    return "已记录", False
+_OPERATION_LOG_BASE_COLUMNS = (
+    "id, operator, operation_type, operation_desc, ip_address, created_time, target_type, target_id"
+)
+_OPERATION_LOG_BUSINESS_COLUMNS = (
+    "status",
+    "request_params",
+    "response_result",
+    "requires_reconciliation",
+    "duration_ms",
+)
+_OPERATION_STATUS_TEXT = {
+    "completed": "执行成功",
+    "pending": "执行结果待核对",
+    "failed": "执行失败",
+    "unknown": "执行结果未知",
+    "rejected": "请求已拒绝",
+}
+
+
+def _operation_status_text(status: Any) -> str | None:
+    normalized = str(status or "").strip().lower()
+    return _OPERATION_STATUS_TEXT.get(normalized)
+
+
+def _coerce_flag(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"", "0", "false", "no", "n"}:
+            return False
+        if normalized in {"1", "true", "yes", "y"}:
+            return True
+        return None
+    try:
+        return bool(int(value))
+    except (TypeError, ValueError):
+        return bool(value)
+
+
+def _operation_audit_status(
+    operation_type: str | None,
+    status: Any = None,
+    requires_reconciliation: Any = None,
+) -> tuple[str, bool]:
+    """把 status/requires_reconciliation 转成前端展示文案。
+
+    老库没有 status 列时按 operation_type 推导，行为与旧版本保持一致。
+    """
+    flag = _coerce_flag(requires_reconciliation)
+    status_text = _operation_status_text(status)
+    if status_text is None:
+        normalized = str(operation_type or "").upper()
+        if normalized == "HTTP_MUTATION_STARTED":
+            status_text, default_flag = "执行结果待核对", True
+        elif normalized == "HTTP_MUTATION_RESULT_UNKNOWN":
+            status_text, default_flag = "执行结果未知", True
+        elif normalized == "HTTP_MUTATION_REJECTED":
+            status_text, default_flag = "请求已拒绝", False
+        elif normalized == "HTTP_MUTATION_COMPLETED":
+            status_text, default_flag = "请求已结束", False
+        else:
+            status_text, default_flag = "已记录", False
+    else:
+        default_flag = status_text in {"执行结果待核对", "执行结果未知"}
+    return status_text, default_flag if flag is None else flag
+
+
+async def _rollback_quietly(db: AsyncSession) -> None:
+    try:
+        await db.rollback()
+    except Exception:  # pragma: no cover - 回滚失败时继续尝试老列查询
+        logger.debug("Rollback after operation log probe failure failed", exc_info=True)
+
+
+async def _operation_log_probed_columns(db: AsyncSession) -> set[str] | None:
+    try:
+        columns = await operation_log_columns(db)
+    except Exception:
+        logger.warning("Failed to probe operation_log columns", exc_info=True)
+        return None
+    return set(columns) if columns else None
+
+
+async def _fetch_operation_log_rows(
+    db: AsyncSession,
+    where_clause: str,
+    params: dict[str, Any],
+    *,
+    limit: int,
+    offset: int = 0,
+) -> tuple[list[Any], bool]:
+    """查询日志行，返回 (rows, 是否包含业务列)。
+
+    老库缺少业务列时自动退回旧列查询，避免读取端 500。
+    """
+    probed = await _operation_log_probed_columns(db)
+    query_params = dict(params)
+    query_params["limit"] = limit
+    query_params["offset"] = offset
+    use_business_columns = probed is None or all(
+        name in probed for name in _OPERATION_LOG_BUSINESS_COLUMNS
+    )
+    if use_business_columns:
+        business_columns = ", ".join(_OPERATION_LOG_BUSINESS_COLUMNS)
+        try:
+            result = await db.execute(
+                text(
+                    f"""
+                    SELECT {_OPERATION_LOG_BASE_COLUMNS}, {business_columns}
+                    FROM operation_log
+                    WHERE {where_clause}
+                    ORDER BY id DESC
+                    LIMIT :limit OFFSET :offset
+                    """
+                ),
+                query_params,
+            )
+            return list(result.mappings().all()), True
+        except Exception:
+            logger.warning(
+                "Operation log business columns unavailable, falling back to legacy columns",
+                exc_info=True,
+            )
+            await _rollback_quietly(db)
+    result = await db.execute(
+        text(
+            f"""
+            SELECT {_OPERATION_LOG_BASE_COLUMNS}
+            FROM operation_log
+            WHERE {where_clause}
+            ORDER BY id DESC
+            LIMIT :limit OFFSET :offset
+            """
+        ),
+        query_params,
+    )
+    return list(result.mappings().all()), False
 
 
 @router.get("/operation-logs")
@@ -1059,7 +1187,7 @@ async def list_operation_logs(
     current_user: dict = Depends(get_current_user),
 ):
     where_sql = ["1 = 1"]
-    params: dict[str, Any] = {"limit": size, "offset": (current - 1) * size}
+    params: dict[str, Any] = {}
 
     if operation_type:
         where_sql.append("operation_type = :operation_type")
@@ -1077,45 +1205,68 @@ async def list_operation_logs(
     )
     total = int(count_result.scalar() or 0)
 
-    result = await db.execute(
-        text(
-            f"""
-            SELECT
-              id, operator, operation_type, operation_desc, ip_address, created_time, target_type, target_id
-            FROM operation_log
-            WHERE {where_clause}
-            ORDER BY id DESC
-            LIMIT :limit OFFSET :offset
-            """
-        ),
-        params,
+    rows, has_business_columns = await _fetch_operation_log_rows(
+        db, where_clause, params, limit=size, offset=(current - 1) * size
     )
-    rows = result.mappings().all()
 
-    records = [
-        {
-            "id": row["id"],
-            "operator": row["operator"] or "",
-            "operationType": row["operation_type"],
-            "targetType": row["target_type"] or "",
-            "targetId": row["target_id"],
-            "description": row["operation_desc"] or "",
-            "status": _operation_audit_status(row["operation_type"])[0],
-            "requiresReconciliation": _operation_audit_status(row["operation_type"])[1],
-            "requestParams": None,
-            "responseResult": None,
-            "durationMs": None,
-            "ipAddress": row["ip_address"] or "",
-            "createdTime": _dt_text(row["created_time"]),
-        }
-        for row in rows
-    ]
+    requires_reconciliation_total = None
+    if has_business_columns:
+        try:
+            reconciliation_result = await db.execute(
+                text(
+                    f"SELECT COUNT(*) AS total FROM operation_log WHERE {where_clause} AND requires_reconciliation = 1"
+                ),
+                params,
+            )
+            requires_reconciliation_total = int(reconciliation_result.scalar() or 0)
+        except Exception:
+            logger.warning(
+                "Failed to count operation logs requiring reconciliation",
+                exc_info=True,
+            )
+            await _rollback_quietly(db)
+            requires_reconciliation_total = None
+
+    records = []
+    for row in rows:
+        mapping = row
+        status_value = mapping["status"] if has_business_columns else None
+        reconciliation_value = (
+            mapping["requires_reconciliation"] if has_business_columns else None
+        )
+        status_text, needs_check = _operation_audit_status(
+            mapping["operation_type"], status_value, reconciliation_value
+        )
+        records.append(
+            {
+                "id": mapping["id"],
+                "operator": mapping["operator"] or "",
+                "operationType": mapping["operation_type"],
+                "targetType": mapping["target_type"] or "",
+                "targetId": mapping["target_id"],
+                "description": mapping["operation_desc"] or "",
+                "status": status_text,
+                "requiresReconciliation": needs_check,
+                "requestParams": (
+                    mapping["request_params"] if has_business_columns else None
+                ),
+                "responseResult": (
+                    mapping["response_result"] if has_business_columns else None
+                ),
+                "durationMs": (
+                    mapping["duration_ms"] if has_business_columns else None
+                ),
+                "ipAddress": mapping["ip_address"] or "",
+                "createdTime": _dt_text(mapping["created_time"]),
+            }
+        )
 
     return ResultObject.success({
         "records": records,
         "total": total,
         "current": current,
         "size": size,
+        "requiresReconciliationTotal": requires_reconciliation_total,
     })
 
 
@@ -1140,19 +1291,9 @@ async def export_operation_logs(
             params["keyword"] = f"%{keyword}%"
 
         where_clause = " AND ".join(where_sql)
-        result = await db.execute(
-            text(
-                f"""
-                SELECT operation_type, operation_desc, target_type, target_id, created_time
-                FROM operation_log
-                WHERE {where_clause}
-                ORDER BY id DESC
-                LIMIT 2001
-                """
-            ),
-            params,
+        rows, has_business_columns = await _fetch_operation_log_rows(
+            db, where_clause, params, limit=2001
         )
-        rows = result.mappings().all()
         if len(rows) > 2000:
             return ResultObject.failed(
                 "匹配的审计日志超过 2000 条，请缩小筛选范围后再导出",
@@ -1162,16 +1303,34 @@ async def export_operation_logs(
         buffer = io.StringIO()
         writer = csv.writer(buffer)
         writer.writerow(
-            ["操作时间", "操作类型", "目标类型", "目标ID", "记录状态", "描述"]
+            [
+                "操作时间",
+                "操作类型",
+                "目标类型",
+                "目标ID",
+                "记录状态",
+                "是否需要人工核对",
+                "耗时（毫秒）",
+                "描述",
+            ]
         )
         for row in rows:
+            status_value = row["status"] if has_business_columns else None
+            reconciliation_value = (
+                row["requires_reconciliation"] if has_business_columns else None
+            )
+            status_text, needs_check = _operation_audit_status(
+                row["operation_type"], status_value, reconciliation_value
+            )
             writer.writerow(
                 [
                     _dt_text(row["created_time"]) or "",
                     row["operation_type"] or "",
                     row["target_type"] or "",
                     row["target_id"] or "",
-                    _operation_audit_status(row["operation_type"])[0],
+                    status_text,
+                    "是" if needs_check else "否",
+                    row["duration_ms"] if has_business_columns and row["duration_ms"] is not None else "",
                     row["operation_desc"] or "",
                 ]
             )
@@ -1635,36 +1794,72 @@ async def compat_xianyu_accounts_create(
         return ResultObject.validate_failed("无法从Cookie中提取UNB信息")
 
     existing = await db.execute(
-        select(XianyuAccount).where(XianyuAccount.external_uid == unb)
+        select(XianyuAccount)
+        .where(XianyuAccount.external_uid == unb)
+        .order_by(XianyuAccount.deleted.asc())
+        .limit(1)
     )
-    if existing.scalar_one_or_none():
-        return ResultObject.failed("账号已存在")
-
-    account = XianyuAccount(
-        external_uid=unb,
-        remark=payload.get("accountNote") or payload.get("remark") or "",
-        status=1
-    )
-    db.add(account)
-    await db.flush()
-    await db.refresh(account)
+    account = existing.scalar_one_or_none()
+    if account:
+        if account.deleted == 0:
+            return ResultObject.failed("账号已存在")
+        # 恢复软删除账号
+        account.deleted = 0
+        account.status = 1
+        account.remark = payload.get("accountNote") or payload.get("remark") or account.remark or ""
+    else:
+        account = XianyuAccount(
+            external_uid=unb,
+            remark=payload.get("accountNote") or payload.get("remark") or "",
+            status=1
+        )
+        db.add(account)
+        await db.flush()
+        await db.refresh(account)
 
     m_h5_tk = extract_m_h5_tk_from_cookie(cookie)
-    auth = XianyuAccountAuth(
-        account_id=account.id,
-        encrypted_cookie=encrypt_cookie_for_storage(cookie),
-        encrypted_token=encrypt_cookie_for_storage(m_h5_tk) if m_h5_tk else None,
-        cookie_status=0,
-        last_login_status_code="COOKIE_UPDATED",
-        last_login_status_message="Cookie 已更新，等待统一登录校验",
+    encrypted_cookie = encrypt_cookie_for_storage(cookie)
+    encrypted_token = encrypt_cookie_for_storage(m_h5_tk) if m_h5_tk else None
+
+    auth_result = await db.execute(
+        select(XianyuAccountAuth).where(XianyuAccountAuth.account_id == account.id)
     )
-    db.add(auth)
-    db.add(XianyuAccountRuntime(
-        account_id=account.id,
-        cookie_status=0,
-        last_login_status_code="COOKIE_UPDATED",
-        last_login_status_message="Cookie 已更新，等待统一登录校验",
-    ))
+    existing_auth = auth_result.scalar_one_or_none()
+    if existing_auth:
+        existing_auth.deleted = 0
+        existing_auth.encrypted_cookie = encrypted_cookie
+        if encrypted_token:
+            existing_auth.encrypted_token = encrypted_token
+        existing_auth.cookie_status = 0
+        existing_auth.last_login_status_code = "COOKIE_UPDATED"
+        existing_auth.last_login_status_message = "Cookie 已更新，等待统一登录校验"
+    else:
+        auth = XianyuAccountAuth(
+            account_id=account.id,
+            encrypted_cookie=encrypted_cookie,
+            encrypted_token=encrypted_token,
+            cookie_status=0,
+            last_login_status_code="COOKIE_UPDATED",
+            last_login_status_message="Cookie 已更新，等待统一登录校验",
+        )
+        db.add(auth)
+
+    runtime_result = await db.execute(
+        select(XianyuAccountRuntime).where(XianyuAccountRuntime.account_id == account.id)
+    )
+    existing_runtime = runtime_result.scalar_one_or_none()
+    if existing_runtime:
+        existing_runtime.deleted = 0
+        existing_runtime.cookie_status = 0
+        existing_runtime.last_login_status_code = "COOKIE_UPDATED"
+        existing_runtime.last_login_status_message = "Cookie 已更新，等待统一登录校验"
+    else:
+        db.add(XianyuAccountRuntime(
+            account_id=account.id,
+            cookie_status=0,
+            last_login_status_code="COOKIE_UPDATED",
+            last_login_status_message="Cookie 已更新，等待统一登录校验",
+        ))
     await db.commit()
     return ResultObject.success({"account_id": account.id, "message": "添加成功"})
 
@@ -1880,18 +2075,25 @@ async def compat_xianyu_accounts_delete(
     current_user: dict = Depends(get_current_user),
 ):
     """Compat: DELETE /xianyu/accounts/{id} -> forward to /account/delete (POST)"""
-    from ....models.entities import XianyuAccount, XianyuAccountAuth
+    from ....models.entities import XianyuAccount, XianyuAccountAuth, XianyuAccountRuntime
+    from sqlalchemy import update
     result = await db.execute(select(XianyuAccount).where(XianyuAccount.id == account_id))
     account = result.scalar_one_or_none()
     if not account:
         return ResultObject.failed("账号不存在", code=404)
 
+    account.deleted = 1
+    account.status = 0
     await db.execute(
-        XianyuAccountAuth.__table__.delete().where(
-            XianyuAccountAuth.account_id == account_id
-        )
+        update(XianyuAccountAuth)
+        .where(XianyuAccountAuth.account_id == account_id)
+        .values(deleted=1)
     )
-    await db.delete(account)
+    await db.execute(
+        update(XianyuAccountRuntime)
+        .where(XianyuAccountRuntime.account_id == account_id)
+        .values(deleted=1, online_status=0, ws_status=0)
+    )
     await db.commit()
     return ResultObject.success({"message": "删除成功"})
 
