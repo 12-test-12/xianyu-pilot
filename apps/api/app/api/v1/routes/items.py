@@ -554,7 +554,11 @@ async def refresh_items(
 
         # 检查是否已有运行中的同步任务：优先返回已有任务，避免重复创建。
 
-        from ....services.xianyu_goods_sync import is_account_syncing
+        from ....services.xianyu_goods_sync import is_account_syncing, recover_stale_sync_tasks
+
+        # 先回收崩溃/重启残留的 queued/running 任务，避免陈旧行永久卡住同步入口。
+
+        await recover_stale_sync_tasks(db)
 
         running_result = await db.execute(
 
@@ -602,6 +606,8 @@ async def refresh_items(
 
                 XianyuAccount.id == account_id,
 
+                XianyuAccount.deleted == 0,
+
             )
 
         )
@@ -614,7 +620,7 @@ async def refresh_items(
 
 
 
-        # 获取 Cookie
+        # 获取 Cookie（只取未软删除的最新一条，避免多行时 MultipleResultsFound）
 
         auth_result = await db.execute(
 
@@ -622,7 +628,13 @@ async def refresh_items(
 
                 XianyuAccountAuth.account_id == account_id,
 
+                XianyuAccountAuth.deleted == 0,
+
             )
+
+            .order_by(XianyuAccountAuth.id.desc())
+
+            .limit(1)
 
         )
 
@@ -2388,6 +2400,9 @@ async def auto_sync_items(
     raw_account_id = req.get("xianyu_account_id") or req.get("xianyuAccountId")
     account_id = int(raw_account_id) if raw_account_id else None
     try:
+        # 先回收崩溃/重启残留的 queued/running 任务，否则陈旧行会让自动同步永远返回 syncing。
+        from ....services.xianyu_goods_sync import recover_stale_sync_tasks
+        await recover_stale_sync_tasks(db)
         snapshot = await goods_sync_snapshot(db, account_id)
         if snapshot["syncState"] == "syncing":
             return ResultObject.success(
@@ -2467,7 +2482,11 @@ async def auto_sync_items(
 
 async def _get_account_auth(db: AsyncSession, account_id: int):
 
-    """获取账号的认证信息（Cookie）"""
+    """获取账号的认证信息（Cookie）。
+
+    只取未软删除的最新一条：一个账号可能存在多条 auth 历史行（软删除行
+    与旧数据冗余行），不过滤 + scalar_one_or_none 会抛 MultipleResultsFound。
+    """
 
     result = await db.execute(
 
@@ -2477,9 +2496,15 @@ async def _get_account_auth(db: AsyncSession, account_id: int):
 
                 XianyuAccountAuth.account_id == account_id,
 
+                XianyuAccountAuth.deleted == 0,
+
             )
 
         )
+
+        .order_by(XianyuAccountAuth.id.desc())
+
+        .limit(1)
 
     )
 

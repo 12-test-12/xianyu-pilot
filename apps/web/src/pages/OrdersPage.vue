@@ -911,10 +911,16 @@ async function syncAllAccountsOrders() {
 
 // 从平台刷新订单：先让后端触发远程同步（batchRefresh），再回读本地列表。
 // 同步失败时后端把原因放在 syncErrors 中（HTTP 仍为成功），这里展示给用户。
+// 进页自动刷新有冷却时间：batchRefresh 是全量远程同步且服务端无限流，
+// 空列表时反复进页不能每次都打平台接口。
+let lastPlatformRefreshAt = 0
+const PLATFORM_REFRESH_COOLDOWN_MS = 60000
+
 async function refreshFromPlatform(options = {}) {
   if (syncingList.value) return
   const silent = options.silent === true
   if (!silent) clearNotice()
+  lastPlatformRefreshAt = Date.now()
   syncingList.value = true
   let failureMessage = ''
   let syncedCount = 0
@@ -1071,9 +1077,12 @@ onMounted(() => {
   document.addEventListener('click', onClickOutside)
   // 首次进入：先读本地缓存；若本地没有订单，自动从平台同步一次，
   // 避免用户必须手动点"同步"才能看到平台侧已发货的订单。
+  // 带冷却：空列表时反复进页/切路由不会每次都触发全量远程同步。
   loadOrders().then(() => {
     if (ordersAvailable.value === true && orders.value.length === 0) {
-      refreshFromPlatform({ silent: true })
+      if (Date.now() - lastPlatformRefreshAt >= PLATFORM_REFRESH_COOLDOWN_MS) {
+        refreshFromPlatform({ silent: true })
+      }
     }
   })
   startOrdersPolling()

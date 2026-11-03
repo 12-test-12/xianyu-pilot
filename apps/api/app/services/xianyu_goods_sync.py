@@ -11,7 +11,7 @@ import random
 import time
 import threading
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Optional
 from urllib.parse import urlencode
 
@@ -261,6 +261,8 @@ async def _resolve_account_cookie(
                     XianyuAccountAuth.account_id == account_id,
                     XianyuAccountAuth.deleted == 0,
                 )
+                .order_by(XianyuAccountAuth.id.desc())
+                .limit(1)
             )
             auth = result.scalar_one_or_none()
             logger.info(
@@ -1750,6 +1752,71 @@ def is_account_syncing(account_id: int) -> bool:
             if task.get("account_id") == account_id and task.get("status") == "running":
                 return True
     return False
+
+
+def _in_memory_syncing_account_ids() -> set:
+    """本进程内存中仍在排队/执行同步的账号 ID 集合。"""
+    with _sync_lock:
+        _prune_sync_tasks_locked()
+        return {
+            int(task["account_id"])
+            for task in _sync_tasks.values()
+            if task.get("account_id")
+            and str(task.get("status") or "") in {"queued", "running"}
+        }
+
+
+async def recover_stale_sync_tasks(db, *, stale_seconds: int = 900, include_recent: bool = False) -> int:
+    """回收停留在 queued/running 的僵尸同步任务行，返回回收数量。
+
+    进程崩溃/重启后内存任务已消失，但数据库行仍是 queued/running，
+    会让 goods_sync_snapshot 永远返回 syncing、自动同步/刷新入口被永久卡死。
+
+    - stale_seconds: 距最近一次进度更新超过该秒数才回收（进行中的同步会
+      持续刷新 updated_time，不会被误杀）。
+    - include_recent: 启动时传 True，不看时间直接回收全部残留行——本进程
+      刚启动、内存里不可能有正在执行的同步。
+    本进程内存中仍在运行的账号一律跳过。
+    """
+    from sqlalchemy import update
+    from ..models.entities import XianyuGoodsSyncTask
+
+    try:
+        running_accounts = _in_memory_syncing_account_ids()
+        now = datetime.now()
+        conditions = [
+            XianyuGoodsSyncTask.deleted == 0,
+            XianyuGoodsSyncTask.status.in_(["queued", "running"]),
+        ]
+        if running_accounts:
+            conditions.append(XianyuGoodsSyncTask.account_id.notin_(running_accounts))
+        if not include_recent:
+            cutoff = now - timedelta(seconds=max(int(stale_seconds), 0))
+            from sqlalchemy import func
+            last_seen = func.coalesce(
+                XianyuGoodsSyncTask.updated_time,
+                XianyuGoodsSyncTask.started_time,
+                XianyuGoodsSyncTask.created_time,
+            )
+            conditions.append(last_seen < cutoff)
+        result = await db.execute(
+            update(XianyuGoodsSyncTask)
+            .where(*conditions)
+            .values(
+                status="failed",
+                error_message="同步任务已中断（服务重启或异常退出），请重新触发同步",
+                finished_time=now,
+                updated_time=now,
+            )
+        )
+        await db.commit()
+        recovered = int(result.rowcount or 0)
+        if recovered:
+            logger.warning("回收僵尸同步任务 recovered=%d includeRecent=%s", recovered, include_recent)
+        return recovered
+    except Exception:
+        logger.warning("回收僵尸同步任务失败", exc_info=True)
+        return 0
 
 
 # ==================== 商品操作（下架/删除） ====================

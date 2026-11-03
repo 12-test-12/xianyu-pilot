@@ -6,6 +6,13 @@ from sqlalchemy import select, text
 from ....core.database import get_db
 from ....core.response import ResultObject
 from ....core.cookie_crypto import encrypt_cookie_for_storage
+from ....services.account_credentials import (
+    AccountUpsertError,
+    extract_m_h5_tk_from_cookie,
+    extract_unb_from_cookie,
+    soft_delete_account,
+    upsert_account_with_cookie,
+)
 from ....core.unavailable_features import (
     ACCOUNT_LOGIN_CREDENTIAL_UNAVAILABLE,
     feature_unavailable,
@@ -109,83 +116,12 @@ async def add_account(
         unb = extract_unb_from_cookie(req.cookie)
         if not unb:
             return ResultObject.failed("无法从Cookie中提取UNB信息")
-        existing = await db.execute(
-            select(XianyuAccount)
-            .where(XianyuAccount.external_uid == unb)
-            .order_by(XianyuAccount.deleted.asc())
-            .limit(1)
-        )
-        account = existing.scalar_one_or_none()
-        if account:
-            if account.deleted == 0:
-                return ResultObject.failed("账号已存在")
-            account.deleted = 0
-            account.status = 1
-            if req.account_note is not None:
-                account.remark = req.account_note
-        else:
-            account = XianyuAccount(
-                external_uid=unb,
-                remark=req.account_note,
-                status=1
+        try:
+            account = await upsert_account_with_cookie(
+                db, cookie=req.cookie, unb=unb, remark=req.account_note,
             )
-            db.add(account)
-            await db.commit()
-            await db.refresh(account)
-
-        m_h5_tk = extract_m_h5_tk_from_cookie(req.cookie)
-        encrypted_cookie = encrypt_cookie_for_storage(req.cookie)
-        encrypted_token = encrypt_cookie_for_storage(m_h5_tk) if m_h5_tk else None
-
-        auth_result = await db.execute(
-            select(XianyuAccountAuth)
-            .where(XianyuAccountAuth.account_id == account.id)
-            .order_by(XianyuAccountAuth.id.desc())
-        )
-        auth_rows = auth_result.scalars().all()
-        if auth_rows:
-            existing_auth = auth_rows[0]
-            existing_auth.deleted = 0
-            existing_auth.encrypted_cookie = encrypted_cookie
-            if encrypted_token:
-                existing_auth.encrypted_token = encrypted_token
-            existing_auth.cookie_status = 0
-            existing_auth.last_login_status_code = "COOKIE_UPDATED"
-            existing_auth.last_login_status_message = "Cookie 已更新，等待统一登录校验"
-            for extra in auth_rows[1:]:
-                extra.deleted = 1
-        else:
-            auth = XianyuAccountAuth(
-                account_id=account.id,
-                encrypted_cookie=encrypted_cookie,
-                encrypted_token=encrypted_token,
-                cookie_status=0,
-                last_login_status_code="COOKIE_UPDATED",
-                last_login_status_message="Cookie 已更新，等待统一登录校验",
-            )
-            db.add(auth)
-
-        runtime_result = await db.execute(
-            select(XianyuAccountRuntime)
-            .where(XianyuAccountRuntime.account_id == account.id)
-            .order_by(XianyuAccountRuntime.id.desc())
-        )
-        runtime_rows = runtime_result.scalars().all()
-        if runtime_rows:
-            existing_runtime = runtime_rows[0]
-            existing_runtime.deleted = 0
-            existing_runtime.cookie_status = 0
-            existing_runtime.last_login_status_code = "COOKIE_UPDATED"
-            existing_runtime.last_login_status_message = "Cookie 已更新，等待统一登录校验"
-            for extra in runtime_rows[1:]:
-                extra.deleted = 1
-        else:
-            db.add(XianyuAccountRuntime(
-                account_id=account.id,
-                cookie_status=0,
-                last_login_status_code="COOKIE_UPDATED",
-                last_login_status_message="Cookie 已更新，等待统一登录校验",
-            ))
+        except AccountUpsertError as exc:
+            return ResultObject.failed(str(exc))
         await db.commit()
 
         return ResultObject.success(AddAccountRespDTO(
@@ -210,83 +146,12 @@ async def manual_add_account(
         unb = extract_unb_from_cookie(req.cookie)
         if not unb:
             return ResultObject.failed("无法从Cookie中提取UNB信息")
-        existing = await db.execute(
-            select(XianyuAccount)
-            .where(XianyuAccount.external_uid == unb)
-            .order_by(XianyuAccount.deleted.asc())
-            .limit(1)
-        )
-        account = existing.scalar_one_or_none()
-        if account:
-            if account.deleted == 0:
-                return ResultObject.failed("账号已存在")
-            account.deleted = 0
-            account.status = 1
-            if req.account_note is not None:
-                account.remark = req.account_note
-        else:
-            account = XianyuAccount(
-                external_uid=unb,
-                remark=req.account_note,
-                status=1
+        try:
+            account = await upsert_account_with_cookie(
+                db, cookie=req.cookie, unb=unb, remark=req.account_note,
             )
-            db.add(account)
-            await db.commit()
-            await db.refresh(account)
-
-        m_h5_tk = extract_m_h5_tk_from_cookie(req.cookie)
-        encrypted_cookie = encrypt_cookie_for_storage(req.cookie)
-        encrypted_token = encrypt_cookie_for_storage(m_h5_tk) if m_h5_tk else None
-
-        auth_result = await db.execute(
-            select(XianyuAccountAuth)
-            .where(XianyuAccountAuth.account_id == account.id)
-            .order_by(XianyuAccountAuth.id.desc())
-        )
-        auth_rows = auth_result.scalars().all()
-        if auth_rows:
-            existing_auth = auth_rows[0]
-            existing_auth.deleted = 0
-            existing_auth.encrypted_cookie = encrypted_cookie
-            if encrypted_token:
-                existing_auth.encrypted_token = encrypted_token
-            existing_auth.cookie_status = 0
-            existing_auth.last_login_status_code = "COOKIE_UPDATED"
-            existing_auth.last_login_status_message = "Cookie 已更新，等待统一登录校验"
-            for extra in auth_rows[1:]:
-                extra.deleted = 1
-        else:
-            auth = XianyuAccountAuth(
-                account_id=account.id,
-                encrypted_cookie=encrypted_cookie,
-                encrypted_token=encrypted_token,
-                cookie_status=0,
-                last_login_status_code="COOKIE_UPDATED",
-                last_login_status_message="Cookie 已更新，等待统一登录校验",
-            )
-            db.add(auth)
-
-        runtime_result = await db.execute(
-            select(XianyuAccountRuntime)
-            .where(XianyuAccountRuntime.account_id == account.id)
-            .order_by(XianyuAccountRuntime.id.desc())
-        )
-        runtime_rows = runtime_result.scalars().all()
-        if runtime_rows:
-            existing_runtime = runtime_rows[0]
-            existing_runtime.deleted = 0
-            existing_runtime.cookie_status = 0
-            existing_runtime.last_login_status_code = "COOKIE_UPDATED"
-            existing_runtime.last_login_status_message = "Cookie 已更新，等待统一登录校验"
-            for extra in runtime_rows[1:]:
-                extra.deleted = 1
-        else:
-            db.add(XianyuAccountRuntime(
-                account_id=account.id,
-                cookie_status=0,
-                last_login_status_code="COOKIE_UPDATED",
-                last_login_status_message="Cookie 已更新，等待统一登录校验",
-            ))
+        except AccountUpsertError as exc:
+            return ResultObject.failed(str(exc))
         await db.commit()
 
         return ResultObject.success(AddAccountRespDTO(
@@ -332,37 +197,8 @@ async def delete_account(
     current_user: dict = Depends(get_current_user)
 ):
     try:
-        from sqlalchemy import update
-        result = await db.execute(
-            select(XianyuAccount).where(
-                XianyuAccount.id == req.account_id,
-                XianyuAccount.deleted == 0,
-            )
-        )
-        account = result.scalar_one_or_none()
-        if not account:
+        if not await soft_delete_account(db, req.account_id):
             return ResultObject.failed("账号不存在")
-
-        # 停止可能正在运行的 WS 客户端
-        try:
-            from ....services.ws_client import ws_manager
-            await ws_manager.stop_client(req.account_id)
-        except Exception:
-            pass
-
-        # 软删除账号及其关联状态
-        account.deleted = 1
-        account.status = 0
-        await db.execute(
-            update(XianyuAccountAuth)
-            .where(XianyuAccountAuth.account_id == req.account_id)
-            .values(deleted=1)
-        )
-        await db.execute(
-            update(XianyuAccountRuntime)
-            .where(XianyuAccountRuntime.account_id == req.account_id)
-            .values(deleted=1, online_status=0, ws_status=0)
-        )
         await db.commit()
         return ResultObject.success(DeleteAccountRespDTO(message="删除成功"))
     except Exception as e:
@@ -430,24 +266,6 @@ async def get_login_credential(
     """Retired: no password-login consumer exists in this build."""
 
     feature_unavailable(ACCOUNT_LOGIN_CREDENTIAL_UNAVAILABLE)
-
-
-def extract_unb_from_cookie(cookie: str) -> str:
-    if not cookie:
-        return None
-    for part in cookie.split("; "):
-        if part.startswith("unb="):
-            return part[4:]
-    return None
-
-
-def extract_m_h5_tk_from_cookie(cookie: str) -> str:
-    """从 Cookie 字符串中提取 _m_h5_tk 值。"""
-    if not cookie:
-        return ""
-    import re
-    match = re.search(r'_m_h5_tk=([^;]+)', cookie)
-    return match.group(1) if match else ""
 
 
 @router.post("/updateCookie", response_model=ResultObject[dict])

@@ -51,6 +51,16 @@ async def lifespan(app: FastAPI):
     # a migration is missing or belongs to a newer application build.
     await assert_schema_current()
 
+    # 回收上次进程崩溃/重启残留的 queued/running 商品同步任务，
+    # 否则这些僵尸行会让商品自动同步入口永远返回"同步中"。
+    try:
+        from app.core.database import async_session
+        from app.services.xianyu_goods_sync import recover_stale_sync_tasks
+        async with async_session() as db:
+            await recover_stale_sync_tasks(db, include_recent=True)
+    except Exception:
+        logger.warning("Recover stale goods sync tasks failed", exc_info=True)
+
     # 启动 WebSocket
     try:
         from app.services.ws_startup import auto_start_all

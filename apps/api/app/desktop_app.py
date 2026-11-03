@@ -52,6 +52,15 @@ def create_desktop_app(config=None, *, web_dir=None, platform_runtime=None, inst
                 await asyncio.to_thread(DesktopDeliveryStore(config.sqlite_path).recover_interrupted)
                 async with runtime.engine.connect() as connection:
                     await connection.execute(text("SELECT 1"))
+                # 回收上次进程崩溃/重启残留的 queued/running 商品同步任务，
+                # 否则这些僵尸行会让商品自动同步入口永远返回"同步中"。
+                try:
+                    from app.core.database import async_session
+                    from app.services.xianyu_goods_sync import recover_stale_sync_tasks
+                    async with async_session() as db:
+                        await recover_stale_sync_tasks(db, include_recent=True)
+                except Exception:
+                    pass
                 if platform_runtime is not None:
                     await platform_runtime.start()
                 elif console_services is not None:

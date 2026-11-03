@@ -68,6 +68,8 @@ async def update_ws_heartbeat(db: AsyncSession, payload: dict) -> XianyuAccountR
             XianyuAccountRuntime.account_id == account_id,
             XianyuAccountRuntime.deleted == 0,
         )
+        .order_by(XianyuAccountRuntime.id.desc())
+        .limit(1)
     )
     runtime = result.scalar_one_or_none()
     if runtime is None:
@@ -570,7 +572,7 @@ async def _save_scan_login_result(
             return {"_error": "SESSION_MISSING", "message": "会话不存在或尚未登录成功"}
 
         cookie_text = session_data.get("cookie_text", "")
-        unb = session_data.get("unb", "")
+        unb = str(session_data.get("unb", "") or "").strip()
         m_h5_tk = session_data.get("m_h5_tk", "")
         user_id = session_data.get("user_id")
 
@@ -595,9 +597,32 @@ async def _save_scan_login_result(
             account = acc_result.scalar_one_or_none()
 
         if account:
+            target_uid = str(account.external_uid or "").strip()
+            if target_uid and unb != target_uid:
+                # 扫到的是另一个闲鱼身份：拒绝覆盖目标账号的 external_uid，
+                # 否则目标账号会被改绑成别人的身份，或与其它账号产生重复绑定。
+                return {
+                    "_error": "UNB_MISMATCH",
+                    "message": "扫码账号与目标账号不一致，请用目标账号登录的闲鱼 App 重新扫码",
+                }
+            if not target_uid:
+                conflict_row = await db.execute(
+                    select(XianyuAccount.id)
+                    .where(
+                        XianyuAccount.external_uid == unb,
+                        XianyuAccount.id != account.id,
+                        XianyuAccount.deleted == 0,
+                    )
+                    .limit(1)
+                )
+                if conflict_row.first() is not None:
+                    return {
+                        "_error": "UNB_CONFLICT",
+                        "message": "该扫码账号已绑定系统中的其它账号，请先在账号列表中处理后再绑定",
+                    }
             account.deleted = 0
             account.status = 1
-            if unb and (not account.external_uid or account.external_uid != unb):
+            if not target_uid:
                 account.external_uid = unb
             logger.info(
                 "QR account persistence accountId=%d state=updated_target",
@@ -865,6 +890,14 @@ async def qrlogin_status(
                     save_result.get("account_id") if save_result else None,
                 )
                 if not save_result or save_result.get("_error"):
+                    error_code = (save_result or {}).get("_error")
+                    if error_code in {"UNB_MISMATCH", "UNB_CONFLICT"}:
+                        # 身份不匹配/冲突重试也不会成功，返回明确原因而不是泛化的"稍后重试"。
+                        raise HTTPException(
+                            status_code=409,
+                            detail=save_result.get("message")
+                            or "扫码账号与目标账号不一致，请重新扫码",
+                        )
                     raise HTTPException(
                         status_code=503,
                         detail="扫码已确认，但账号凭据尚未安全保存；请稍后重试，不要将本次登录视为已完成。",

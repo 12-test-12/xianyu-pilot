@@ -292,7 +292,42 @@ async def _upsert_order(db: AsyncSession, account_id: int, parsed: dict[str, Any
     return action, external_order_id
 
 
+# 单账号订单全量同步进行中标记：并发入口（批量刷新/进页自动刷新/定时任务）
+# 同时触发时只跑一份，其余直接跳过，避免重复打平台分页接口。
+_order_sync_inflight: set = set()
+
+
 async def sync_orders_for_account(
+    account_id: int,
+    max_pages: int = 20,
+    page_size: int = 30,
+) -> dict[str, Any]:
+    """同步指定账号的闲鱼已售订单（单账号同一时刻只允许一个在执行）。
+
+    已有同步在执行时返回 success=True + skipped=True 的零统计结果，
+    调用方无需把它当失败处理。
+    """
+    if account_id in _order_sync_inflight:
+        logger.info("订单同步跳过（该账号已有同步在执行）: accountId=%d", account_id)
+        return {
+            "success": True,
+            "total": 0,
+            "inserted": 0,
+            "updated": 0,
+            "failed": 0,
+            "skipped": True,
+            "message": "该账号订单同步正在进行中，本次跳过",
+        }
+    _order_sync_inflight.add(account_id)
+    try:
+        return await _sync_orders_for_account_impl(
+            account_id, max_pages=max_pages, page_size=page_size
+        )
+    finally:
+        _order_sync_inflight.discard(account_id)
+
+
+async def _sync_orders_for_account_impl(
     account_id: int,
     max_pages: int = 20,
     page_size: int = 30,

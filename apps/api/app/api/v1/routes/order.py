@@ -128,7 +128,11 @@ def trade_order_to_vo(
 async def _load_order_items(
     db: AsyncSession, orders: list[XianyuTradeOrder]
 ) -> dict[int, tuple[XianyuTradeOrderItem, dict]]:
-    """批量加载订单项与商品扩展信息，返回 {order_id: (item, goods_extra)}。"""
+    """批量加载订单项与商品扩展信息，返回 {order_id: (item, goods_extra)}。
+
+    order_item.goods_id 存的是平台 itemId（数值），本地商品表用
+    external_goods_id 关联该值；XianyuGoods.id 是自增主键，二者不能互查。
+    """
     order_ids = [int(order.id) for order in orders if order.id is not None]
     if not order_ids:
         return {}
@@ -141,25 +145,28 @@ async def _load_order_items(
         .order_by(XianyuTradeOrderItem.id.asc())
     )
     order_items = item_result.scalars().all()
-    goods_ids = sorted({int(item.goods_id) for item in order_items if item.goods_id})
-    goods_extra: dict[int, dict] = {}
-    if goods_ids:
+    goods_keys = sorted({str(int(item.goods_id)) for item in order_items if item.goods_id})
+    goods_extra: dict[str, dict] = {}
+    if goods_keys:
         goods_result = await db.execute(
             select(XianyuGoods).where(
-                XianyuGoods.id.in_(goods_ids), XianyuGoods.deleted == 0
+                XianyuGoods.external_goods_id.in_(goods_keys),
+                XianyuGoods.deleted == 0,
             )
         )
         for goods in goods_result.scalars():
-            goods_extra[int(goods.id)] = {
-                "externalGoodsId": goods.external_goods_id,
-                "goodsImage": goods.cover_pic or goods.image_url,
-            }
+            key = str(goods.external_goods_id or "").strip()
+            if key:
+                goods_extra[key] = {
+                    "externalGoodsId": goods.external_goods_id,
+                    "goodsImage": goods.cover_pic or goods.image_url,
+                }
     result: dict[int, tuple[XianyuTradeOrderItem, dict]] = {}
     for item in order_items:
         order_id = int(item.order_id)
         if order_id in result:
             continue  # 每个订单只取第一个订单项用于 VO 摘要字段
-        extra = goods_extra.get(int(item.goods_id), {}) if item.goods_id else {}
+        extra = goods_extra.get(str(int(item.goods_id)), {}) if item.goods_id else {}
         result[order_id] = (item, extra)
     return result
 
@@ -210,18 +217,17 @@ async def list_orders(
                 goods_key_int = int(goods_key)
             except (TypeError, ValueError):
                 goods_key_int = None
-            item_match = select(XianyuTradeOrderItem.order_id).where(
-                XianyuTradeOrderItem.deleted == 0,
-                XianyuTradeOrderItem.goods_id == goods_key_int
-                if goods_key_int is not None
-                else XianyuTradeOrderItem.goods_id.is_(None),
-            )
-            query = query.where(
-                or_(
-                    XianyuTradeOrder.item_id == goods_key,
-                    XianyuTradeOrder.id.in_(item_match),
+            item_conditions = [XianyuTradeOrder.item_id == goods_key]
+            if goods_key_int is not None:
+                # goods_id 是数值列；仅在键可解析为数值时才按订单项匹配。
+                # 否则（非数字键）不能退化成 goods_id IS NULL，那会把
+                # 所有订单项 goods_id 为空的订单都拉进来。
+                item_match = select(XianyuTradeOrderItem.order_id).where(
+                    XianyuTradeOrderItem.deleted == 0,
+                    XianyuTradeOrderItem.goods_id == goods_key_int,
                 )
-            )
+                item_conditions.append(XianyuTradeOrder.id.in_(item_match))
+            query = query.where(or_(*item_conditions))
         if req.order_status is not None:
             query = query.where(XianyuTradeOrder.order_status == req.order_status)
 

@@ -347,6 +347,8 @@ async def restful_refresh_account_profile(
                 XianyuAccountAuth.account_id == account_id,
                 XianyuAccountAuth.deleted == 0,
             )
+            .order_by(XianyuAccountAuth.id.desc())
+            .limit(1)
         )
         auth = auth_result.scalar_one_or_none()
         if not auth or not auth.encrypted_cookie:

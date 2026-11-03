@@ -728,8 +728,11 @@ class XianyuRemoteDeleteGateway:
             auth = (
                 await self._db.execute(
                     select(XianyuAccountAuth).where(
-                        XianyuAccountAuth.account_id == context.account_id
+                        XianyuAccountAuth.account_id == context.account_id,
+                        XianyuAccountAuth.deleted == 0,
                     )
+                    .order_by(XianyuAccountAuth.id.desc())
+                    .limit(1)
                 )
             ).scalar_one_or_none()
             account = (

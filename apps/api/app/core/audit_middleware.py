@@ -201,10 +201,27 @@ async def _audit_request_params(request: Request) -> str | None:
             separators=(",", ":"),
         )
 
+    raw_length = request.headers.get("content-length")
+    if raw_length is None:
+        # 无 Content-Length：chunked 传输（或无请求体）。本中间件位于
+        # RequestBodyLimitMiddleware 之外，未知长度的流绝不能在这里整体
+        # 预读，否则会绕过大小限制把任意大的请求体读进内存。
+        transfer_encoding = str(request.headers.get("transfer-encoding") or "").lower()
+        if "chunked" in transfer_encoding:
+            return json.dumps(
+                {"bodyOmitted": True, "contentLengthUnknown": True},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        return None
     try:
-        content_length = int(request.headers.get("content-length") or 0)
+        content_length = int(raw_length)
     except (TypeError, ValueError):
-        content_length = 0
+        return json.dumps(
+            {"bodyOmitted": True, "contentLengthUnknown": True},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
     if content_length > _MAX_AUDIT_BODY_BYTES:
         return json.dumps(
             {"bodyOmitted": True, "contentLength": content_length},

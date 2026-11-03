@@ -588,7 +588,10 @@ async def verify_fish_shop_account(
     result = await db.execute(
         select(XianyuAccountAuth).where(
             XianyuAccountAuth.account_id == account_id,
+            XianyuAccountAuth.deleted == 0,
         )
+        .order_by(XianyuAccountAuth.id.desc())
+        .limit(1)
     )
     auth = result.scalar_one_or_none()
     if not auth or not auth.encrypted_cookie:

@@ -89,7 +89,10 @@ async def _get_account_auth(
     result = await db.execute(
         select(XianyuAccountAuth).where(
             XianyuAccountAuth.account_id == account_id,
+            XianyuAccountAuth.deleted == 0,
         )
+        .order_by(XianyuAccountAuth.id.desc())
+        .limit(1)
     )
     auth = result.scalar_one_or_none()
     return auth, is_fish_shop, account
