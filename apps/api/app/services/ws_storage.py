@@ -253,13 +253,25 @@ def _extract_json_text_fallback(message: object) -> str:
     return ""
 
 
+# 图片 URL 判定用的扩展名（含点）。用纯字符串匹配替代正则：
+# 原实现 re.search(r"\.(?:jpg|...)(?:[?#].*)?$") 的尾部可选回溯会被
+# CodeQL py/polynomial-redos 判为高危（security-severity >= 7）并卡住门禁。
+_IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp")
+
+
 def _looks_like_image_url(value: object) -> bool:
     text_value = str(value or "").strip()
     if not text_value or not text_value.startswith(("http://", "https://", "//", "/")):
         return False
     lowered = text_value.lower()
-    if re.search(r"\.(?:jpg|jpeg|png|webp|gif|bmp)(?:[?#].*)?$", lowered):
-        return True
+    # 语义与原正则一致：以扩展名结尾，或扩展名后紧跟 ?/# 查询片段直到结尾。
+    for suffix in _IMAGE_SUFFIXES:
+        start = lowered.find(suffix)
+        while start != -1:
+            rest = lowered[start + len(suffix):]
+            if not rest or rest[0] in "?#":
+                return True
+            start = lowered.find(suffix, start + 1)
     return any(host in lowered for host in ("alicdn.com", "taobao.com"))
 
 
