@@ -391,7 +391,7 @@
           <h2>{{ qr.mode === 'rescan' ? '重新扫码更新账号' : '扫码添加闲鱼账号' }}</h2>
           <div class="scan-steps">
             <div class="scan-step" :class="{ active: qrReady }"><b>1</b><span>{{ qrReady ? '二维码已生成' : '等待生成二维码' }}</span></div>
-            <i></i><div class="scan-step" :class="{ active: ['scanned', 'scaned'].includes(qr.status) }"><b>2</b><span>扫码确认</span></div>
+            <i></i><div class="scan-step" :class="{ active: ['scanned', 'scaned', 'verification_required'].includes(qr.status) }"><b>2</b><span>扫码确认</span></div>
             <i></i><div class="scan-step" :class="{ active: qr.status === 'confirmed' }"><b>3</b><span>{{ qr.mode === 'rescan' ? '更新账号 Cookie' : '自动添加账号' }}</span></div>
           </div>
         <div class="scan-main">

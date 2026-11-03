@@ -94,6 +94,40 @@ def test_process_confirmed_login_handles_verification_required():
     assert "https://passport.goofish.com/verify_iframe.htm" in result["iframe_redirect_url"]
 
 
+def test_process_confirmed_login_follows_iframe_and_completes_with_cookies():
+    """iframeRedirect 不再短路：跟随 URL 后继续归集，凭据齐备时正常 confirmed。
+
+    真实环境中闲鱼确认响应常带 iframeRedirect（跨域 Cookie 回收步骤），
+    此前直接终止导致保存账号永远不执行（桌面端 15 个会话全部卡死）。
+    """
+    session = MagicMock()
+    c1 = MagicMock()
+    c1.name = "unb"
+    c1.value = "5566778899"
+    jar = MagicMock()
+    jar.__iter__.return_value = iter([c1])
+    jar.get.side_effect = lambda k, default="": {"unb": "5566778899"}.get(k, default)
+    session.cookies = jar
+
+    iframe_url = "https://passport.goofish.com/iframe_done.htm"
+    data = {
+        "qrCodeStatus": "CONFIRMED",
+        "iframeRedirect": True,
+        "iframeRedirectUrl": iframe_url,
+    }
+    with patch("app.core.xianyu_qr_login._get_m_h5_tk"):
+        result = _process_confirmed_login(session, data)
+
+    assert result["status"] == "confirmed"
+    assert result["cookies"]["unb"] == "5566778899"
+    followed = [
+        call.args[0]
+        for call in session.get.call_args_list
+        if call.args
+    ]
+    assert iframe_url in followed
+
+
 def test_generate_qrcode_accepts_target_account_id():
     """Verify that generate_qrcode records target_account_id for rescan mode."""
     with patch("app.core.xianyu_qr_login._get_m_h5_tk"), \

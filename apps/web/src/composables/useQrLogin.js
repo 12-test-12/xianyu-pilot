@@ -51,7 +51,9 @@ export function useQrLogin({ onConfirmed, generate = generateQrLogin, getStatus 
             ? '扫码已确认，服务端正在安全同步账号信息...'
             : (data.message || '扫码已确认，等待服务端完成账号同步...')
         }
-      } else if (['error', 'expired', 'failed'].includes(qr.status)) {
+      } else if (['error', 'expired', 'failed', 'verification_required'].includes(qr.status)) {
+        // verification_required 是服务端的终止状态（会话只会回放同一结果），
+        // 继续轮询只会空转；停在这里让用户看到提示并可手动刷新二维码。
         stopQrPolling()
         if (qr.status === 'error') qr.message = data.message || '账号保存失败，请重试'
       }

@@ -261,12 +261,17 @@ def _generate_qrcode(session: requests.Session, login_form: dict) -> str:
 
 def _process_confirmed_login(session: requests.Session, data: dict) -> dict:
     """处理扫码确认成功后的令牌兑换与 Cookie 归集流程。"""
-    if data.get("iframeRedirect"):
-        return {
-            "status": "verification_required",
-            "iframe_redirect_url": data.get("iframeRedirectUrl") or "",
-            "message": "平台要求二次安全验证，请在手机端完成验证",
-        }
+    # iframeRedirect 是通行证完成跨域 Cookie 回收的步骤（网页端会在确认后
+    # 加载该 URL 收齐 unb/cookie2 等），并不一定是风控二次验证。此前遇到
+    # 该字段直接终止，会跳过票据兑换与 Cookie 归集，保存账号的请求永远
+    # 不会执行（实测 15 个扫码会话全部停在这里）。现在先跟随该 URL，
+    # 与浏览器行为一致；只有最终仍拿不到 unb 时才回退为二次验证。
+    iframe_redirect_url = str(data.get("iframeRedirectUrl") or "")
+    if data.get("iframeRedirect") and iframe_redirect_url:
+        try:
+            session.get(iframe_redirect_url, headers=H_PAGE, timeout=15)
+        except Exception as exc:
+            logger.warning("QR iframeRedirect follow error: %s", exc)
 
     # 1. 若返回 login_token / lgToken，通过 login_token/login.do 完成登录态交换
     login_token = data.get("token") or data.get("lgToken")
@@ -340,6 +345,15 @@ def _process_confirmed_login(session: requests.Session, data: dict) -> dict:
         ).strip()
         if candidate_unb:
             cookies["unb"] = candidate_unb
+
+    # 6. 归集结束后以结果为准：拿不到 unb 说明登录确实没有完成
+    #    （真风控或凭据回收失败），此时才按二次验证处理。
+    if not cookies.get("unb"):
+        return {
+            "status": "verification_required",
+            "iframe_redirect_url": iframe_redirect_url,
+            "message": "登录确认未返回账号凭据；若闲鱼 App 侧有安全验证提示，请先在手机完成验证后重新扫码",
+        }
 
     return {"status": "confirmed", "cookies": cookies}
 

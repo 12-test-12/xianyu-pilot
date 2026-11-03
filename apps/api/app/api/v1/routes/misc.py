@@ -143,14 +143,15 @@ async def _load_ws_credentials(db: AsyncSession, account_id: int):
     """从数据库读取账号最新 Cookie/Token，用于手动重连和发送前自愈。"""
     await db.execute(
         text("""
-            UPDATE xianyu_account_auth auth
-            JOIN xianyu_account a
-              ON a.id = auth.account_id
-            SET auth.deleted = 0,
-                auth.updated_time = NOW()
-            WHERE a.id = :account_id
-              AND a.deleted = 0
-              AND COALESCE(auth.deleted, 0) = 1
+            UPDATE xianyu_account_auth
+            SET deleted = 0,
+                updated_time = NOW()
+            WHERE account_id = :account_id
+              AND COALESCE(deleted, 0) = 1
+              AND account_id IN (
+                  SELECT id FROM xianyu_account
+                  WHERE id = :account_id AND deleted = 0
+              )
         """),
         {"account_id": account_id},
     )
