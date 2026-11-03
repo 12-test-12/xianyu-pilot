@@ -36,6 +36,8 @@ export function useQrLogin({ onConfirmed, generate = generateQrLogin, getStatus 
       qr.status = data.status || qr.status
       if (['scanned', 'scaned'].includes(qr.status)) {
         qr.message = data.message || '已成功扫码，请在手机上点击确认登录'
+      } else if (qr.status === 'verification_required') {
+        qr.message = data.message || '闲鱼要求二次安全验证，请在手机端完成验证后重试'
       } else {
         qr.message = data.message || qr.message
       }

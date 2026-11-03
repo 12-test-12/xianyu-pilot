@@ -34,6 +34,7 @@ H5_API = "https://h5api.m.goofish.com/h5/mtop.gaia.nodejs.gaia.idle.data.gw.v2.i
 LOGIN_PAGE = "https://passport.goofish.com/mini_login.htm"
 QR_GENERATE = "https://passport.goofish.com/newlogin/qrcode/generate.do"
 QR_QUERY = "https://passport.goofish.com/newlogin/qrcode/query.do"
+LOGIN_TOKEN_URL = "https://passport.goofish.com/login_token/login.do"
 
 H_COMMON = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -258,6 +259,91 @@ def _generate_qrcode(session: requests.Session, login_form: dict) -> str:
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
+def _process_confirmed_login(session: requests.Session, data: dict) -> dict:
+    """处理扫码确认成功后的令牌兑换与 Cookie 归集流程。"""
+    if data.get("iframeRedirect"):
+        return {
+            "status": "verification_required",
+            "iframe_redirect_url": data.get("iframeRedirectUrl") or "",
+            "message": "平台要求二次安全验证，请在手机端完成验证",
+        }
+
+    # 1. 若返回 login_token / lgToken，通过 login_token/login.do 完成登录态交换
+    login_token = data.get("token") or data.get("lgToken")
+    if login_token:
+        cna = session.cookies.get("cna") or ""
+        try:
+            login_resp = session.post(
+                LOGIN_TOKEN_URL,
+                params={
+                    "token": login_token,
+                    "subFlow": "DIALOG_CHECK_LOGIN_RPC",
+                    "nextCode": "0018",
+                    "bizScene": "qrcode",
+                    "confirm": "true",
+                },
+                data={"deviceId": cna},
+                headers={
+                    **H_COMMON,
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Referer": LOGIN_PAGE,
+                    "Origin": "https://passport.goofish.com",
+                },
+                timeout=15,
+            )
+            # 检查是否有重定向
+            if login_resp.status_code in (301, 302, 303, 307):
+                loc = login_resp.headers.get("Location")
+                if loc:
+                    session.get(loc, headers=H_PAGE, timeout=15)
+            else:
+                try:
+                    body = login_resp.json()
+                    r_url = (
+                        body.get("content", {}).get("data", {}).get("redirectUrl")
+                        or body.get("data", {}).get("redirectUrl")
+                        or body.get("redirectUrl")
+                    )
+                    if r_url:
+                        session.get(r_url, headers=H_PAGE, timeout=15)
+                except Exception:
+                    pass
+        except Exception as exc:
+            logger.warning("QR login_token exchange error: %s", exc)
+
+    # 2. 若响应中携带 redirectUrl / url，请求以获取重定向 Set-Cookie
+    redirect_url = data.get("redirectUrl") or data.get("url")
+    if redirect_url:
+        try:
+            session.get(redirect_url, headers=H_PAGE, timeout=15)
+        except Exception as exc:
+            logger.warning("QR redirectUrl follow error: %s", exc)
+
+    # 3. 刷新 _m_h5_tk 与完整业务 Cookie
+    try:
+        _get_m_h5_tk(session)
+    except Exception as exc:
+        logger.debug("Post-confirm _get_m_h5_tk error: %s", exc)
+
+    # 4. 汇聚所有 Cookie（遍历 session.cookies 保证跨域名完整提取）
+    cookies = {}
+    for c in session.cookies:
+        cookies[c.name] = c.value
+
+    # 5. 若 cookies 中未包含 unb，尝试从 data 中提取兜底
+    if not cookies.get("unb"):
+        candidate_unb = str(
+            data.get("unb")
+            or data.get("userId")
+            or data.get("externalUid")
+            or ""
+        ).strip()
+        if candidate_unb:
+            cookies["unb"] = candidate_unb
+
+    return {"status": "confirmed", "cookies": cookies}
+
+
 def _poll_status(session: requests.Session, login_form: dict, timeout: int = SESSION_TIMEOUT) -> dict:
     """Step 4: 轮询扫码状态，阻塞直到完成或超时。"""
     start = time.time()
@@ -267,11 +353,7 @@ def _poll_status(session: requests.Session, login_form: dict, timeout: int = SES
         status = data["qrCodeStatus"]
 
         if status == "CONFIRMED":
-            if data.get("iframeRedirect"):
-                return {"status": "verification_required", "iframe_redirect_url": data.get("iframeRedirectUrl")}
-            # 收集关键 Cookie
-            cookies = {k: v for k, v in session.cookies.items()}
-            return {"status": "confirmed", "cookies": cookies}
+            return _process_confirmed_login(session, data)
         elif status == "EXPIRED":
             return {"status": "expired"}
         elif status == "SCANED":
@@ -292,10 +374,7 @@ def _poll_status_once(session: requests.Session, login_form: dict) -> dict:
         status = str(data["qrCodeStatus"] or "").upper()
 
         if status == "CONFIRMED":
-            if data.get("iframeRedirect"):
-                return {"status": "verification_required", "iframe_redirect_url": data.get("iframeRedirectUrl")}
-            cookies = {k: v for k, v in session.cookies.items()}
-            return {"status": "confirmed", "cookies": cookies}
+            return _process_confirmed_login(session, data)
         if status == "NEW":
             return {"status": "new"}
         if status == "SCANED":
@@ -319,10 +398,12 @@ def generate_qrcode(
     tenant_id: int = None,
     *,
     owner_key: str | None = None,
+    target_account_id: int | None = None,
 ) -> dict:
     """
     创建新的扫码登录会话，返回 sessionId 和 Base64 二维码图片。
     user_id/tenant_id: 当前登录用户的上下文，扫码成功后用于归属账号。
+    target_account_id: 若是重新扫码，指定需要更新凭据的目标账号ID。
     返回: {"sessionId": str, "qrImage": str (base64 data URI)}
     """
     _cleanup_expired()
@@ -358,6 +439,7 @@ def generate_qrcode(
         "created_at": created_at,
         "user_id": user_id,
         "tenant_id": tenant_id,
+        "target_account_id": target_account_id,
         "owner_key": normalized_owner,
         "operation_lock": threading.Lock(),
     }
@@ -570,6 +652,7 @@ def get_session_cookies(session_id: str) -> Optional[dict]:
             "m_h5_tk": cookies.get("_m_h5_tk", ""),
             "user_id": sdata.get("user_id"),
             "tenant_id": sdata.get("tenant_id"),
+            "target_account_id": sdata.get("target_account_id"),
         }
 
 

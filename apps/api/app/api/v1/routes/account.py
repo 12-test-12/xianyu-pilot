@@ -79,9 +79,13 @@ async def get_account_list(
     current_user: dict = Depends(get_current_user)
 ):
     try:
-        query = select(XianyuAccount, XianyuAccountMembership).outerjoin(
-            XianyuAccountMembership,
-            XianyuAccountMembership.account_id == XianyuAccount.id,
+        query = (
+            select(XianyuAccount, XianyuAccountMembership)
+            .outerjoin(
+                XianyuAccountMembership,
+                XianyuAccountMembership.account_id == XianyuAccount.id,
+            )
+            .where(XianyuAccount.deleted == 0)
         )
         result = await db.execute(query)
         rows = result.all()
@@ -106,37 +110,82 @@ async def add_account(
         if not unb:
             return ResultObject.failed("无法从Cookie中提取UNB信息")
         existing = await db.execute(
-            select(XianyuAccount).where(
-                XianyuAccount.external_uid == unb,
+            select(XianyuAccount)
+            .where(XianyuAccount.external_uid == unb)
+            .order_by(XianyuAccount.deleted.asc())
+            .limit(1)
+        )
+        account = existing.scalar_one_or_none()
+        if account:
+            if account.deleted == 0:
+                return ResultObject.failed("账号已存在")
+            account.deleted = 0
+            account.status = 1
+            if req.account_note is not None:
+                account.remark = req.account_note
+        else:
+            account = XianyuAccount(
+                external_uid=unb,
+                remark=req.account_note,
+                status=1
             )
-        )
-        if existing.scalar_one_or_none():
-            return ResultObject.failed("账号已存在")
+            db.add(account)
+            await db.commit()
+            await db.refresh(account)
 
-        account = XianyuAccount(
-            external_uid=unb,
-            remark=req.account_note,
-            status=1
-        )
-        db.add(account)
-        await db.commit()
-        await db.refresh(account)
+        m_h5_tk = extract_m_h5_tk_from_cookie(req.cookie)
+        encrypted_cookie = encrypt_cookie_for_storage(req.cookie)
+        encrypted_token = encrypt_cookie_for_storage(m_h5_tk) if m_h5_tk else None
 
-        auth = XianyuAccountAuth(
-            account_id=account.id,
-            encrypted_cookie=encrypt_cookie_for_storage(req.cookie),
-            encrypted_token=encrypt_cookie_for_storage(extract_m_h5_tk_from_cookie(req.cookie)) if extract_m_h5_tk_from_cookie(req.cookie) else None,
-            cookie_status=0,
-            last_login_status_code="COOKIE_UPDATED",
-            last_login_status_message="Cookie 已更新，等待统一登录校验",
+        auth_result = await db.execute(
+            select(XianyuAccountAuth)
+            .where(XianyuAccountAuth.account_id == account.id)
+            .order_by(XianyuAccountAuth.id.desc())
         )
-        db.add(auth)
-        db.add(XianyuAccountRuntime(
-            account_id=account.id,
-            cookie_status=0,
-            last_login_status_code="COOKIE_UPDATED",
-            last_login_status_message="Cookie 已更新，等待统一登录校验",
-        ))
+        auth_rows = auth_result.scalars().all()
+        if auth_rows:
+            existing_auth = auth_rows[0]
+            existing_auth.deleted = 0
+            existing_auth.encrypted_cookie = encrypted_cookie
+            if encrypted_token:
+                existing_auth.encrypted_token = encrypted_token
+            existing_auth.cookie_status = 0
+            existing_auth.last_login_status_code = "COOKIE_UPDATED"
+            existing_auth.last_login_status_message = "Cookie 已更新，等待统一登录校验"
+            for extra in auth_rows[1:]:
+                extra.deleted = 1
+        else:
+            auth = XianyuAccountAuth(
+                account_id=account.id,
+                encrypted_cookie=encrypted_cookie,
+                encrypted_token=encrypted_token,
+                cookie_status=0,
+                last_login_status_code="COOKIE_UPDATED",
+                last_login_status_message="Cookie 已更新，等待统一登录校验",
+            )
+            db.add(auth)
+
+        runtime_result = await db.execute(
+            select(XianyuAccountRuntime)
+            .where(XianyuAccountRuntime.account_id == account.id)
+            .order_by(XianyuAccountRuntime.id.desc())
+        )
+        runtime_rows = runtime_result.scalars().all()
+        if runtime_rows:
+            existing_runtime = runtime_rows[0]
+            existing_runtime.deleted = 0
+            existing_runtime.cookie_status = 0
+            existing_runtime.last_login_status_code = "COOKIE_UPDATED"
+            existing_runtime.last_login_status_message = "Cookie 已更新，等待统一登录校验"
+            for extra in runtime_rows[1:]:
+                extra.deleted = 1
+        else:
+            db.add(XianyuAccountRuntime(
+                account_id=account.id,
+                cookie_status=0,
+                last_login_status_code="COOKIE_UPDATED",
+                last_login_status_message="Cookie 已更新，等待统一登录校验",
+            ))
         await db.commit()
 
         return ResultObject.success(AddAccountRespDTO(
@@ -162,37 +211,82 @@ async def manual_add_account(
         if not unb:
             return ResultObject.failed("无法从Cookie中提取UNB信息")
         existing = await db.execute(
-            select(XianyuAccount).where(
-                XianyuAccount.external_uid == unb,
+            select(XianyuAccount)
+            .where(XianyuAccount.external_uid == unb)
+            .order_by(XianyuAccount.deleted.asc())
+            .limit(1)
+        )
+        account = existing.scalar_one_or_none()
+        if account:
+            if account.deleted == 0:
+                return ResultObject.failed("账号已存在")
+            account.deleted = 0
+            account.status = 1
+            if req.account_note is not None:
+                account.remark = req.account_note
+        else:
+            account = XianyuAccount(
+                external_uid=unb,
+                remark=req.account_note,
+                status=1
             )
-        )
-        if existing.scalar_one_or_none():
-            return ResultObject.failed("账号已存在")
+            db.add(account)
+            await db.commit()
+            await db.refresh(account)
 
-        account = XianyuAccount(
-            external_uid=unb,
-            remark=req.account_note,
-            status=1
-        )
-        db.add(account)
-        await db.commit()
-        await db.refresh(account)
+        m_h5_tk = extract_m_h5_tk_from_cookie(req.cookie)
+        encrypted_cookie = encrypt_cookie_for_storage(req.cookie)
+        encrypted_token = encrypt_cookie_for_storage(m_h5_tk) if m_h5_tk else None
 
-        auth = XianyuAccountAuth(
-            account_id=account.id,
-            encrypted_cookie=encrypt_cookie_for_storage(req.cookie),
-            encrypted_token=encrypt_cookie_for_storage(extract_m_h5_tk_from_cookie(req.cookie)) if extract_m_h5_tk_from_cookie(req.cookie) else None,
-            cookie_status=0,
-            last_login_status_code="COOKIE_UPDATED",
-            last_login_status_message="Cookie 已更新，等待统一登录校验",
+        auth_result = await db.execute(
+            select(XianyuAccountAuth)
+            .where(XianyuAccountAuth.account_id == account.id)
+            .order_by(XianyuAccountAuth.id.desc())
         )
-        db.add(auth)
-        db.add(XianyuAccountRuntime(
-            account_id=account.id,
-            cookie_status=0,
-            last_login_status_code="COOKIE_UPDATED",
-            last_login_status_message="Cookie 已更新，等待统一登录校验",
-        ))
+        auth_rows = auth_result.scalars().all()
+        if auth_rows:
+            existing_auth = auth_rows[0]
+            existing_auth.deleted = 0
+            existing_auth.encrypted_cookie = encrypted_cookie
+            if encrypted_token:
+                existing_auth.encrypted_token = encrypted_token
+            existing_auth.cookie_status = 0
+            existing_auth.last_login_status_code = "COOKIE_UPDATED"
+            existing_auth.last_login_status_message = "Cookie 已更新，等待统一登录校验"
+            for extra in auth_rows[1:]:
+                extra.deleted = 1
+        else:
+            auth = XianyuAccountAuth(
+                account_id=account.id,
+                encrypted_cookie=encrypted_cookie,
+                encrypted_token=encrypted_token,
+                cookie_status=0,
+                last_login_status_code="COOKIE_UPDATED",
+                last_login_status_message="Cookie 已更新，等待统一登录校验",
+            )
+            db.add(auth)
+
+        runtime_result = await db.execute(
+            select(XianyuAccountRuntime)
+            .where(XianyuAccountRuntime.account_id == account.id)
+            .order_by(XianyuAccountRuntime.id.desc())
+        )
+        runtime_rows = runtime_result.scalars().all()
+        if runtime_rows:
+            existing_runtime = runtime_rows[0]
+            existing_runtime.deleted = 0
+            existing_runtime.cookie_status = 0
+            existing_runtime.last_login_status_code = "COOKIE_UPDATED"
+            existing_runtime.last_login_status_message = "Cookie 已更新，等待统一登录校验"
+            for extra in runtime_rows[1:]:
+                extra.deleted = 1
+        else:
+            db.add(XianyuAccountRuntime(
+                account_id=account.id,
+                cookie_status=0,
+                last_login_status_code="COOKIE_UPDATED",
+                last_login_status_message="Cookie 已更新，等待统一登录校验",
+            ))
         await db.commit()
 
         return ResultObject.success(AddAccountRespDTO(
@@ -214,6 +308,7 @@ async def update_account(
         result = await db.execute(
             select(XianyuAccount).where(
                 XianyuAccount.id == req.account_id,
+                XianyuAccount.deleted == 0,
             )
         )
         account = result.scalar_one_or_none()
@@ -237,22 +332,37 @@ async def delete_account(
     current_user: dict = Depends(get_current_user)
 ):
     try:
+        from sqlalchemy import update
         result = await db.execute(
             select(XianyuAccount).where(
                 XianyuAccount.id == req.account_id,
+                XianyuAccount.deleted == 0,
             )
         )
         account = result.scalar_one_or_none()
         if not account:
             return ResultObject.failed("账号不存在")
 
-        # 删除关联的认证信息
+        # 停止可能正在运行的 WS 客户端
+        try:
+            from ....services.ws_client import ws_manager
+            await ws_manager.stop_client(req.account_id)
+        except Exception:
+            pass
+
+        # 软删除账号及其关联状态
+        account.deleted = 1
+        account.status = 0
         await db.execute(
-            XianyuAccountAuth.__table__.delete().where(
-                XianyuAccountAuth.account_id == req.account_id
-            )
+            update(XianyuAccountAuth)
+            .where(XianyuAccountAuth.account_id == req.account_id)
+            .values(deleted=1)
         )
-        await db.delete(account)
+        await db.execute(
+            update(XianyuAccountRuntime)
+            .where(XianyuAccountRuntime.account_id == req.account_id)
+            .values(deleted=1, online_status=0, ws_status=0)
+        )
         await db.commit()
         return ResultObject.success(DeleteAccountRespDTO(message="删除成功"))
     except Exception as e:
@@ -273,7 +383,10 @@ async def get_account_detail(
                 XianyuAccountMembership,
                 XianyuAccountMembership.account_id == XianyuAccount.id,
             )
-            .where(XianyuAccount.id == req.account_id)
+            .where(
+                XianyuAccount.id == req.account_id,
+                XianyuAccount.deleted == 0,
+            )
         )
         row = result.first()
         if not row:
@@ -295,6 +408,7 @@ async def refresh_account_profile(
         result = await db.execute(
             select(XianyuAccount).where(
                 XianyuAccount.id == req.account_id,
+                XianyuAccount.deleted == 0,
             )
         )
         account = result.scalar_one_or_none()

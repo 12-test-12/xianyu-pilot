@@ -1822,10 +1822,13 @@ async def compat_xianyu_accounts_create(
     encrypted_token = encrypt_cookie_for_storage(m_h5_tk) if m_h5_tk else None
 
     auth_result = await db.execute(
-        select(XianyuAccountAuth).where(XianyuAccountAuth.account_id == account.id)
+        select(XianyuAccountAuth)
+        .where(XianyuAccountAuth.account_id == account.id)
+        .order_by(XianyuAccountAuth.id.desc())
     )
-    existing_auth = auth_result.scalar_one_or_none()
-    if existing_auth:
+    auth_rows = auth_result.scalars().all()
+    if auth_rows:
+        existing_auth = auth_rows[0]
         existing_auth.deleted = 0
         existing_auth.encrypted_cookie = encrypted_cookie
         if encrypted_token:
@@ -1833,6 +1836,8 @@ async def compat_xianyu_accounts_create(
         existing_auth.cookie_status = 0
         existing_auth.last_login_status_code = "COOKIE_UPDATED"
         existing_auth.last_login_status_message = "Cookie 已更新，等待统一登录校验"
+        for extra in auth_rows[1:]:
+            extra.deleted = 1
     else:
         auth = XianyuAccountAuth(
             account_id=account.id,
@@ -1845,14 +1850,19 @@ async def compat_xianyu_accounts_create(
         db.add(auth)
 
     runtime_result = await db.execute(
-        select(XianyuAccountRuntime).where(XianyuAccountRuntime.account_id == account.id)
+        select(XianyuAccountRuntime)
+        .where(XianyuAccountRuntime.account_id == account.id)
+        .order_by(XianyuAccountRuntime.id.desc())
     )
-    existing_runtime = runtime_result.scalar_one_or_none()
-    if existing_runtime:
+    runtime_rows = runtime_result.scalars().all()
+    if runtime_rows:
+        existing_runtime = runtime_rows[0]
         existing_runtime.deleted = 0
         existing_runtime.cookie_status = 0
         existing_runtime.last_login_status_code = "COOKIE_UPDATED"
         existing_runtime.last_login_status_message = "Cookie 已更新，等待统一登录校验"
+        for extra in runtime_rows[1:]:
+            extra.deleted = 1
     else:
         db.add(XianyuAccountRuntime(
             account_id=account.id,
@@ -2077,10 +2087,22 @@ async def compat_xianyu_accounts_delete(
     """Compat: DELETE /xianyu/accounts/{id} -> forward to /account/delete (POST)"""
     from ....models.entities import XianyuAccount, XianyuAccountAuth, XianyuAccountRuntime
     from sqlalchemy import update
-    result = await db.execute(select(XianyuAccount).where(XianyuAccount.id == account_id))
+    result = await db.execute(
+        select(XianyuAccount).where(
+            XianyuAccount.id == account_id,
+            XianyuAccount.deleted == 0,
+        )
+    )
     account = result.scalar_one_or_none()
     if not account:
         return ResultObject.failed("账号不存在", code=404)
+
+    # 停止可能正在运行的 WS 客户端
+    try:
+        from ....services.ws_client import ws_manager
+        await ws_manager.stop_client(account_id)
+    except Exception:
+        pass
 
     account.deleted = 1
     account.status = 0

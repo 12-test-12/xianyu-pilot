@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 from uuid import uuid4
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query, Body
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import func, select, text
 from ....core.background_tasks import spawn_background_task
@@ -553,7 +553,12 @@ async def _resolve_outbound_image_url(
         raise ValueError(url_error)
     return normalized
 
-async def _save_scan_login_result(session_id: str, db: AsyncSession) -> dict:
+async def _save_scan_login_result(
+    session_id: str,
+    db: AsyncSession,
+    *,
+    target_account_id: int | None = None,
+) -> dict:
     """保存扫码登录成功后获取到的 Cookie 到数据库。
 
     从扫码登录会话中提取 Cookie 数据，创建或更新 XianyuAccount 和 XianyuAccountAuth 记录。
@@ -568,45 +573,74 @@ async def _save_scan_login_result(session_id: str, db: AsyncSession) -> dict:
         unb = session_data.get("unb", "")
         m_h5_tk = session_data.get("m_h5_tk", "")
         user_id = session_data.get("user_id")
+
+        effective_target_id = target_account_id or session_data.get("target_account_id")
+        if not unb and effective_target_id:
+            # 尝试从目标账号读取已有 external_uid 兜底
+            acc_uid_row = await db.execute(
+                select(XianyuAccount.external_uid).where(XianyuAccount.id == effective_target_id)
+            )
+            existing_uid = acc_uid_row.scalar_one_or_none()
+            if existing_uid:
+                unb = str(existing_uid)
+
         if not unb:
             return {"_error": "NO_UNB", "message": "Cookie 中未提取到 unb"}
-        # 检查账号是否已存在（包含软删除的记录）
-        # 先查所有记录（含 deleted=1），避免因唯一约束导致插入失败
-        result = await db.execute(
-            select(XianyuAccount).where(
-                XianyuAccount.external_uid == unb,
-            ).order_by(XianyuAccount.deleted.asc()).limit(1)
-        )
-        existing_account = result.scalar_one_or_none()
 
-        if existing_account:
-            account = existing_account
-            if existing_account.deleted == 1:
-                # 恢复软删除的账号
-                existing_account.deleted = 0
-                existing_account.status = 1
-                logger.info(
-                    "QR account persistence accountId=%d state=restored",
-                    account.id,
-                )
-            else:
-                logger.info(
-                    "QR account persistence accountId=%d state=existing",
-                    account.id,
-                )
-        else:
-            account = XianyuAccount(
-                platform="xianyu",
-                external_uid=unb,
-                status=1,
+        account = None
+        if effective_target_id:
+            acc_result = await db.execute(
+                select(XianyuAccount).where(XianyuAccount.id == effective_target_id)
             )
-            db.add(account)
-            await db.commit()
-            await db.refresh(account)
+            account = acc_result.scalar_one_or_none()
+
+        if account:
+            account.deleted = 0
+            account.status = 1
+            if unb and (not account.external_uid or account.external_uid != unb):
+                account.external_uid = unb
             logger.info(
-                "QR account persistence accountId=%d state=created",
+                "QR account persistence accountId=%d state=updated_target",
                 account.id,
             )
+        else:
+            # 检查账号是否已存在（包含软删除的记录）
+            # 先查所有记录（含 deleted=1），避免因唯一约束导致插入失败
+            result = await db.execute(
+                select(XianyuAccount).where(
+                    XianyuAccount.external_uid == unb,
+                ).order_by(XianyuAccount.deleted.asc()).limit(1)
+            )
+            existing_account = result.scalar_one_or_none()
+
+            if existing_account:
+                account = existing_account
+                if existing_account.deleted == 1:
+                    # 恢复软删除的账号
+                    existing_account.deleted = 0
+                    existing_account.status = 1
+                    logger.info(
+                        "QR account persistence accountId=%d state=restored",
+                        account.id,
+                    )
+                else:
+                    logger.info(
+                        "QR account persistence accountId=%d state=existing",
+                        account.id,
+                    )
+            else:
+                account = XianyuAccount(
+                    platform="xianyu",
+                    external_uid=unb,
+                    status=1,
+                )
+                db.add(account)
+                await db.commit()
+                await db.refresh(account)
+                logger.info(
+                    "QR account persistence accountId=%d state=created",
+                    account.id,
+                )
 
         # 加密并保存 Cookie
         encrypted_cookie = encrypt_cookie_for_storage(cookie_text)
@@ -614,13 +648,14 @@ async def _save_scan_login_result(session_id: str, db: AsyncSession) -> dict:
 
         # 检查 auth 记录是否已存在
         auth_result = await db.execute(
-            select(XianyuAccountAuth).where(
-                XianyuAccountAuth.account_id == account.id,
-            )
+            select(XianyuAccountAuth)
+            .where(XianyuAccountAuth.account_id == account.id)
+            .order_by(XianyuAccountAuth.id.desc())
         )
-        existing_auth = auth_result.scalar_one_or_none()
+        auth_rows = auth_result.scalars().all()
 
-        if existing_auth:
+        if auth_rows:
+            existing_auth = auth_rows[0]
             existing_auth.deleted = 0
             existing_auth.encrypted_cookie = encrypted_cookie
             if encrypted_token:
@@ -629,6 +664,8 @@ async def _save_scan_login_result(session_id: str, db: AsyncSession) -> dict:
             existing_auth.last_login_status_code = "OK"
             existing_auth.last_login_status_message = "账号登录状态正常"
             existing_auth.last_login_check_time = func.now()
+            for extra in auth_rows[1:]:
+                extra.deleted = 1
         else:
             auth = XianyuAccountAuth(
                 account_id=account.id,
@@ -642,17 +679,20 @@ async def _save_scan_login_result(session_id: str, db: AsyncSession) -> dict:
             db.add(auth)
 
         runtime_result = await db.execute(
-            select(XianyuAccountRuntime).where(
-                XianyuAccountRuntime.account_id == account.id,
-            )
+            select(XianyuAccountRuntime)
+            .where(XianyuAccountRuntime.account_id == account.id)
+            .order_by(XianyuAccountRuntime.id.desc())
         )
-        existing_runtime = runtime_result.scalar_one_or_none()
-        if existing_runtime:
+        runtime_rows = runtime_result.scalars().all()
+        if runtime_rows:
+            existing_runtime = runtime_rows[0]
             existing_runtime.deleted = 0
             existing_runtime.cookie_status = 1
             existing_runtime.last_login_status_code = "OK"
             existing_runtime.last_login_status_message = "账号登录状态正常"
             existing_runtime.last_login_check_time = func.now()
+            for extra in runtime_rows[1:]:
+                extra.deleted = 1
         else:
             db.add(XianyuAccountRuntime(
                 account_id=account.id,
@@ -673,6 +713,9 @@ async def _save_scan_login_result(session_id: str, db: AsyncSession) -> dict:
             "account_id": account.id,
             "cookie_status": 1,
             "expire_time": None,
+            "auth_usable": True,
+            "login_status_code": "OK",
+            "login_status_message": "账号登录状态正常",
         }
     except Exception as exc:
         logger.error(
@@ -736,14 +779,22 @@ async def _require_qr_session_owner(
 
 @qrlogin_router.post("/generate")
 async def qrlogin_generate(
+    payload: dict = Body(default={}),
     current_user: dict = Depends(get_current_user)
 ):
     try:
         user_id = current_user.get("user_id")
+        target_account_id = payload.get("accountId") or payload.get("account_id")
+        if target_account_id is not None:
+            try:
+                target_account_id = int(target_account_id)
+            except (ValueError, TypeError):
+                target_account_id = None
         result = await asyncio.to_thread(
             generate_qrcode,
             user_id=user_id,
             owner_key=_qr_owner_key(current_user),
+            target_account_id=target_account_id,
         )
         if "qrImage" in result and "qrCodeBase64" not in result:
             result["qrCodeBase64"] = result["qrImage"]
@@ -767,6 +818,7 @@ async def qrlogin_generate(
 @qrlogin_router.post("/status/{session_id}")
 async def qrlogin_status(
     session_id: str,
+    payload: dict = Body(default={}),
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
@@ -774,6 +826,13 @@ async def qrlogin_status(
         ctx = await _require_qr_session_owner(session_id, current_user)
         if ctx is None:
             return ResultObject.success({"status": "expired", "message": "会话不存在或已过期"})
+
+        target_account_id = payload.get("accountId") or payload.get("account_id")
+        if target_account_id is not None:
+            try:
+                target_account_id = int(target_account_id)
+            except (ValueError, TypeError):
+                target_account_id = None
 
         async with _qr_status_lock(session_id):
             # The session may have been replaced while this request waited.
@@ -785,17 +844,20 @@ async def qrlogin_status(
 
             result = await asyncio.to_thread(get_session_status, session_id)
             logger.info(
-                "QR status poll sessionId=%s status=%s persisted=%s accountId=%s",
+                "QR status poll sessionId=%s status=%s persisted=%s accountId=%s targetAccountId=%s",
                 session_id[:12],
                 result.get("status"),
                 result.get("persisted"),
                 result.get("accountId"),
+                target_account_id,
             )
             # A successful persistence receipt is replayed directly. Keeping
             # the confirmed session until TTL makes lost-response retries
             # idempotent without ever returning raw cookies to the browser.
             if result.get("status") == "confirmed" and not result.get("persisted"):
-                save_result = await _save_scan_login_result(session_id, db)
+                save_result = await _save_scan_login_result(
+                    session_id, db, target_account_id=target_account_id
+                )
                 logger.info(
                     "QR save_result sessionId=%s error=%s account_id=%s",
                     session_id[:12],
@@ -810,9 +872,12 @@ async def qrlogin_status(
 
                 persistence_result = {
                     "accountId": save_result.get("account_id"),
-                    "cookieStatus": save_result.get("cookie_status"),
+                    "cookieStatus": save_result.get("cookie_status", 1),
                     "expireTime": save_result.get("expire_time"),
-                    "message": "扫码登录成功，账号已保存",
+                    "authUsable": True,
+                    "loginStatusCode": "OK",
+                    "loginStatusMessage": "账号登录状态正常",
+                    "message": "账号 Cookie 已更新" if target_account_id else "扫码登录成功，账号已保存",
                     "persisted": True,
                 }
                 result.update(persistence_result)
