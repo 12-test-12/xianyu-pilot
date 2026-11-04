@@ -3683,20 +3683,37 @@ button:focus-visible {
   transform: translateY(-4px);
 }
 
-.page-fade-enter-active,
-.page-fade-leave-active {
-  transition: opacity 0.12s ease;
+/* The native window can be narrower than the mobile breakpoint. */
+@media (max-width: 900px) {
+  .desktop-host {
+    --sidebar: 210px;
+  }
+
+  .desktop-host .sidebar {
+    width: var(--sidebar);
+    max-width: none;
+    transform: none;
+    transition: none;
+    backdrop-filter: none;
+  }
+
+  .desktop-host .sidebar-close,
+  .desktop-host .sidebar-logout {
+    display: none;
+  }
+
+  .desktop-host .main {
+    margin-left: var(--sidebar);
+    width: calc(100% - var(--sidebar));
+    padding: 64px 18px 24px;
+  }
+
+  .desktop-host .topbar {
+    display: flex;
+  }
 }
 
-.page-fade-enter-from {
-  opacity: 0.85;
-}
-
-.page-fade-leave-to {
-  opacity: 1;
-}
-
-/* Polished skeleton placeholder for delayed page loads (>240ms) */
+/* Visible fallback for initial loads or a stalled destination module. */
 .page-skeleton-placeholder {
   display: flex;
   flex-direction: column;
@@ -3762,17 +3779,11 @@ button:focus-visible {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .page-fade-enter-active,
-  .page-fade-leave-active,
   .modal-fade-enter-active,
   .modal-fade-leave-active,
   .notice-fade-enter-active,
   .notice-fade-leave-active {
     transition: none;
-  }
-  .page-fade-enter-from,
-  .page-fade-leave-to {
-    transform: none;
   }
   .nav-top-progress {
     animation: none;

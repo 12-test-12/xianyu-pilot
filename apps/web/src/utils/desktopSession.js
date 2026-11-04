@@ -14,5 +14,6 @@ export async function initializeDesktopSession() {
   const result = await response.json()
   if (result.code !== 200 || !result.data?.token) throw new Error('本地会话返回异常')
   setAuth(result.data.token, result.data.username)
+  document.documentElement.classList.add('desktop-host')
   marker.remove()
 }

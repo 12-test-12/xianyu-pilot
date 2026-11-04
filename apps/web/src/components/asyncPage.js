@@ -52,7 +52,7 @@ export const asyncPage = loader => {
     loader: load,
     loadingComponent: LoadingSkeleton,
     errorComponent: ErrorPage,
-    delay: 240, // 避免瞬时加载（已预加载或缓存中）时的闪烁与白页
+    delay: 0,
     timeout: 30000,
     onError(_error, retry, fail, attempts) {
       if (navigator.onLine !== false && attempts < 2) {

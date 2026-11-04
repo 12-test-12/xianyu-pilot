@@ -59,16 +59,15 @@
         </div>
       </PageHeader>
       <div class="page-viewport">
-        <Transition name="page-fade" mode="out-in" @after-enter="onAfterPageEnter">
-          <component
-            :is="pageComponent"
-            :key="pageTransitionKey"
-            :active="active"
-            :user="currentUserInfo"
-            :requested-route="requestedRoute"
-            @navigate="navigate"
-          />
-        </Transition>
+        <component
+          :is="pageComponent"
+          :key="pageTransitionKey"
+          :active="active"
+          :user="currentUserInfo"
+          :requested-route="requestedRoute"
+          @navigate="navigate"
+          @prefetch="prefetchRoute"
+        />
       </div>
     </main>
   </div>
@@ -96,6 +95,7 @@ import DraftGuardModal from './components/DraftGuardModal.vue'
 import AppStatusCenter from './components/AppStatusCenter.vue'
 import NotFoundPage from './pages/NotFoundPage.vue'
 import { pageTitles } from './data/nav.js'
+import { settingsPages } from './data/settingsPages.js'
 import { logout as logoutApi } from './api/auth.js'
 import { currentUser } from './api/system.js'
 import { clearAuth, getCachedUsername, getToken, isAuthed, setAuth } from './utils/auth.js'
@@ -143,15 +143,7 @@ const pageMap = {
   profile: asyncPage(() => import('./pages/ProfileCenterPage.vue'))
 }
 
-const settingsKeys = [
-  'settings-ai-cs',
-  'settings-system',
-  'settings-model',
-  'settings-embedding',
-  'settings-rag',
-  'settings-product',
-  'settings-about'
-]
+const settingsKeys = Object.keys(settingsPages)
 const authPages = ['login']
 const defaultPage = DEFAULT_PAGE
 const mobileLitePages = new Set([
@@ -276,9 +268,7 @@ function onOnline() {
 function prefetchRoute(key) {
   if (!key || key === active.value) return
   const comp = settingsKeys.includes(key) ? SettingsPage : pageMap[key]
-  if (comp?.prefetch) {
-    comp.prefetch().catch(() => {})
-  }
+  return Promise.all([prefetchPage(comp), prefetchPage(settingsPages[key])])
 }
 
 async function navigate(key, options = {}) {
@@ -296,17 +286,16 @@ async function navigate(key, options = {}) {
   }
 
   const currentNavSeq = ++navSequence
-  const targetComp = settingsKeys.includes(next) ? SettingsPage : pageMap[next]
   if (navProgressTimer) clearTimeout(navProgressTimer)
   navProgressTimer = null
 
-  // 在卸载旧页面前先预先拉取目标组件代码，保持当前页面可见，彻底消除切换时的白屏与闪烁
-  if (targetComp?.prefetch && active.value !== next) {
+  // Keep the visible page until both the destination shell and content are ready.
+  if (active.value !== next) {
     navProgressTimer = setTimeout(() => {
       if (currentNavSeq === navSequence) navTransitioning.value = true
     }, 70)
 
-    await prefetchPage(targetComp)
+    await prefetchRoute(next)
     if (currentNavSeq !== navSequence) return
   }
 
@@ -314,9 +303,9 @@ async function navigate(key, options = {}) {
   if (!options.preserveHash) location.hash = `#/${encodeURIComponent(requested)}`
   active.value = next
 
-  setTimeout(() => {
-    if (currentNavSeq === navSequence) navTransitioning.value = false
-  }, 320)
+  if (navProgressTimer) clearTimeout(navProgressTimer)
+  navProgressTimer = null
+  navTransitioning.value = false
 }
 
 function onSidebarNavigate(key) {
@@ -406,6 +395,7 @@ async function onHash() {
 }
 
 watch(active, clearRequestNoticeForRoute)
+watch(active, () => window.scrollTo({ top: 0, left: 0, behavior: 'instant' }), { flush: 'post' })
 
 async function loadCurrentUser() {
   if (!getToken()) return
@@ -471,10 +461,7 @@ function scheduleIdlePagePrefetch() {
   function step() {
     if (prefetchQueue.length === 0) return
     const nextKey = prefetchQueue.shift()
-    const comp = settingsKeys.includes(nextKey) ? SettingsPage : pageMap[nextKey]
-    if (comp?.prefetch) {
-      comp.prefetch().catch(() => {})
-    }
+    prefetchRoute(nextKey)
     idle(step, { timeout: 2000 })
   }
 
@@ -545,7 +532,8 @@ function onSseEventForSound(event) {
 
 function updateMobileState() {
   const ua = navigator.userAgent || ''
-  isMobile.value = window.matchMedia?.('(max-width: 900px)').matches || /Mobi|Android|iPhone|iPad|iPod/i.test(ua)
+  isMobile.value = !document.documentElement.classList.contains('desktop-host') &&
+    (window.matchMedia?.('(max-width: 900px)').matches || /Mobi|Android|iPhone|iPad|iPod/i.test(ua))
 }
 
 onMounted(() => {
@@ -589,12 +577,6 @@ const pageTransitionKey = computed(() => {
   if (settingsKeys.includes(active.value)) return 'settings-shell'
   return active.value
 })
-
-function onAfterPageEnter() {
-  navTransitioning.value = false
-  if (navProgressTimer) clearTimeout(navProgressTimer)
-  window.scrollTo({ top: 0, left: 0, behavior: 'instant' })
-}
 
 const pageComponent = computed(() => {
   if (active.value === NOT_FOUND_PAGE) return NotFoundPage

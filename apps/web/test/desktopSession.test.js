@@ -13,7 +13,11 @@ test('server pages retain login flow; desktop exchanges its bootstrap capability
     globalThis.fetch = () => assert.fail('ordinary server startup must not request a desktop session')
     await initializeDesktopSession()
     let removed = false
-    globalThis.document = { querySelector: () => ({ content: 'fixture-bootstrap', remove() { removed = true } }) }
+    const classes = new Set()
+    globalThis.document = {
+      querySelector: () => ({ content: 'fixture-bootstrap', remove() { removed = true } }),
+      documentElement: { classList: { add: name => classes.add(name) } },
+    }
     globalThis.fetch = async (url, options) => {
       assert.equal(url, '/api/desktop/session')
       assert.equal(options.headers['X-Desktop-Bootstrap'], 'fixture-bootstrap')
@@ -22,6 +26,7 @@ test('server pages retain login flow; desktop exchanges its bootstrap capability
     await initializeDesktopSession()
     assert.equal(getToken(), 'fixture-session')
     assert.equal(removed, true)
+    assert.equal(classes.has('desktop-host'), true)
     clearAuth()
   } finally { Object.assign(globalThis, previous) }
 })
