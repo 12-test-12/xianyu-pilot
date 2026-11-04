@@ -32,6 +32,9 @@ LOGIN_URL = (
 GOOFISH_HOME = "https://www.goofish.com/"
 QR_READY_TIMEOUT = 60  # 包含浏览器启动、页面加载和二维码绘制（秒）
 POLL_INTERVAL = 1.0
+# 两处过期路径与桌面登录窗口共用同一文案，避免只改一边。
+TIMEOUT_ERROR = "登录或安全验证超时，请重新生成二维码。"
+QR_EXPIRED_ERROR = "二维码已过期，请重新生成。"
 
 _EXPIRED_WORDS = ("二维码已失效", "二维码已过期", "二维码失效", "二维码过期")
 _SCANNED_WORDS = ("扫码成功", "扫描成功", "已扫码", "请在手机")
@@ -264,7 +267,7 @@ class QrLoginWorker:
                     self._set(status="new", qr_image=image)
                     while not self._cancel.is_set():
                         if time.monotonic() >= deadline:
-                            self._set(status="expired", error="登录或安全验证超时，请重新生成二维码。")
+                            self._set(status="expired", error=TIMEOUT_ERROR)
                             return
                         # 验证期间保留同一浏览器上下文，不能跳首页打断验证。
                         if needs_verification(context):
@@ -318,7 +321,7 @@ class QrLoginWorker:
                             if panel.count():
                                 status = classify_qr_panel(panel.first.inner_text())
                                 if status == "expired":
-                                    self._set(status="expired")
+                                    self._set(status="expired", error=QR_EXPIRED_ERROR)
                                     return
                                 if status == "scaned":
                                     self._set(status="scaned")

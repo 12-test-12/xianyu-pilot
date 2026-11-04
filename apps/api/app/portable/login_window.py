@@ -10,6 +10,7 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 
 from app.core.qr_login_browser import (
     QrLoginWorker, LOGIN_URL, GOOFISH_HOME, _VERIFICATION_WORDS,
+    TIMEOUT_ERROR, QR_EXPIRED_ERROR,
     has_login_cookies, login_cookie_jar, classify_qr_panel,
 )
 
@@ -181,7 +182,7 @@ class LoginWindow(QDialog):
             self.close()
             return
         if time.monotonic() >= self.deadline:
-            self.worker._set(status="expired", error="登录或安全验证超时，请重新生成二维码。")
+            self.worker._set(status="expired", error=TIMEOUT_ERROR)
             self.close()
             return
         if self.checking:
@@ -217,7 +218,7 @@ class LoginWindow(QDialog):
             self.worker._set(status="scaned")
         status = classify_qr_panel(data.get("text", ""))
         if status == "expired" and not self.visiting_home:
-            self.worker._set(status="expired", error="二维码已过期，请重新生成。")
+            self.worker._set(status="expired", error=QR_EXPIRED_ERROR)
             self.close()
             return
         if status == "scaned":

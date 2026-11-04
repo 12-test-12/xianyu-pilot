@@ -109,6 +109,20 @@ def test_verification_status_can_resume_and_persist_account(console):
     assert "private-cookie" not in response.text
 
 
+def test_expired_session_replays_worker_error_message(console):
+    """worker 的过期原因必须随终止态回放给前端，否则界面只剩过期前的旧提示。"""
+    from app.core.xianyu_qr_login import _sessions
+    client, config, app = console
+    with patch("app.core.xianyu_qr_login._create_worker", _FakeWorker):
+        sid = client.post("/api/qrlogin/generate", json={}).json()["data"]["sessionId"]
+    worker = _sessions[sid]["worker"]
+    worker.status = "expired"
+    worker.error = "登录或安全验证超时，请重新生成二维码。"
+    data = client.post(f"/api/qrlogin/status/{sid}", json={}).json()["data"]
+    assert data["status"] == "expired"
+    assert data["message"] == "登录或安全验证超时，请重新生成二维码。"
+
+
 def test_rescan_updates_existing_account_credentials_and_recovers_cookie(console):
     """Test rescan flow: updating an existing account's cookie when it became expired."""
     client, config, app = console
