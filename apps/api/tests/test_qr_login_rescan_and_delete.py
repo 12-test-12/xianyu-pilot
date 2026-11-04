@@ -1,22 +1,51 @@
 """Tests for QR login, rescan cookie recovery, and soft-delete/re-add consistency."""
-import json
 from pathlib import Path
 import re
 import sqlite3
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from app.core.config import Settings
 from app.desktop_app import create_desktop_app
 from app.core.xianyu_qr_login import (
-    _process_confirmed_login,
     generate_qrcode,
     get_session_status,
     get_session_cookies,
     cleanup_all,
 )
 from app.core.cookie_crypto import encrypt_cookie_for_storage, decrypt_cookie_if_needed
+
+
+class _FakeWorker:
+    """替身浏览器会话：generate_qrcode 只依赖 start/wait_qr_ready/snapshot。"""
+
+    def __init__(self, *, timeout=300):
+        self.status = "new"
+        self.qr_image = "data:image/png;base64,mock"
+        self.cookies = None
+        self.error = None
+        self.cancelled = False
+
+    def start(self):
+        return self
+
+    def cancel(self):
+        self.cancelled = True
+
+    def join(self, timeout=None):
+        return None
+
+    def snapshot(self):
+        return {
+            "status": self.status,
+            "qr_image": self.qr_image,
+            "cookies": self.cookies,
+            "error": self.error,
+        }
+
+    def wait_qr_ready(self, timeout=None):
+        return self.qr_image
 
 
 @pytest.fixture
@@ -42,97 +71,9 @@ def console(tmp_path, monkeypatch):
     cleanup_all()
 
 
-def test_process_confirmed_login_exchanges_token_and_extracts_unb():
-    """Verify that _process_confirmed_login calls login_token/login.do and gathers session cookies including unb."""
-    session = MagicMock()
-    # Mock cookies on requests session
-    c1 = MagicMock()
-    c1.name = "unb"
-    c1.value = "3344556677"
-    c2 = MagicMock()
-    c2.name = "_m_h5_tk"
-    c2.value = "tk_val_123_456"
-    c3 = MagicMock()
-    c3.name = "cookie2"
-    c3.value = "cookie2_val"
-    jar = MagicMock()
-    jar.__iter__.return_value = iter([c1, c2, c3])
-    jar.get.side_effect = lambda k, default="": {"cna": "test_cna", "unb": "3344556677"}.get(k, default)
-    session.cookies = jar
-
-    login_post_resp = MagicMock()
-    login_post_resp.status_code = 200
-    login_post_resp.json.return_value = {"content": {"data": {}}}
-    session.post.return_value = login_post_resp
-
-    data = {
-        "qrCodeStatus": "CONFIRMED",
-        "token": "mock_login_token_xyz",
-    }
-
-    with patch("app.core.xianyu_qr_login._get_m_h5_tk") as mock_get_tk:
-        result = _process_confirmed_login(session, data)
-
-    assert result["status"] == "confirmed"
-    assert result["cookies"]["unb"] == "3344556677"
-    assert result["cookies"]["_m_h5_tk"] == "tk_val_123_456"
-    assert result["cookies"]["cookie2"] == "cookie2_val"
-    session.post.assert_called_once()
-    assert "mock_login_token_xyz" in session.post.call_args[1]["params"]["token"]
-
-
-def test_process_confirmed_login_handles_verification_required():
-    """Verify that iframeRedirect returns verification_required status."""
-    session = MagicMock()
-    data = {
-        "qrCodeStatus": "CONFIRMED",
-        "iframeRedirect": True,
-        "iframeRedirectUrl": "https://passport.goofish.com/verify_iframe.htm",
-    }
-    result = _process_confirmed_login(session, data)
-    assert result["status"] == "verification_required"
-    assert "https://passport.goofish.com/verify_iframe.htm" in result["iframe_redirect_url"]
-
-
-def test_process_confirmed_login_follows_iframe_and_completes_with_cookies():
-    """iframeRedirect 不再短路：跟随 URL 后继续归集，凭据齐备时正常 confirmed。
-
-    真实环境中闲鱼确认响应常带 iframeRedirect（跨域 Cookie 回收步骤），
-    此前直接终止导致保存账号永远不执行（桌面端 15 个会话全部卡死）。
-    """
-    session = MagicMock()
-    c1 = MagicMock()
-    c1.name = "unb"
-    c1.value = "5566778899"
-    jar = MagicMock()
-    jar.__iter__.return_value = iter([c1])
-    jar.get.side_effect = lambda k, default="": {"unb": "5566778899"}.get(k, default)
-    session.cookies = jar
-
-    iframe_url = "https://passport.goofish.com/iframe_done.htm"
-    data = {
-        "qrCodeStatus": "CONFIRMED",
-        "iframeRedirect": True,
-        "iframeRedirectUrl": iframe_url,
-    }
-    with patch("app.core.xianyu_qr_login._get_m_h5_tk"):
-        result = _process_confirmed_login(session, data)
-
-    assert result["status"] == "confirmed"
-    assert result["cookies"]["unb"] == "5566778899"
-    followed = [
-        call.args[0]
-        for call in session.get.call_args_list
-        if call.args
-    ]
-    assert iframe_url in followed
-
-
 def test_generate_qrcode_accepts_target_account_id():
     """Verify that generate_qrcode records target_account_id for rescan mode."""
-    with patch("app.core.xianyu_qr_login._get_m_h5_tk"), \
-         patch("app.core.xianyu_qr_login._get_login_params", return_value={"t": "1"}), \
-         patch("app.core.xianyu_qr_login._generate_qrcode", return_value="data:image/png;base64,mock"):
+    with patch("app.core.xianyu_qr_login._create_worker", _FakeWorker):
         result = generate_qrcode(
             user_id=1,
             owner_key="desktop-operator",
@@ -168,9 +109,7 @@ def test_rescan_updates_existing_account_credentials_and_recovers_cookie(console
         )
 
     # 2. Call /api/qrlogin/generate with accountId=11 (rescan mode)
-    with patch("app.core.xianyu_qr_login._get_m_h5_tk"), \
-         patch("app.core.xianyu_qr_login._get_login_params", return_value={"t": "1"}), \
-         patch("app.core.xianyu_qr_login._generate_qrcode", return_value="data:image/png;base64,mock"):
+    with patch("app.core.xianyu_qr_login._create_worker", _FakeWorker):
         gen_resp = client.post("/api/qrlogin/generate", json={"accountId": 11})
         assert gen_resp.status_code == 200
         session_id = gen_resp.json()["data"]["sessionId"]
@@ -257,9 +196,7 @@ def test_delete_account_soft_deletes_and_rescan_restores_cleanly(console):
         assert rt[0] == 1
 
     # 3. User scans to re-add the deleted account (no target account id)
-    with patch("app.core.xianyu_qr_login._get_m_h5_tk"), \
-         patch("app.core.xianyu_qr_login._get_login_params", return_value={"t": "1"}), \
-         patch("app.core.xianyu_qr_login._generate_qrcode", return_value="data:image/png;base64,mock"):
+    with patch("app.core.xianyu_qr_login._create_worker", _FakeWorker):
         gen_resp = client.post("/api/qrlogin/generate", json={})
         assert gen_resp.status_code == 200
         session_id = gen_resp.json()["data"]["sessionId"]
@@ -383,9 +320,7 @@ def test_rescan_with_multiple_auth_rows_does_not_raise_multiple_results_found(co
             "VALUES(102, 30, 'enc_old_2', 0, 0)"
         )
 
-    with patch("app.core.xianyu_qr_login._get_m_h5_tk"), \
-         patch("app.core.xianyu_qr_login._get_login_params", return_value={"t": "1"}), \
-         patch("app.core.xianyu_qr_login._generate_qrcode", return_value="data:image/png;base64,mock"):
+    with patch("app.core.xianyu_qr_login._create_worker", _FakeWorker):
         gen_resp = client.post("/api/qrlogin/generate", json={"accountId": 30})
         session_id = gen_resp.json()["data"]["sessionId"]
 

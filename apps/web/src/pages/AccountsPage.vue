@@ -404,7 +404,7 @@
               </div>
               <span v-if="qr.loading" class="qr-loading"></span>
             </div>
-            <p class="qr-tip">{{ desktopLoginHint || qr.message || '正在自动生成二维码，请稍候...' }}</p>
+            <p class="qr-tip">{{ qr.message || '正在自动生成二维码，请稍候...' }}</p>
           </div>
           <div class="scan-guide">
             <h4>{{ qr.mode === 'rescan' ? '重新扫码流程' : '添加流程' }}</h4>
@@ -425,7 +425,7 @@
           <p>{{ qr.mode === 'rescan' ? '登录成功后会更新当前账号 Cookie，并重新同步该账号状态。' : '登录成功后将自动添加账号并刷新资料。' }}</p>
           <p>闲鱼 App 显示的登录地点由部署服务器的网络出口决定。若地点与预期不符，请取消扫码并联系当前部署的管理员核验服务器区域。</p>
         </div>
-        <div class="modal-actions"><AppButton @click="closeModal">取消</AppButton><AppButton v-if="desktopHost" :loading="desktopLoginBusy" loading-text="正在唤起登录窗口" @click="openDesktopLogin">用内嵌浏览器扫码</AppButton><AppButton type="primary" :loading="qr.loading" :disabled="qr.loading" @click="startQrLogin">{{ qrReady ? '刷新二维码' : '生成二维码' }}</AppButton></div>
+        <div class="modal-actions"><AppButton @click="closeModal">取消</AppButton><AppButton type="primary" :loading="qr.loading" :disabled="qr.loading" @click="startQrLogin">{{ qrReady ? '刷新二维码' : '生成二维码' }}</AppButton></div>
       </section>
 
       <section v-if="modal==='manual'" class="xy-modal manual-modal">
@@ -732,7 +732,6 @@ import { extractKeyFields, maskKeyFields, validateCookie, checkIdentity, maskVal
 import { confirmAction } from '../utils/confirmAction.js'
 import { createLatestRequestGuard, listRefreshRequestConfig } from '../utils/latestRequest.js'
 import { friendlyError } from '../utils/friendlyError.js'
-import { isDesktopHost, requestDesktopLogin } from '../utils/desktopBridge.js'
 
 const { solveStates, solveManually, isAccountSolving, getAccountSolveStatus } = useCaptchaSolver()
 const modal = ref('')
@@ -767,11 +766,6 @@ const WS_STATUS_POLL_LIMIT = 10
 const selectedWsPending = computed(() => isWsPending(selected.value?.id))
 const { qr, qrReady, qrGenerationFailed, startQrLogin, cancelQrLogin, resetQrState } = useQrLogin({ onConfirmed: handleQrConfirmed })
 const qrSuccessMsg = ref('')
-// 桌面宿主（PySide6 内嵌浏览器）才有扫码登录桥；普通服务器版恒为 false。
-const desktopHost = isDesktopHost()
-const desktopLoginBusy = ref(false)
-// 内嵌浏览器登录窗口的提示优先于二维码轮询文案，避免被轮询信息覆盖。
-const desktopLoginHint = ref('')
 const handledLoginAccounts = new Set()
 const captchaErrorMsg = ref('')
 const cookieEdit = reactive({ accountId: null, cookie: '' })
@@ -1110,7 +1104,6 @@ function closeModal(){
   autoRateError.value = ''
   strategyError.value = ''
   membershipError.value = ''
-  desktopLoginHint.value = ''
   cancelQrLogin()
 }
 function openRescanModal(account) {
@@ -1120,50 +1113,6 @@ function openRescanModal(account) {
   qr.mode = 'rescan'
   qr.accountId = account.id
   startQrLogin()
-}
-
-// 桌面宿主：交给原生宿主弹出内嵌浏览器登录窗口，扫码结果随后由宿主回灌。
-async function openDesktopLogin() {
-  if (!desktopHost || desktopLoginBusy.value) return
-  desktopLoginBusy.value = true
-  desktopLoginHint.value = '正在打开闲鱼登录窗口...'
-  try {
-    const opened = await requestDesktopLogin(qr.accountId || null)
-    if (opened) {
-      const hint = '已打开闲鱼登录窗口，请用闲鱼 App 扫码'
-      desktopLoginHint.value = hint
-      // 提示优先于二维码轮询文案，自动过期后让位给二维码状态。
-      setTimeout(() => { if (desktopLoginHint.value === hint) desktopLoginHint.value = '' }, 12000)
-    } else {
-      desktopLoginHint.value = ''
-      qr.message = '当前环境不支持内嵌浏览器扫码'
-    }
-  } catch (e) {
-    desktopLoginHint.value = ''
-    qr.message = e?.message || '打开闲鱼登录窗口失败'
-  } finally {
-    desktopLoginBusy.value = false
-  }
-}
-
-// 宿主回灌 Cookie 后由 main.js 广播，这里收起弹窗并刷新列表。
-function handleDesktopLoginResult(e) {
-  const detail = e?.detail
-  if (!detail) return
-  if (detail.ok === false) {
-    const message = detail.message || '保存闲鱼登录 Cookie 失败'
-    desktopLoginHint.value = ''
-    if (modal.value === 'scan') qr.message = message
-    else error.value = message
-    return
-  }
-  if (modal.value === 'scan') closeModal()
-  resetQrState()
-  const message = detail.accountId ? '闲鱼账号 Cookie 已更新' : '闲鱼账号已添加'
-  qrSuccessMsg.value = message
-  setTimeout(() => { if (qrSuccessMsg.value === message) qrSuccessMsg.value = '' }, 6000)
-  if (!detail.accountId) current.value = 1
-  loadAccounts()
 }
 
 function requireResponseObject(res, label) {
@@ -1969,7 +1918,6 @@ async function handleSseEvent(e) {
 onMounted(() => {
   window.addEventListener('xya-header-action', handleHeaderAction)
   window.addEventListener('xya-sse-event', handleSseEvent)
-  window.addEventListener('xianyu:desktop-login', handleDesktopLoginResult)
   loadAccounts()
   loadActiveSolveRecords()
   // 每 30 秒刷新一次活跃求解记录，覆盖 SSE 错过的事件
@@ -1979,7 +1927,6 @@ onBeforeUnmount(() => {
   accountsRequestGuard.invalidate()
   window.removeEventListener('xya-header-action', handleHeaderAction)
   window.removeEventListener('xya-sse-event', handleSseEvent)
-  window.removeEventListener('xianyu:desktop-login', handleDesktopLoginResult)
   cancelQrLogin()
   accountsRefreshIndicator.dispose()
   void cleanupQrLogin().catch(() => {})

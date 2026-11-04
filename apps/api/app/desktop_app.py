@@ -69,6 +69,8 @@ def create_desktop_app(config=None, *, web_dir=None, platform_runtime=None, inst
                 yield
             finally:
                 app.state.ready = False
+                from app.core.xianyu_qr_login import cleanup_all
+                await asyncio.to_thread(cleanup_all)
                 if platform_runtime is not None:
                     await platform_runtime.stop()
                 elif console_services is not None:
@@ -141,29 +143,6 @@ def create_desktop_app(config=None, *, web_dir=None, platform_runtime=None, inst
     @app.get("/api/desktop/status")
     async def desktop_status():
         return ResultObject.success(await status())
-
-    @app.post("/api/desktop/login-window")
-    async def desktop_login_window(request: Request):
-        opener = getattr(request.app.state, "desktop_login_opener", None)
-        if opener is None:
-            return JSONResponse({"detail": "桌面登录窗口不可用"}, status_code=409)
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
-        account_id = body.get("accountId", body.get("account_id"))
-        if account_id is not None:
-            try:
-                account_id = int(account_id)
-            except (TypeError, ValueError):
-                account_id = None
-            else:
-                if account_id <= 0:
-                    account_id = None
-        opener(account_id)
-        return {"ok": True}
 
     async def lifecycle_status():
         if platform_runtime and hasattr(platform_runtime,"desktop_status"):

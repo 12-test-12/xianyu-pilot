@@ -2,14 +2,6 @@ import { setAuth } from './auth.js'
 
 // Desktop hosts inject a bootstrap capability into the original index.html.
 // A regular server build has no marker and retains its original login flow.
-// The marker itself is removed once the local session is established, so the
-// outcome is kept here for the rest of the page lifetime.
-let desktopSessionActive = false
-
-export function isDesktopSession() {
-  return desktopSessionActive
-}
-
 export async function initializeDesktopSession() {
   const marker = document.querySelector('meta[name="xianyu-desktop-bootstrap"]')
   if (!marker) return
@@ -22,6 +14,5 @@ export async function initializeDesktopSession() {
   const result = await response.json()
   if (result.code !== 200 || !result.data?.token) throw new Error('本地会话返回异常')
   setAuth(result.data.token, result.data.username)
-  desktopSessionActive = true
   marker.remove()
 }

@@ -38,6 +38,7 @@ from ....services.ws_client import ws_manager
 from ....services.ws_storage import save_chat_message
 from ....services.ws_sse import broadcaster
 from ....core.xianyu_qr_login import (
+    QrLoginUnavailableError,
     QrSessionCapacityError,
     cleanup_owner_sessions,
     generate_qrcode,
@@ -830,6 +831,9 @@ async def qrlogin_generate(
             status_code=503,
             detail="当前扫码登录人数较多，请稍后重试。",
         ) from exc
+    except QrLoginUnavailableError as exc:
+        # 浏览器/Playwright 缺失等本机环境问题：把可操作的指引直接给到用户。
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
         logger.error(
             "QR code generation failed errorType=%s",

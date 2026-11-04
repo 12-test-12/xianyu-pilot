@@ -3,7 +3,7 @@ import request from '../utils/request.js'
 export const generateQrLogin = (data = {}) => request.post(
   '/qrlogin/generate',
   data,
-  { background: true, suppressGlobalError: true }
+  { background: true, suppressGlobalError: true, timeout: 65000 }
 )
 
 // 扫码状态轮询与扫码流程均标记为 background，避免闲鱼 API 响应慢导致请求堆积时

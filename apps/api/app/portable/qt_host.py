@@ -1,13 +1,12 @@
 """Qt window + Chromium + tray. Imported only after portable bootstrap."""
 import ctypes
 from ctypes import wintypes
-import json
 import logging
 from pathlib import Path
 import time
 import sys
 
-from PySide6.QtCore import QObject,QTimer,QUrl,Qt,QEvent,Signal
+from PySide6.QtCore import QTimer,QUrl,Qt
 from PySide6.QtGui import QAction,QColor,QIcon,QPainter,QPixmap
 from PySide6.QtWidgets import QApplication,QMainWindow,QMenu,QMessageBox,QSystemTrayIcon,QLabel,QStackedWidget
 from PySide6.QtWebEngineCore import QWebEnginePage,QWebEngineProfile,QWebEngineProfileBuilder,QWebEngineSettings,QWebEngineUrlRequestInterceptor,QWebEngineUrlRequestInfo,QWebEnginePermission,QWebEngineLoadingInfo
@@ -16,7 +15,6 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 from app.portable.windows_events import power_event
 from app.portable.network_monitor import NetworkMonitor
 from app.portable.bootstrap import bundled_web_dir
-from app.portable.login_window import LoginWindow,parse_login_target
 
 
 LABELS={"starting":"正在启动","offline":"未连接闲鱼 · 自动发货未启用","running":"自动发货运行中",
@@ -52,8 +50,6 @@ class LocalRequests(QWebEngineUrlRequestInterceptor):
 
     def interceptRequest(self,info):
         url=info.requestUrl()
-        if url.scheme()=="xianyu-desktop":
-            return  # Login deep links are handled by Qt, not Chromium.
         # The original goods/account/message views use HTTPS platform images.
         # Permit passive image loads from our page, retaining local-only APIs,
         # scripts, frames and navigation.
@@ -64,24 +60,7 @@ class LocalRequests(QWebEngineUrlRequestInterceptor):
             info.block(True)
 
 
-class LoginOpener(QObject):
-    requested=Signal(object)
-
-    def __init__(self,controller):
-        super().__init__()
-        self.controller=controller
-        self.requested.connect(self.dispatch,Qt.ConnectionType.QueuedConnection)
-
-    def dispatch(self,account_id=None):
-        self.controller.open_embedded_login(account_id)
-
-    def __call__(self,account_id=None):
-        self.requested.emit(account_id)  # uvicorn thread -> GUI thread
-
-
 class ConsolePage(QWebEnginePage):
-    desktopLoginRequested=Signal(object)
-
     def __init__(self,profile,port,parent):
         super().__init__(profile,parent)
         self.port=port
@@ -93,10 +72,6 @@ class ConsolePage(QWebEnginePage):
         self.permissionRequested.connect(permission_requested)
 
     def acceptNavigationRequest(self,url,kind,is_main_frame):
-        login,account=parse_login_target(url)
-        if login:
-            self.desktopLoginRequested.emit(account)
-            return False
         return local_url(url,self.port) or url.toString()=="about:blank"
 
     def createWindow(self,_kind):
@@ -158,10 +133,6 @@ class DesktopConsole:
         self.first_hide=True
         self.loaded=False
         self.connected=None
-        self.login_profile=None
-        self.login_window=None
-        self.login_account_id=None
-        self.login_opener=LoginOpener(self)
         self.network_monitor=NetworkMonitor()
         self.last_state=None
         self.started=time.monotonic()
@@ -194,7 +165,6 @@ class DesktopConsole:
             self.page.settings().setAttribute(option,False)
         self.page.settings().setAttribute(QWebEngineSettings.WebAttribute.JavascriptCanAccessClipboard,True)
         self.view.setPage(self.page)
-        self.page.desktopLoginRequested.connect(self.open_embedded_login)
         self.page.loadingChanged.connect(self.on_loading_changed)
         self.view.loadFinished.connect(self.on_load)
         self.stack=QStackedWidget(self.window)
@@ -256,60 +226,6 @@ class DesktopConsole:
             self.tray.showMessage("闲鱼助手",text,QSystemTrayIcon.MessageIcon.Information,8000)
             self.first_hide=False
 
-    def open_embedded_login(self,account_id=None):
-        if self.exiting:
-            return
-        if self.login_profile is None:
-            profile_dir=Path(self.paths["profile"]).with_name("login")
-            cache_dir=Path(self.paths["cache"]).with_name("login")
-            profile_dir.mkdir(parents=True,exist_ok=True)
-            cache_dir.mkdir(parents=True,exist_ok=True)
-            builder=QWebEngineProfileBuilder()
-            builder.setPersistentStoragePath(str(profile_dir))
-            builder.setCachePath(str(cache_dir))
-            builder.setHttpCacheType(QWebEngineProfile.HttpCacheType.DiskHttpCache)
-            builder.setPersistentCookiesPolicy(QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies)
-            self.login_profile=builder.createProfile("portable-login",self.app)
-            if self.login_profile is None:
-                raise RuntimeError("登录资料目录已占用，无法打开扫码窗口")
-        if self.login_window is None:
-            self.login_window=LoginWindow(self.login_profile)
-            self.login_window.cookies_ready.connect(self.login_cookies_ready)
-            self.login_window.cancelled.connect(self.login_cancelled)
-        self.login_account_id=account_id
-        # A reused profile must never hand back the previous account's cookies.
-        self.login_profile.cookieStore().deleteAllCookies()
-        self.login_window.show()
-        QTimer.singleShot(400,self.start_login_window)
-
-    def start_login_window(self):
-        if not self.exiting and self.login_window is not None:
-            self.login_window.show()
-            self.login_window.raise_()
-            self.login_window.activateWindow()
-            self.login_window.start()
-
-    def login_cookies_ready(self,cookie):
-        if self.exiting:
-            return
-        payload=json.dumps({"cookie":cookie,"accountId":self.login_account_id},ensure_ascii=False)
-        self.page.runJavaScript("window.__xianyuDesktopLogin && window.__xianyuDesktopLogin("+payload+")")
-        QTimer.singleShot(1500,self.close_login_window)
-
-    def close_login_window(self):
-        window=self.login_window
-        self.login_window=None
-        if window is not None:
-            window.stop()
-            window.close()
-            window.deleteLater()
-
-    def login_cancelled(self):
-        window=self.login_window
-        self.login_window=None
-        if window is not None:
-            window.deleteLater()
-
     def toggle_delivery(self):
         if "manual" in self.backend.gate.reasons:
             self.backend.resume("manual")
@@ -357,9 +273,6 @@ class DesktopConsole:
                 self.profile.deleteLater()
                 QTimer.singleShot(100,self.app.quit)
             return
-        state=getattr(getattr(self.backend,"app",None),"state",None)
-        if state is not None and getattr(state,"desktop_login_opener",None) is not self.login_opener:
-            state.desktop_login_opener=self.login_opener
         if self.backend.error or (not self.backend.ready and time.monotonic()-self.started>30):
             self.render("error")
             QMessageBox.critical(self.window,"启动失败","本机服务未能启动，可能是端口占用或数据库异常。请检查 data/logs/desktop.log。")
@@ -401,17 +314,7 @@ class DesktopConsole:
         self.timer.stop()
         self.network_monitor.close()
         self.tray.hide()
-        if self.login_window is not None:
-            self.login_window.stop()
-            self.login_window.hide()
-            if isValid(self.login_window):
-                delete(self.login_window)
-            self.login_window=None
         if isValid(self.window):
             delete(self.window)
         if isValid(self.profile):
             delete(self.profile)
-        if self.login_profile is not None:
-            if isValid(self.login_profile):
-                delete(self.login_profile)
-            self.login_profile=None

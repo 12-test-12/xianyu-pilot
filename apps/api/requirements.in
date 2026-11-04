@@ -25,3 +25,5 @@ python-pptx==1.0.2
 redis==8.0.1
 croniter==6.2.4
 tzdata==2026.1
+# 扫码登录的无头浏览器会话；版本对齐 apps/crawler 的 Playwright 1.61 系。
+playwright==1.61.0

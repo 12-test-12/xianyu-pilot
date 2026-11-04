@@ -93,6 +93,8 @@ async def lifespan(app: FastAPI):
 
     # 先拒绝新的辅助任务，再依次停止长期生产者；Redis/DB 最后关闭。
     begin_background_task_shutdown()
+    from app.core.xianyu_qr_login import cleanup_all
+    await asyncio.to_thread(cleanup_all)
     try:
         from app.services.cookie_token_refresher import stop_dispatcher
         await stop_dispatcher()

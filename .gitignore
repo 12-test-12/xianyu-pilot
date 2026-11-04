@@ -19,6 +19,7 @@ apps/uploads/*
 *.class
 .pytest_cache/
 .pytest_tmp/
+pytest-of-*/
 .coverage
 htmlcov/
 *-audit-result.json
