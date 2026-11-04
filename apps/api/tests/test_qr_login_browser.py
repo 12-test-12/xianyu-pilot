@@ -247,7 +247,7 @@ def test_worker_completes_login_and_collects_cookies(monkeypatch):
     assert snap["cookies"]["unb"] == "424242"
     assert snap["cookies"]["cookie2"] == "ck-value"
     # 登录完成后回访 goofish 首页，与参考项目一致
-    assert "https://www.goofish.com/" in env.visited
+    assert env.visited[-1] == qlb.GOOFISH_HOME
 
 
 def test_worker_recovers_if_homepage_goto_fails_with_playwright_error(monkeypatch):
