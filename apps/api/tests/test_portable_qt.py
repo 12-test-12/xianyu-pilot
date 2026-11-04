@@ -139,3 +139,76 @@ def test_original_platform_images_load_but_external_active_requests_are_blocked(
     for request in (image,script,api,local):c.interceptor.interceptRequest(request)
     assert not image.blocked and not local.blocked
     assert script.blocked and api.blocked
+
+
+def test_embedded_login_uses_isolated_profile_and_never_saves_before_manual_completion(console, monkeypatch):
+    from PySide6.QtNetwork import QNetworkCookie
+    from app.portable.login_window import LoginWindow, EmbeddedWorker, QWebEngineView
+    c, _ = console
+    monkeypatch.setattr(QWebEngineView, 'setUrl', lambda *args: None)
+    worker = EmbeddedWorker(c.login_broker, timeout=30)
+    window = LoginWindow(worker, c.window)
+    try:
+        assert window.profile.isOffTheRecord()
+        assert window.profile is not c.profile
+        worker._set(status='new', qr_image='test-qr')
+        for name, value in ((b'unb', b'123'), (b'cookie2', b'secret')):
+            cookie = QNetworkCookie(name, value)
+            cookie.setDomain('.goofish.com')
+            cookie.setPath('/')
+            window.collect(cookie)
+        window.inspect('{"text":"请完成人脸验证"}')
+        window.complete()
+        assert not window.visiting_home
+        assert worker.snapshot()['cookies'] is None
+        window.inspect('{"text":"登录成功"}')
+        assert worker.snapshot()['status'] != 'confirmed'
+        window.complete()
+        assert window.visiting_home
+        window.home_loaded = True
+        window.inspect('{"text":"闲鱼首页"}')
+        assert worker.snapshot()['status'] == 'confirmed'
+        assert worker.snapshot()['cookies'] == {'unb': '123', 'cookie2': 'secret'}
+    finally:
+        window.close()
+
+
+def test_embedded_login_close_cancels_and_blocks_untrusted_urls(console, monkeypatch):
+    from PySide6.QtCore import QUrl
+    from app.portable.login_window import LoginWindow, EmbeddedWorker, QWebEngineView, is_allowed
+    c, _ = console
+    monkeypatch.setattr(QWebEngineView, 'setUrl', lambda *args: None)
+    worker = EmbeddedWorker(c.login_broker, timeout=30)
+    window = LoginWindow(worker, c.window)
+    assert is_allowed(QUrl('https://passport.goofish.com/mini_login.htm'))
+    for url in ('https://goofish.com.evil.test/', 'http://127.0.0.1:15177/api/', 'file:///C:/secret', 'https://user@goofish.com/'):
+        assert not is_allowed(QUrl(url))
+    window.reject()  # Esc 关闭同样必须取消会话。
+    assert worker.snapshot()['status'] == 'cancelled'
+    assert worker.snapshot()['cookies'] is None
+
+
+def test_embedded_login_camera_requires_explicit_permission(console, monkeypatch):
+    from PySide6.QtCore import QUrl
+    from app.portable.login_window import LoginWindow, EmbeddedWorker, QWebEngineView, QWebEnginePermission, QMessageBox
+    c, _ = console
+    monkeypatch.setattr(QWebEngineView, 'setUrl', lambda *args: None)
+    window = LoginWindow(EmbeddedWorker(c.login_broker, timeout=30), c.window)
+    class Permission:
+        granted = False
+        denied = False
+        def permissionType(self): return QWebEnginePermission.PermissionType.MediaVideoCapture
+        def origin(self): return QUrl('https://passport.goofish.com/')
+        def grant(self): self.granted = True
+        def deny(self): self.denied = True
+    try:
+        monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.No)
+        refused = Permission()
+        window.permission_requested(refused)
+        assert refused.denied and not refused.granted
+        monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.Yes)
+        allowed = Permission()
+        window.permission_requested(allowed)
+        assert allowed.granted and not allowed.denied
+    finally:
+        window.close()

@@ -162,7 +162,7 @@ test('both scanned spellings reach mobile confirmation and persistence completes
   assert.equal(calls, 4)
 })
 
-for (const status of ['error', 'expired', 'failed']) {
+for (const status of ['error', 'expired', 'failed', 'cancelled']) {
   test(`terminal status ${status} stops polling`, async t => {
     let calls = 0
     const state = flow(t, { getStatus: async () => { calls++; return { data: { status } } } })
@@ -174,3 +174,22 @@ for (const status of ['error', 'expired', 'failed']) {
     assert.equal(state.qrReady.value, false)
   })
 }
+
+test('verification keeps polling the same session until the account is saved', async t => {
+  let calls = 0
+  const state = flow(t, { getStatus: async () => ({ data: ++calls === 1
+    ? { status: 'verification_required', message: '请完成人脸验证，完成后自动继续' }
+    : { status: 'confirmed', accountId: 42 } }) })
+  await state.startQrLogin()
+  t.mock.timers.tick(2000)
+  await flush()
+  assert.equal(state.qr.status, 'verification_required')
+  assert.match(state.qr.message, /人脸/)
+  assert.equal(state.confirmed.length, 0)
+  t.mock.timers.tick(2000)
+  await flush()
+  assert.equal(state.confirmed.length, 1)
+  assert.equal(state.qr.sessionId, 'first')
+  t.mock.timers.tick(10000)
+  assert.equal(calls, 2)
+})

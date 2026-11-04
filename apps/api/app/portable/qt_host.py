@@ -140,6 +140,10 @@ class DesktopConsole:
         self.smoke_started=False
         self.smoke_ok=False
         self.window=ConsoleWindow(self)
+        from app.portable.login_window import LoginBroker
+        from app.core import xianyu_qr_login
+        self.login_broker=LoginBroker(self.window)
+        xianyu_qr_login.desktop_worker_factory=self.login_broker.worker
         self.window.statusBar().showMessage(LABELS['starting'])
         builder=QWebEngineProfileBuilder()
         builder.setPersistentStoragePath(str(paths["profile"]))
@@ -256,6 +260,7 @@ class DesktopConsole:
         if self.exiting:
             return
         self.exiting=True
+        self.login_broker.close()
         self.network_monitor.close()
         self.quit_action.setEnabled(False)
         self.view.setUrl(QUrl('about:blank'))
@@ -311,6 +316,9 @@ class DesktopConsole:
     def dispose(self):
         # Release Chromium's files before the data-directory instance lock.
         from shiboken6 import delete,isValid
+        from app.core import xianyu_qr_login
+        self.login_broker.close()
+        xianyu_qr_login.desktop_worker_factory=None
         self.timer.stop()
         self.network_monitor.close()
         self.tray.hide()

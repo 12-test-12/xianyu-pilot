@@ -2,7 +2,7 @@
 闲鱼网页版扫码登录模块（Playwright 浏览器会话）。
 
 二维码生成、扫码状态、换票采集全部由 qr_login_browser.QrLoginWorker 在
-无头浏览器里完成：requests 无法执行 login_token/login.do 返回的 HTML/JS，
+同一浏览器上下文里完成：requests 无法执行 login_token/login.do 返回的 HTML/JS，
 Cookie 里始终拿不到 unb，因此不再走 HTTP 换票（参照 ai-goofish-monitor）。
 
 本模块保留原有的会话注册表语义：owner 归属、容量上限、TTL、终止态回放、
@@ -40,6 +40,7 @@ class QrSessionCapacityError(RuntimeError):
 
 _sessions: dict[str, dict] = {}
 _lock = threading.Lock()
+desktop_worker_factory = None  # 由原生宿主注册；无 Qt 的服务端继续使用 Playwright。
 
 
 def _session_operation_lock(session_data: dict) -> threading.Lock:
@@ -68,7 +69,6 @@ def _is_terminal_session(session_data: dict) -> bool:
         "expired",
         "cancelled",
         "failed",
-        "verification_required",
     }
 
 
@@ -127,7 +127,8 @@ def cleanup_expired_sessions() -> int:
 
 def _create_worker(*, timeout: int) -> QrLoginWorker:
     """工厂钩子：测试用假 worker 替换真实浏览器会话。"""
-    return QrLoginWorker(timeout=timeout)
+    factory = desktop_worker_factory or QrLoginWorker
+    return factory(timeout=timeout)
 
 
 def _sync_worker_state(session_data: dict) -> None:
@@ -144,10 +145,11 @@ def _sync_worker_state(session_data: dict) -> None:
     status = str(snap.get("status") or "").casefold()
     if status in ("", "starting"):
         return
-    if status in ("new", "scaned"):
+    if status in ("new", "scaned", "verification_required"):
         if snap.get("qr_image"):
             session_data["qr_image"] = snap["qr_image"]
         session_data["status"] = status
+        session_data["message"] = snap.get("message")
         return
     if status == "confirmed":
         cookies = dict(snap.get("cookies") or {})
@@ -165,7 +167,7 @@ def _sync_worker_state(session_data: dict) -> None:
         return
     if status in ("expired", "cancelled", "failed"):
         result = {"status": status}
-        if status == "failed" and snap.get("error"):
+        if snap.get("error"):
             result["message"] = str(snap["error"])
         session_data["status"] = status
         session_data["terminal_result"] = result
@@ -192,7 +194,7 @@ def generate_qrcode(
     target_account_id: int | None = None,
 ) -> dict:
     """
-    创建新的扫码登录会话，启动无头浏览器并等待二维码截图就绪。
+    创建新的扫码登录会话，启动浏览器并等待二维码截图就绪。
     user_id/tenant_id: 当前登录用户的上下文，扫码成功后用于归属账号。
     target_account_id: 若是重新扫码，指定需要更新凭据的目标账号ID。
     返回: {"sessionId": str, "qrImage": str (base64 data URI)}
@@ -289,7 +291,7 @@ def get_session_status(session_id: str) -> dict:
     """
     获取会话状态：读取浏览器 worker 快照，不发起任何网络请求。
     确认登录成功后不再返回原始 Cookie，仅返回安全的摘要信息。
-    返回: {"status": "new"|"scaned"|"confirmed"|"expired"|"cancelled"|"failed", ...}
+    verification_required 为等待用户完成验证的活跃状态，完成后继续采集凭据。
     """
     _cleanup_expired()
 
@@ -323,6 +325,8 @@ def get_session_status(session_id: str) -> dict:
             return _replay_terminal(sdata)
 
         result = {"status": str(sdata.get("status") or "new")}
+        if sdata.get("message"):
+            result["message"] = sdata["message"]
         persistence_result = sdata.get("persistence_result")
         if isinstance(persistence_result, dict):
             result.update(persistence_result)

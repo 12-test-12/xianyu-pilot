@@ -1,4 +1,4 @@
-"""闲鱼扫码登录的 Playwright 无头浏览器会话。
+"""闲鱼扫码登录的 Playwright 浏览器会话，桌面版显示窗口供用户完成验证。
 
 参照 ai-goofish-monitor 的 account_login_service：由真实 Chromium 打开
 passport 登录页并完整执行登录跳转。后端 requests 无法执行
@@ -35,6 +35,20 @@ POLL_INTERVAL = 1.0
 
 _EXPIRED_WORDS = ("二维码已失效", "二维码已过期", "二维码失效", "二维码过期")
 _SCANNED_WORDS = ("扫码成功", "扫描成功", "已扫码", "请在手机")
+_VERIFICATION_WORDS = ("人脸识别", "人脸验证", "刷脸", "安全验证", "身份验证", "滑动验证", "拖动滑块", "请完成验证")
+
+
+def needs_verification(context) -> bool:
+    """检查登录页、验证 iframe 和弹出页，不回传包含票据的页面内容。"""
+    for page in context.pages:
+        for frame in page.frames:
+            try:
+                text = frame.locator("body").inner_text(timeout=500)
+                if any(word in text for word in _VERIFICATION_WORDS):
+                    return True
+            except PlaywrightError:
+                continue  # 登录跳转可能同时销毁 frame，下一轮再检查。
+    return False
 
 
 class QrLoginUnavailableError(RuntimeError):
@@ -145,8 +159,9 @@ class QrLoginWorker:
     Cookie 采集全部封装在线程内；HTTP 请求线程只读取 snapshot()。
     """
 
-    def __init__(self, *, timeout: int = 300):
+    def __init__(self, *, timeout: int = 300, headless: bool = True):
         self._timeout = timeout
+        self._headless = headless
         self._lock = threading.Lock()
         self._cancel = threading.Event()
         self._thread = None
@@ -176,12 +191,19 @@ class QrLoginWorker:
 
     def snapshot(self) -> dict:
         with self._lock:
-            return {
+            result = {
                 "status": self._status,
                 "qr_image": self._qr_image,
                 "cookies": self._cookies,
                 "error": self._error,
             }
+            if self._status == "verification_required":
+                result["message"] = (
+                    "闲鱼要求人脸或安全验证，请在程序内登录窗口或闲鱼 App 中完成，再点击窗口中的完成验证按钮；请勿刷新二维码。"
+                    if not self._headless else
+                    "闲鱼要求人脸或安全验证，请在闲鱼 App 中完成，系统会继续等待；若验证只出现在网页端，请使用桌面版重新登录。"
+                )
+            return result
 
     def wait_qr_ready(self, timeout: float = QR_READY_TIMEOUT) -> str:
         """阻塞直到二维码截图就绪；失败抛 QrLoginUnavailableError。"""
@@ -224,7 +246,7 @@ class QrLoginWorker:
                 )
             _ensure_playwright_env()
             with sync_playwright() as playwright:
-                browser = launch_browser(playwright)
+                browser = launch_browser(playwright, headless=self._headless)
                 try:
                     context = browser.new_context(
                         viewport={"width": 1000, "height": 760}, locale="zh-CN",
@@ -242,8 +264,15 @@ class QrLoginWorker:
                     self._set(status="new", qr_image=image)
                     while not self._cancel.is_set():
                         if time.monotonic() >= deadline:
-                            self._set(status="expired")
+                            self._set(status="expired", error="登录或安全验证超时，请重新生成二维码。")
                             return
+                        # 验证期间保留同一浏览器上下文，不能跳首页打断验证。
+                        if needs_verification(context):
+                            self._set(status="verification_required")
+                            self._cancel.wait(POLL_INTERVAL)
+                            continue
+                        if self.snapshot()["status"] == "verification_required":
+                            self._set(status="scaned")
                         try:
                             keep_login = page.locator(".keep-login-confirm-btn.primary:visible")
                             if keep_login.count():
@@ -276,6 +305,9 @@ class QrLoginWorker:
                                     "未获取到有效的闲鱼登录状态，请重新扫码。"
                                 )
                             jar = login_cookie_jar(candidate_cookies)
+                            if needs_verification(context):
+                                self._set(status="verification_required")
+                                continue
                             if not jar.get("unb") or not jar.get("cookie2"):
                                 raise QrLoginUnavailableError("未获取到有效的闲鱼登录状态，请重新扫码。")
                             self._set(status="confirmed", cookies=jar)

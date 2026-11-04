@@ -87,6 +87,28 @@ def test_generate_qrcode_accepts_target_account_id():
     assert _sessions[session_id]["target_account_id"] == 99
 
 
+def test_verification_status_can_resume_and_persist_account(console):
+    from app.core.xianyu_qr_login import _sessions, _is_terminal_session
+    client, config, app = console
+    with patch("app.core.xianyu_qr_login._create_worker", _FakeWorker):
+        sid = client.post("/api/qrlogin/generate", json={}).json()["data"]["sessionId"]
+    worker = _sessions[sid]["worker"]
+    worker.status = "verification_required"
+    pending = client.post(f"/api/qrlogin/status/{sid}", json={}).json()["data"]
+    assert pending["status"] == "verification_required"
+    assert not _is_terminal_session(_sessions[sid])
+    assert get_session_cookies(sid) is None
+    worker.status = "confirmed"
+    worker.cookies = {"unb": "face-test-user", "cookie2": "private-cookie", "_m_h5_tk": "test-token"}
+    response = client.post(f"/api/qrlogin/status/{sid}", json={})
+    assert response.status_code == 200
+    result = response.json()["data"]
+    assert result["status"] == "confirmed"
+    assert result["persisted"] is True
+    assert result["accountId"]
+    assert "private-cookie" not in response.text
+
+
 def test_rescan_updates_existing_account_credentials_and_recovers_cookie(console):
     """Test rescan flow: updating an existing account's cookie when it became expired."""
     client, config, app = console

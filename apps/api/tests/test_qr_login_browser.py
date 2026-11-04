@@ -28,6 +28,7 @@ class _Env:
         self.cookie_after_polls = cookie_after_polls
         self.polls = 0
         self.visited = []
+        self.verification_text = ""
 
     def cookies(self):
         self.polls += 1
@@ -81,6 +82,10 @@ class _FakePage:
     def __init__(self, env):
         self._env = env
 
+    @property
+    def frames(self):
+        return [self]
+
     def goto(self, url, **_kwargs):
         self._env.visited.append(url)
 
@@ -88,6 +93,8 @@ class _FakePage:
         pass
 
     def locator(self, selector):
+        if selector == "body":
+            return SimpleNamespace(inner_text=lambda **kwargs: self._env.verification_text)
         if selector == "#qrcode-img":
             return _FakeQrLocator()
         if selector == ".keep-login-confirm-btn.primary:visible":
@@ -100,6 +107,10 @@ class _FakePage:
 class _FakeContext:
     def __init__(self, env):
         self._env = env
+
+    @property
+    def pages(self):
+        return [self.new_page()]
 
     def new_page(self):
         return _FakePage(self._env)
@@ -248,6 +259,63 @@ def test_worker_completes_login_and_collects_cookies(monkeypatch):
     assert snap["cookies"]["cookie2"] == "ck-value"
     # 登录完成后回访 goofish 首页，与参考项目一致
     assert env.visited[-1] == qlb.GOOFISH_HOME
+
+
+def test_verification_keeps_browser_and_credentials_pending_then_resumes(monkeypatch):
+    env = _Env(cookie_after_polls=1)
+    env.verification_text = "请完成人脸识别"
+    monkeypatch.setattr(qlb, "sync_playwright", _fake_sync_playwright(env))
+    worker = qlb.QrLoginWorker(timeout=10, headless=False).start()
+    try:
+        worker.wait_qr_ready(timeout=5)
+        snap = _wait_status(worker, "verification_required")
+        assert snap["cookies"] is None
+        assert "完成验证" in snap["message"]
+        assert env.visited == [qlb.LOGIN_URL]
+        env.verification_text = ""
+        assert _wait_status(worker, "confirmed")["cookies"]["unb"] == "424242"
+    finally:
+        worker.cancel()
+        worker.join(5)
+
+
+def test_verification_in_popup_frame_and_detached_frames():
+    class DetachedFrame:
+        def locator(self, selector):
+            raise qlb.PlaywrightError("Frame detached")
+
+    env = _Env()
+    env.verification_text = "请进行安全验证"
+    context = SimpleNamespace(pages=[
+        SimpleNamespace(frames=[DetachedFrame()]),
+        SimpleNamespace(frames=[_FakePage(env)]),
+    ])
+    assert qlb.needs_verification(context)
+
+
+def test_cancelling_during_verification_closes_browser_without_saving(monkeypatch):
+    env = _Env()
+    env.verification_text = "请进行人脸验证"
+    browser = _FakeBrowser(env)
+    monkeypatch.setattr(qlb, "sync_playwright", _fake_sync_playwright(env))
+    monkeypatch.setattr(qlb, "launch_browser", lambda *args, **kwargs: browser)
+    worker = qlb.QrLoginWorker(timeout=10).start()
+    worker.wait_qr_ready(timeout=5)
+    _wait_status(worker, "verification_required")
+    worker.cancel()
+    worker.join(5)
+    assert browser.closed
+    assert worker.snapshot()["status"] == "cancelled"
+    assert worker.snapshot()["cookies"] is None
+
+
+def test_native_host_factory_takes_precedence(monkeypatch):
+    from app.core import xianyu_qr_login as sessions
+    native_worker = object()
+    monkeypatch.setattr(sessions, "desktop_worker_factory", lambda **kwargs: native_worker)
+    assert sessions._create_worker(timeout=10) is native_worker
+    monkeypatch.setattr(sessions, "desktop_worker_factory", None)
+    assert sessions._create_worker(timeout=10)._headless is True
 
 
 def test_worker_recovers_if_homepage_goto_fails_with_playwright_error(monkeypatch):

@@ -37,7 +37,7 @@ export function useQrLogin({ onConfirmed, generate = generateQrLogin, getStatus 
       if (['scanned', 'scaned'].includes(qr.status)) {
         qr.message = data.message || '已成功扫码，请在手机上点击确认登录'
       } else if (qr.status === 'verification_required') {
-        qr.message = data.message || '闲鱼要求二次安全验证，请在手机端完成验证后重试'
+        qr.message = data.message || '闲鱼要求人脸或安全验证，请在登录浏览器或闲鱼 App 中完成；完成后会自动继续，请勿刷新二维码'
       } else {
         qr.message = data.message || qr.message
       }
@@ -51,11 +51,10 @@ export function useQrLogin({ onConfirmed, generate = generateQrLogin, getStatus 
             ? '扫码已确认，服务端正在安全同步账号信息...'
             : (data.message || '扫码已确认，等待服务端完成账号同步...')
         }
-      } else if (['error', 'expired', 'failed', 'verification_required'].includes(qr.status)) {
-        // verification_required 是服务端的终止状态（会话只会回放同一结果），
-        // 继续轮询只会空转；停在这里让用户看到提示并可手动刷新二维码。
+      } else if (['error', 'expired', 'failed', 'cancelled'].includes(qr.status)) {
         stopQrPolling()
         if (qr.status === 'error') qr.message = data.message || '账号保存失败，请重试'
+        if (qr.status === 'cancelled') qr.message = data.message || '登录窗口已关闭，请重新生成二维码'
       }
     } catch (e) {
       if (request.isCurrent()) qr.message = e.message || '查询扫码状态失败'
@@ -102,7 +101,7 @@ export function useQrLogin({ onConfirmed, generate = generateQrLogin, getStatus 
 
   return {
     qr,
-    qrReady: computed(() => Boolean(qr.sessionId && qr.qrUrl && !qr.loading && !['error', 'expired', 'failed'].includes(qr.status))),
+    qrReady: computed(() => Boolean(qr.sessionId && qr.qrUrl && !qr.loading && !['error', 'expired', 'failed', 'cancelled'].includes(qr.status))),
     qrGenerationFailed: computed(() => qr.status === 'error'),
     startQrLogin, cancelQrLogin, resetQrState,
   }
