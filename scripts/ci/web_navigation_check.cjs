@@ -83,6 +83,8 @@ async function launchBrowser() {
     });
     await page.locator('.sidebar .nav-item').filter({ hasText: '系统设置' }).click();
     await page.locator('.system-settings-page').waitFor();
+    assert.ok((await page.locator('.config-nav').boundingBox()).height < 100,
+      'Settings navigation should leave the content visible at desktop window width');
     await page.locator('.system-settings-page').evaluate(el => { el.dataset.identity = 'retained'; });
     await page.locator('.config-link').filter({ hasText: '模型配置' }).click();
     await codeStarted;
@@ -96,6 +98,11 @@ async function launchBrowser() {
     await page.locator('.config-link').filter({ hasText: '模型配置' }).click();
     await page.locator('.model-settings-page').waitFor();
     checks.push('Slow settings code retains the visible page and respects a newer navigation');
+    const provider = page.locator('.model-settings-page select');
+    assert.notEqual(await provider.evaluate(el => getComputedStyle(el).appearance), 'none');
+    await provider.selectOption('__custom__');
+    await page.locator('.custom-provider-input').waitFor();
+    checks.push('Settings navigation stays compact and the native provider selector updates the form');
 
     await page.evaluate(() => {
       window.navigationFrames = { blank: 0, hidden: 0, samples: 0, running: true };

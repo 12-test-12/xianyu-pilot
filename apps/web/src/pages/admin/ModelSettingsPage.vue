@@ -47,7 +47,7 @@
             badge="第一步"
             required
           >
-            <select v-model="form.generalModel.provider" class="config-input config-select">
+            <select v-model="form.generalModel.provider" class="config-input">
               <option value="" disabled>请选择供应商</option>
               <option v-for="p in providerOptions" :key="p.value" :value="p.value">{{ p.label }}</option>
               <option :value="CUSTOM_PROVIDER_VALUE">其他 / 自定义</option>
@@ -63,7 +63,7 @@
           <AdminConfigField
             label="模型名称"
             hint="系统默认会按这个名称发起调用，建议填写对外使用的标准模型名。"
-            meta="示例：gpt-4o-mini。若你使用代理网关，这里通常填写网关要求的模型字段。"
+            meta="DeepSeek V4.1 Flash 的 API 模型名是 deepseek-flash。其他服务请填写对应的 API 模型名。"
             badge="核心参数"
             required
           >
@@ -73,7 +73,7 @@
           <AdminConfigField
             label="接口地址"
             hint="仅支持可解析的公网 HTTPS OpenAI 兼容根地址；系统会拒绝明文 HTTP、本机、内网、重定向与代理环境。"
-            meta="大多数服务以 /v1 结尾。切换到不同主机时必须同时重新输入 API Key，避免把已保存密钥发送到新地址。"
+            meta="DeepSeek 官方地址填写 https://api.deepseek.com。其他服务请使用其 OpenAI 兼容根地址。切换主机时须重新输入 API Key。"
             badge="第二步"
             required
           >
@@ -469,19 +469,6 @@ function onHeaderAction(event) {
 
 .field-grid.two {
   grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-/* 下拉选择框：在通用输入样式基础上增加右侧箭头，原生外观更统一 */
-:deep(.config-select) {
-  appearance: none;
-  -webkit-appearance: none;
-  -moz-appearance: none;
-  padding-right: 38px;
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%237a879e' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'></polyline></svg>");
-  background-repeat: no-repeat;
-  background-position: right 14px center;
-  background-color: #fff;
-  cursor: pointer;
 }
 
 /* “其他 / 自定义”时展开的自定义输入框，与下拉框形成层级关系 */

@@ -83,6 +83,35 @@ def test_original_index_assets_session_and_boundary(console):
     assert client.post('/api/desktop/session',json={},headers={'Origin':'https://outside.example','X-Desktop-Bootstrap':app.state.desktop_bootstrap}).status_code==403
 
 
+@pytest.mark.parametrize('upstream_status', [200, 401])
+def test_ai_customer_service_with_deepseek(console, monkeypatch, upstream_status):
+    from app.core.upload_security import PublicHTTPResponse
+    from app.services import ai_provider
+
+    async def complete(url, **kwargs):
+        assert url == 'https://api.deepseek.com/chat/completions'
+        assert json.loads(kwargs['content'])['model'] == 'deepseek-flash'
+        body = (b'{"choices":[{"message":{"content":"Hello"}}]}' if upstream_status == 200
+                else b'{"error":{"message":"private upstream diagnostic"}}')
+        return PublicHTTPResponse(upstream_status, httpx.Headers(), body)
+
+    monkeypatch.setattr(ai_provider, 'request_public_https', complete)
+    client, _, _ = console
+    saved = client.put('/api/system/open-source-config', json={'generalModel': {
+        'provider': 'deepseek', 'modelName': 'deepseek-flash',
+        'baseUrl': 'https://api.deepseek.com/anthropic/', 'apiKey': 'fixture-deepseek-key',
+    }})
+    assert saved.json()['code'] == 200
+    response = client.post('/api/business-settings/ai-customer-service/test', json={'message': 'Hello'})
+    if upstream_status == 200:
+        assert response.status_code == 200
+        assert response.json()['data']['reply'] == 'Hello'
+    else:
+        assert response.status_code == 503
+        assert '模型服务拒绝了 API Key' in response.text
+        assert 'private upstream diagnostic' not in response.text
+
+
 def test_original_business_modules_use_real_persistent_storage(console):
     client,config,app=console
     with sqlite3.connect(config.sqlite_path) as db:

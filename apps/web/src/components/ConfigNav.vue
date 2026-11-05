@@ -117,11 +117,6 @@ const tabs = settingsTabs
   .config-nav {
     min-height: auto;
     position: static;
-  }
-}
-
-@media (max-width: 900px) {
-  .config-nav {
     padding: 10px 12px;
     border-radius: 16px;
     overflow: hidden;

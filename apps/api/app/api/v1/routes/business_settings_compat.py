@@ -168,6 +168,12 @@ async def test_ai_customer_service(
             "usage": result.get("usage") or {},
         })
 
+    if isinstance(result, dict) and result.get("httpStatus") in (401, 403):
+        raise HTTPException(
+            status_code=503,
+            detail="模型服务拒绝了 API Key，请在模型配置中填写该服务商签发的有效密钥",
+        )
+
     raise HTTPException(
         status_code=503,
         detail="AI 模型未返回有效回复，请检查模型服务状态后重试",

@@ -316,7 +316,10 @@ async def generate_text(
     request_id = str(uuid.uuid4())
     cfg = await _resolve_ai_config()
     base_url = (cfg["base_url"] or "").rstrip("/")
-    if base_url and not base_url.endswith("/v1"):
+    # DeepSeek uses the same API key for both protocols; this client speaks OpenAI.
+    if base_url == "https://api.deepseek.com/anthropic":
+        base_url = "https://api.deepseek.com"
+    if base_url and base_url != "https://api.deepseek.com" and not base_url.endswith("/v1"):
         base_url += "/v1"
 
     result: Dict[str, Any] = {
