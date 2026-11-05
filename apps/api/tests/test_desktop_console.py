@@ -83,7 +83,7 @@ def test_original_index_assets_session_and_boundary(console):
     assert client.post('/api/desktop/session',json={},headers={'Origin':'https://outside.example','X-Desktop-Bootstrap':app.state.desktop_bootstrap}).status_code==403
 
 
-@pytest.mark.parametrize('upstream_status', [200, 401])
+@pytest.mark.parametrize('upstream_status', [200, 401, 429])
 def test_ai_customer_service_with_deepseek(console, monkeypatch, upstream_status):
     from app.core.upload_security import PublicHTTPResponse
     from app.services import ai_provider
@@ -108,8 +108,78 @@ def test_ai_customer_service_with_deepseek(console, monkeypatch, upstream_status
         assert response.json()['data']['reply'] == 'Hello'
     else:
         assert response.status_code == 503
-        assert '模型服务拒绝了 API Key' in response.text
+        expected = '模型服务拒绝了 API Key' if upstream_status == 401 else '模型服务请求过于频繁'
+        assert expected in response.text
         assert 'private upstream diagnostic' not in response.text
+
+
+def test_desktop_source_apply_creates_the_rules_used_by_paid_orders(console):
+    from app.services.unified_delivery_rules import UnifiedDeliveryRules
+
+    client, config, _ = console
+    with sqlite3.connect(config.sqlite_path) as db:
+        db.execute("INSERT INTO xianyu_account(id,external_uid,nickname,deleted,status) VALUES(11,'fixture-seller','本机账号',0,1)")
+        db.execute("INSERT INTO xianyu_goods(id,account_id,external_goods_id,title,deleted,status,auto_relist_enabled,has_snapshot) VALUES(21,11,'fixture-item','测试商品',0,1,0,0)")
+        db.execute("INSERT INTO xianyu_goods_sku(goods_id,account_id,sku_id,property_key) VALUES(21,11,'sku-one','one'),(21,11,'sku-two','two')")
+        db.execute("INSERT INTO delivery_text_source(id,title,content,deleted) VALUES(5,'测试货源','测试发货内容',0)")
+    response = client.post('/api/auto-delivery/sources/5/apply', json={'goodsIds': [21], 'timing': 'payDelivery'})
+    assert response.status_code == 200, response.text
+    assert response.json()['data']['appliedCount'] == 1
+    for sku in ('sku-one', 'sku-two'):
+        _, rule = UnifiedDeliveryRules(config.sqlite_path).resolve(11, 'fixture-item', sku)
+        assert rule.enabled and rule.trigger.mode == 'payment'
+        assert rule.plan.parts[0].content == '测试发货内容'
+
+
+@pytest.mark.asyncio
+async def test_conversation_uses_account_scoped_order_nickname(console):
+    from app.services.ws_storage import _enrich_online_conversations_batch
+
+    _, config, _ = console
+    with sqlite3.connect(config.sqlite_path) as db:
+        db.execute("INSERT INTO xianyu_trade_order(account_id,external_order_id,buyer_id,buyer_name,deleted) VALUES(11,'fixture-order','123456','买家真实昵称',0)")
+    runtime = DatabaseRuntime(config)
+    try:
+        async with runtime.session() as db:
+            rows = await _enrich_online_conversations_batch(db, 11, [
+                {"sid": "888", "peerUserId": "123456@goofish", "peerUserName": "oofish"},
+            ])
+        assert rows[0]['peerUserName'] == '买家真实昵称'
+    finally:
+        await runtime.dispose()
+
+
+@pytest.mark.asyncio
+async def test_conversation_placeholder_does_not_override_a_known_buyer(console):
+    from app.services.ws_storage import _backfill_online_conversation_records
+
+    _, config, _ = console
+    with sqlite3.connect(config.sqlite_path) as db:
+        db.execute("""INSERT INTO xianyu_conversation(account_id,s_id,peer_key,peer_external_uid,buyer_name)
+            VALUES(11,'777@goofish','sid:777@goofish','123456','买家真实昵称'),
+                  (11,'777','sid:777','123456','oofish'),
+                  (12,'777','sid:777','123456','其他账号昵称')""")
+    runtime = DatabaseRuntime(config)
+    try:
+        async with runtime.session() as db:
+            rows = await _backfill_online_conversation_records(db, 11, [
+                {"sid": "777", "peerUserId": "123456@goofish", "peerUserName": "oofish"},
+            ])
+        assert rows[0]['peerUserName'] == '买家真实昵称'
+    finally:
+        await runtime.dispose()
+
+
+def test_desktop_conversation_profile_reads_local_auth(console, monkeypatch):
+    from app.services import xianyu_api_service
+
+    _, config, _ = console
+    monkeypatch.setattr(xianyu_api_service, 'settings', config)
+    with sqlite3.connect(config.sqlite_path) as db:
+        db.execute("INSERT INTO xianyu_account(id,external_uid,nickname,deleted,status) VALUES(11,'fixture-seller','本机账号',0,1)")
+        db.execute("INSERT INTO xianyu_account_auth(account_id,encrypted_cookie,cookie_status,last_login_status_code,deleted) VALUES(11,'fixture-cookie',1,'OK',0)")
+    assert xianyu_api_service._get_account_auth(11)['encrypted_cookie'] == 'fixture-cookie'
+    assert xianyu_api_service._get_account_auth(12) is None
 
 
 def test_original_business_modules_use_real_persistent_storage(console):

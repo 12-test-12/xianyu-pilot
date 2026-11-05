@@ -2,13 +2,17 @@
   <div class="settings-layout">
     <ConfigNav :active="active" @navigate="$emit('navigate', $event)" @prefetch="$emit('prefetch', $event)" />
     <div class="settings-main">
-      <component :is="current" :key="active" :active="active" @navigate="$emit('navigate', $event)" />
+      <div v-if="renderFailed" class="page-load-error" role="alert">
+        <span>当前设置页未能显示，可以重试或切换到其他设置。</span>
+        <button type="button" @click="renderFailed = false">重试</button>
+      </div>
+      <component v-else :is="current" :key="active" :active="active" @navigate="$emit('navigate', $event)" />
     </div>
   </div>
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, onErrorCaptured, ref, watch } from 'vue'
 import { settingsPages } from '../data/settingsPages.js'
 import ConfigNav from '../components/ConfigNav.vue'
 
@@ -16,6 +20,12 @@ const props = defineProps({ active: String })
 defineEmits(['navigate', 'prefetch'])
 
 const current = computed(() => settingsPages[props.active] || settingsPages['settings-system'])
+const renderFailed = ref(false)
+watch(() => props.active, () => { renderFailed.value = false })
+onErrorCaptured(() => {
+  renderFailed.value = true
+  return false
+})
 </script>
 
 <style scoped>

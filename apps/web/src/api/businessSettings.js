@@ -21,7 +21,7 @@ export function saveBusinessSettings(category, data) {
  * 测试 AI 客服回复
  */
 export function testAiCustomerService(message) {
-  return request.post('/business-settings/ai-customer-service/test', { message }, { uiMode: 'silent' })
+  return request.post('/business-settings/ai-customer-service/test', { message }, { uiMode: 'silent', timeout: 70000 })
 }
 
 /**

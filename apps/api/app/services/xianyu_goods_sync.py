@@ -2547,6 +2547,11 @@ class XianyuItemPublisher:
             cache.invalidate(self.category_scope)
 
     def resolve_category_for_publish(self, item_data, *, cdn_cover: str = "", cover_size=None):
+        preferred = category_request(item_data)
+        if preferred.get("source") == "manual_platform":
+            from .publish_category import explicit_platform_category
+            return explicit_platform_category(preferred)
+
         title = item_data.get("title", "")
         desc = item_data.get("desc") or item_data.get("description", "")
         images = item_data.get("imageUrls", [])

@@ -46,7 +46,10 @@ async function launchBrowser() {
       if (endpoint === '/desktop/session') data = { token: 'isolated-desktop-token', username: 'UI Test' };
       else if (endpoint === '/system/currentUser') data = { username: 'UI Test' };
       else if (endpoint === '/sse/ticket') data = { ticket: 'test-ticket' };
-      else if (endpoint === '/xianyu/accounts') data = { records: [], total: 0 };
+      else if (endpoint === '/xianyu/accounts') data = { records: [{ id: 12, nickname: 'Test account' }], total: 1 };
+      else if (endpoint === '/goods' && new URL(route.request().url()).searchParams.get('keyword') === '123456') {
+        data = { records: [{ id: 24, externalGoodsId: '123456', category: '91000001' }], total: 1 };
+      }
       return route.fulfill({ json: { code: 200, data } });
     });
     const base = `http://127.0.0.1:${server.address().port}`;
@@ -143,6 +146,31 @@ async function launchBrowser() {
     releaseInitialCode();
     await page.locator('.page-skeleton-placeholder').waitFor({ state: 'hidden' });
     checks.push('A slow initial route shows a loading placeholder and keeps navigation available');
+
+    await page.goto(`${base}/?desktop=1#/settings-system`);
+    await page.locator('.system-settings-page').waitFor();
+    let releaseAiSettings;
+    const aiSettingsGate = new Promise(resolve => { releaseAiSettings = resolve; });
+    await page.route('**/assets/AiCsSettings-*.js', async route => { await aiSettingsGate; await route.continue(); });
+    await page.locator('.config-link').filter({ hasText: 'AI 客服配置' }).click();
+    await page.locator('.settings-main .page-skeleton-placeholder').waitFor({ timeout: 5000 });
+    assert.equal(await page.locator('.config-nav').isVisible(), true);
+    releaseAiSettings();
+    const timeZone = page.locator('select').filter({ has: page.locator('option[value="UTC"]') });
+    await timeZone.waitFor();
+    await timeZone.press('End');
+    assert.equal(await timeZone.inputValue(), 'UTC');
+    checks.push('Slow settings navigation keeps the shell visible and the time-zone selector accepts keyboard input');
+
+    await page.goto(`${base}/?desktop=1#/product-publish`);
+    await page.getByText('推荐不合适？填写闲鱼类目 ID').click();
+    await page.getByLabel('同类商品的闲鱼商品 ID').fill('123456');
+    await page.getByRole('button', { name: '读取商品类目' }).click();
+    await page.waitForFunction(() => document.querySelector('[aria-label="闲鱼类目 ID"]').value === '91000001');
+    await page.getByLabel('闲鱼类目名称').fill('图书');
+    await page.getByRole('button', { name: '使用此类目' }).click();
+    assert.match(await page.getByText('已选分类：', { exact: false }).first().innerText(), /91000001/);
+    checks.push('A synced item supplies a platform category ID outside the recommended categories');
 
     await page.goto(`${base}/#/accounts`);
     await page.locator('.page-viewport .wide-right').waitFor();

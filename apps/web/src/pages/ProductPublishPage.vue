@@ -2,7 +2,9 @@
   <div class="publish-layout">
     <div>
       <div v-if="error" class="global-notice error">{{ error }}</div>
-      <div v-if="warning" class="global-notice warning">{{ warning }}</div>
+      <div v-if="warning" class="global-notice warning">{{ warning }}
+        <button v-if="publishOutcome?.status === 'confirmed'" type="button" class="category-link" @click="emit('navigate', 'auto-delivery')">配置自动发货</button>
+      </div>
       <div v-if="success" class="global-notice success">{{ success }}</div>
       <div v-if="publishIntent.payload" class="global-notice warning publish-intent-notice" role="status">
         <b>当前是恢复中的已持久化发布意图</b>
@@ -154,6 +156,20 @@
           >
             AI 自动选择
           </button>
+          <details>
+            <summary>推荐不合适？填写闲鱼类目 ID</summary>
+            <div class="category-tools">
+              <input v-model.trim="categoryReferenceId" class="category-search" aria-label="同类商品的闲鱼商品 ID" placeholder="同账号已同步的同类商品 ID" inputmode="numeric" />
+              <button type="button" class="category-ai-btn" :disabled="categoryReferenceLoading || !form.accountId || !platformIdPattern.test(categoryReferenceId)" @click="readReferenceCategory">读取商品类目</button>
+            </div>
+            <div class="category-tools">
+              <input v-model.trim="manualCategory.catName" class="category-search" aria-label="闲鱼类目名称" placeholder="闲鱼叶子类目名称" maxlength="200" />
+              <input v-model.trim="manualCategory.catId" class="category-search" aria-label="闲鱼类目 ID" placeholder="闲鱼类目 ID" inputmode="numeric" maxlength="24" />
+              <input v-model.trim="manualCategory.channelCatId" class="category-search" aria-label="渠道类目 ID" placeholder="渠道类目 ID（如有）" inputmode="numeric" maxlength="24" />
+              <input v-model.trim="manualCategory.tbCatId" class="category-search" aria-label="淘宝类目 ID" placeholder="淘宝类目 ID（如有）" inputmode="numeric" maxlength="24" />
+              <button type="button" class="category-ai-btn" :disabled="!manualCategory.catName || !platformIdPattern.test(manualCategory.catId) || [manualCategory.channelCatId, manualCategory.tbCatId].some(id => id && !platformIdPattern.test(id))" @click="applyAutoCategory({ ...manualCategory, source: 'manual_platform' })">使用此类目</button>
+            </div>
+          </details>
           <div v-if="categoryKeyword" class="category-search-results">
             <div
               v-for="item in categorySearchResults"
@@ -218,10 +234,11 @@
           </div>
           <p class="subtle" style="margin-top:8px">
             已选分类：{{ selectedCategoryPath || '请选择分类' }}
+            <span v-if="selectedPublishCategory?.catId">（ID {{ selectedPublishCategory.catId }}）</span>
             <span v-if="aiCategoryMessage" class="ai-category-tip">{{ aiCategoryMessage }}</span>
           </p>
           <p v-if="selectedCategoryNeedsPlatformConfirm" class="ai-unconfigured-tip">
-            ⚠️ 当前分类缺少平台类目 ID（本地分类目录只有显示用的节点 ID），无法发布。请点击「重新识别分类」，再从“推荐分类”里选一个平台叶子分类（商品内容会保留）。
+            当前分类没有闲鱼类目 ID。可从封面推荐中选择，或填写正确的平台类目 ID。商品内容会保留。
           </p>
         </div>
       </CardPanel>
@@ -454,6 +471,32 @@ const level3Id = ref(null)
 const level2List = ref([])
 const level3List = ref([])
 const categoryKeyword = ref('')
+const platformIdPattern = /^[1-9][0-9]{0,23}$/
+const manualCategory = reactive({ catName: '', catId: '', channelCatId: '', tbCatId: '' })
+const categoryReferenceId = ref('')
+const categoryReferenceLoading = ref(false)
+
+async function readReferenceCategory() {
+  const itemId = categoryReferenceId.value
+  const accountId = form.accountId
+  categoryReferenceLoading.value = true
+  try {
+    const res = await getGoods({ accountId: Number(accountId), keyword: itemId, size: 50 })
+    if (accountId !== form.accountId || itemId !== categoryReferenceId.value) return
+    const match = res.data?.records?.find(item => String(item.externalGoodsId) === itemId)
+    const catId = String(match?.category || '').trim()
+    if (!platformIdPattern.test(catId)) {
+      warning.value = '未找到该商品的闲鱼类目 ID。请确认商品属于所选账号且已同步。'
+      return
+    }
+    Object.assign(manualCategory, { catId, channelCatId: '', tbCatId: '' })
+    warning.value = '已读取商品类目 ID，请确认类目名称后点击「使用此类目」。'
+  } catch (e) {
+    if (accountId === form.accountId && itemId === categoryReferenceId.value) error.value = e.message
+  } finally {
+    categoryReferenceLoading.value = false
+  }
+}
 const recentCategories = ref([])
 const favoriteCategories = ref([])
 const selectedCategoryPath = ref('')
@@ -783,7 +826,7 @@ async function refreshCategoriesInBackground() {
 }
 
 function applyAutoCategory(cat, { manual = true } = {}) {
-  const info = publishCategoryFromNode(cat, 'xianyu')
+  const info = publishCategoryFromNode(cat, cat.source || 'xianyu')
   if (!info?.catId || !info.catName || !info.isLeaf) return
   markManualCategorySelection(manual)
   const matched = findCategoryOption({ name: info.catName })
@@ -799,7 +842,7 @@ function applyAutoCategory(cat, { manual = true } = {}) {
   // Keep the platform candidate even when the local tree has no matching node.
   selectedPublishCategory.value = info
   selectedCategoryName.value = info.catName
-  selectedCategoryPath.value = [cat.channelCat1Name, cat.channelCat2Name, cat.channelCat3Name, info.catName].filter(Boolean).join(' ＞ ')
+  selectedCategoryPath.value = info.categoryPath.join(' ＞ ')
   autoSelectedCatId.value = info.catId
   autoCategoryMessage.value = `已选择闲鱼分类：${info.catName}`
   autoCategoryMsgType.value = 'success'
@@ -1047,29 +1090,31 @@ function toggleAutoDelivery() {
 // 开源版后端 publish 接口已自动保存到本地商品库，此处仅查询并绑定货源
 // 绑定失败不影响发布结果（商品已发布到闲鱼），仅提示用户到「自动发货」页面手动配置
 // 绑定成功后强制刷新货源库，同步 usageCount
-async function bindAutoDeliverySource(itemId) {
+async function bindAutoDeliverySource(itemId, goodsId, accountId, sourceId) {
   try {
-    const goodsRes = await getGoods({ accountId: Number(form.accountId), size: 50 })
-    const list = goodsRes?.data?.records || goodsRes?.data || []
-    const created = (Array.isArray(list) ? list : []).find(g => String(g.externalGoodsId) === String(itemId))
-    if (!created || !created.id) {
-      success.value = '发布成功！自动发货绑定待商品同步后生效，请稍后到「自动发货」页面确认。'
-      return
+    if (!goodsId && itemId) {
+      const goodsRes = await getGoods({ accountId, keyword: itemId, size: 50 })
+      goodsId = goodsRes?.data?.records?.find(g => String(g.externalGoodsId) === String(itemId))?.id
     }
-    await applyDeliverySourceToGoods(autoDelivery.sourceId, {
-      goodsIds: [created.id],
+    if (!goodsId) throw new Error('未找到已发布的本地商品')
+    await applyDeliverySourceToGoods(sourceId, {
+      goodsIds: [goodsId],
       timing: 'payDelivery',
     })
-    success.value = `发布成功！已绑定自动发货货源：${selectedSourceTitle.value || '已选货源'}（买家付款后自动发货）`
+    success.value = '发布成功！已启用买家付款后自动发货。'
     // 绑定成功后刷新货源库数据，同步 usageCount
     loadDeliverySources(true)
+    return true
   } catch (bindErr) {
-    success.value = `发布成功！自动发货绑定失败：${bindErr?.message || '请稍后到「自动发货」页面手动配置'}`
+    warning.value = `商品已发布，自动发货尚未启用。请到「自动发货」补配货源。${bindErr?.message || ''}`
+    return false
   }
 }
 
 watch(() => form.accountId, (nextAccountId, previousAccountId) => {
   if (String(nextAccountId ?? '') === String(previousAccountId ?? '')) return
+  categoryReferenceId.value = ''
+  Object.assign(manualCategory, { catName: '', catId: '', channelCatId: '', tbCatId: '' })
   const discardedUpload = uploadingImages.value
   uploadRequestVersion += 1
   autoCategoryRequestVersion += 1
@@ -1458,7 +1503,7 @@ function validate() {
   // Stop before the request: a category without a marketplace catId can never
   // be published, and the server refusal is far less actionable than this hint.
   if (selectedCategoryNeedsPlatformConfirm.value) {
-    error.value = '当前分类没有平台类目 ID（本地分类目录只有显示用的节点 ID），发布会被平台拒回。请点击「重新识别分类」，从“推荐分类”里选一个平台叶子分类；商品内容会保留。'
+    error.value = '当前分类没有闲鱼类目 ID，请从封面推荐中选择，或填写正确的平台类目 ID。商品内容会保留。'
     return false
   }
   const miss = checks.value.find(i => !i.ok)
@@ -1581,7 +1626,7 @@ function editFailedPublish() {
 }
 
 async function submit() {
-  if (submitting.value || accountsAvailable.value !== true || publishOutcome.value?.categoryInvalid || ['unknown', 'in_progress'].includes(publishOutcome.value?.status)) return
+  if (submitting.value || accountsAvailable.value !== true || publishOutcome.value?.categoryInvalid || ['unknown', 'in_progress', 'confirmed'].includes(publishOutcome.value?.status)) return
   submitting.value = true
   try {
     await submitPublishIntent()
@@ -1667,6 +1712,8 @@ async function submitPublishIntent() {
       savePublishIntent()
     }
     submittedCategoryRevision = categoryRevision
+    const publishedAccountId = publishIntent.payload.xianyuAccountId
+    const deliverySourceId = autoDelivery.enabled ? autoDelivery.sourceId : null
     const publishRes = publishIntent.payload.itemSkuList?.length
       ? await publishFishShopItem({
           ...publishIntent.payload,
@@ -1684,9 +1731,12 @@ async function submitPublishIntent() {
       clearPublishDraft()
       // 自动发货货源绑定（发布成功且本地商品已保存后执行）
       // 开源版后端 publish 接口已自动保存到本地商品库，此处查询本地商品按 externalGoodsId 找到内部 id 再绑定
-      if (autoDelivery.enabled && autoDelivery.sourceId) {
+      if (deliverySourceId) {
         const publishedItemId = String(publishRes.data?.itemId || '').trim()
-        if (publishedItemId) await bindAutoDeliverySource(publishedItemId)
+        if (!await bindAutoDeliverySource(publishedItemId, publishRes.data?.goodsId, publishedAccountId, deliverySourceId)) {
+          publishOutcome.value = { status: 'confirmed' }
+          return
+        }
       }
       // 浏览器中的待同步标记只是可选的后续 UX，失败不得改写已确认的平台发布结果。
       const pendingSync = markPendingProductSync()
@@ -1893,7 +1943,7 @@ async function clearAllData() {
   })
   if (!ok) return
   // Only a definitive, retryable failure can release the persisted request.
-  if (canEditFailedIntent.value) clearPublishIntent()
+  if (canEditFailedIntent.value || publishOutcome.value?.status === 'confirmed') clearPublishIntent()
   isRestoring.value = true
   try {
     form.title = ''

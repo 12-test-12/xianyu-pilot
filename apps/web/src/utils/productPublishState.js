@@ -6,7 +6,7 @@ export function canSubmitPublishIntent({
 }) {
   if (accountsAvailable !== true || submitting) return false
   const status = String(outcome?.status || '')
-  if (status === 'unknown' || status === 'in_progress') return false
+  if (status === 'unknown' || status === 'in_progress' || status === 'confirmed') return false
   if (hasIntent && status === 'failed' && outcome?.retrySafe !== true) return false
   return true
 }

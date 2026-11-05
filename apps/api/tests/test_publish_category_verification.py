@@ -60,6 +60,16 @@ def test_verification_without_an_uploaded_cover_uses_metadata_shape():
     assert publisher.shapes == ["itemInfo"]
 
 
+def test_explicit_platform_category_is_not_replaced_by_image_recommendations():
+    publisher = Publisher()
+    selected = item(categoryInfo={**CATEGORY, "source": "manual_platform"})
+    assert publisher.resolve_category_for_publish(selected)["catId"] == CATEGORY["catId"]
+    assert publisher.shapes == []
+
+    with pytest.raises(PublishCategoryError):
+        publisher.resolve_category_for_publish(item(categoryInfo={**CATEGORY, "catId": "", "source": "manual_platform"}))
+
+
 def test_second_shape_rescues_a_category_the_first_shape_missed():
     publisher = Publisher()
     publisher.cover_candidates = (DECOY,)

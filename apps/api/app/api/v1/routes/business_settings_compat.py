@@ -173,6 +173,14 @@ async def test_ai_customer_service(
             status_code=503,
             detail="模型服务拒绝了 API Key，请在模型配置中填写该服务商签发的有效密钥",
         )
+    if isinstance(result, dict) and result.get("httpStatus") in (400, 402, 404, 429):
+        detail = {
+            400: "模型服务拒绝了请求，请核对模型名称及接口协议",
+            402: "模型服务余额不足，请检查服务商账户",
+            404: "模型服务找不到该接口或模型，请核对接口地址和模型名称",
+            429: "模型服务请求过于频繁，请稍后重试",
+        }[result["httpStatus"]]
+        raise HTTPException(status_code=503, detail=detail)
 
     raise HTTPException(
         status_code=503,

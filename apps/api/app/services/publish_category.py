@@ -62,6 +62,19 @@ def category_request(req: dict) -> dict:
     return dict(category) if isinstance(category, dict) else {"catName": str(category or "").strip()}
 
 
+def explicit_platform_category(preferred: dict) -> dict:
+    for key in ("catId", "channelCatId", "tbCatId"):
+        value = str(preferred.get(key) or "").strip()
+        if (key == "catId" or value) and (
+            not 1 <= len(value) <= 24 or not value.isascii() or not value.isdigit() or not int(value)
+        ):
+            raise PublishCategoryError("请输入有效的闲鱼平台类目 ID")
+    category = normalize_publish_category(preferred)
+    if not category or len(category["catName"]) > 200:
+        raise PublishCategoryError("请填写闲鱼叶子类目名称和 ID")
+    return {**category, "cardList": []}
+
+
 def category_option(value: object) -> dict:
     category = normalize_publish_category(value)
     if not category:

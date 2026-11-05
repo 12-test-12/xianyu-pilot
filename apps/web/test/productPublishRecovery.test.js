@@ -16,6 +16,7 @@ function flow({ outcome = null, publish, confirm = async () => true } = {}) {
   const state = {
     publishIntent: { idempotencyKey: 'original-key', payload },
     publishOutcome: ref(outcome), submitting: ref(false), accountsAvailable: ref(true),
+    autoDelivery: { enabled: false, sourceId: null },
     categoryRevision: 0, isCategoryRecoveryCurrent,
     error: ref(''), warning: ref(''), success: ref(''),
     PUBLISH_INTENT_KEY: 'intent',

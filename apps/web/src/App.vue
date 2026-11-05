@@ -96,6 +96,7 @@ import AppStatusCenter from './components/AppStatusCenter.vue'
 import NotFoundPage from './pages/NotFoundPage.vue'
 import { pageTitles } from './data/nav.js'
 import { settingsPages } from './data/settingsPages.js'
+import SettingsPage from './pages/SettingsPage.vue'
 import { logout as logoutApi } from './api/auth.js'
 import { currentUser } from './api/system.js'
 import { clearAuth, getCachedUsername, getToken, isAuthed, setAuth } from './utils/auth.js'
@@ -115,7 +116,6 @@ import {
 const LoginPage = asyncPage(() => import('./pages/LoginPage.vue'))
 const MobileLite = asyncPage(() => import('./components/MobileLite.vue'))
 const DashboardPage = asyncPage(() => import('./pages/DashboardPage.vue'))
-const SettingsPage = asyncPage(() => import('./pages/SettingsPage.vue'))
 
 const pageMap = {
   login: LoginPage,
@@ -267,8 +267,8 @@ function onOnline() {
 
 function prefetchRoute(key) {
   if (!key || key === active.value) return
-  const comp = settingsKeys.includes(key) ? SettingsPage : pageMap[key]
-  return Promise.all([prefetchPage(comp), prefetchPage(settingsPages[key])])
+  if (settingsKeys.includes(key)) return prefetchPage(settingsPages[key], 1500)
+  return prefetchPage(pageMap[key])
 }
 
 async function navigate(key, options = {}) {

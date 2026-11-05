@@ -984,7 +984,7 @@ async def _load_remote_conversation_user_info(
         return {}
     data = result.get("data") or {}
     avatar = _normalize_image_url(data.get("avatar"))
-    nick = normalize_peer_name(data.get("nick") or "")
+    nick = str(data.get("nick") or "").strip()
     return {
         "avatar": avatar,
         "nick": nick,
@@ -1105,7 +1105,7 @@ async def _hydrate_online_conversation_avatars(
 ) -> list[dict[str, Any]]:
     candidates = [
         conv for conv in conversations
-        if conv.get("sid") and not _normalize_image_url(conv.get("buyerAvatar"))
+        if conv.get("sid") and (not conv.get("peerUserName") or not _normalize_image_url(conv.get("buyerAvatar")))
     ][:50]
     if not candidates:
         return conversations
@@ -1118,7 +1118,7 @@ async def _hydrate_online_conversation_avatars(
         async with semaphore:
             info = await _fetch_remote_conversation_user_info(account_id, str(conv.get("sid") or ""))
         avatar = info.get("avatar") or ""
-        nick = info.get("nick") or ""
+        nick = "" if conv.get("peerUserName") else (info.get("nick") or "")
         if avatar:
             conv["buyerAvatar"] = avatar
         if nick and not conv.get("peerUserName"):
@@ -1829,6 +1829,13 @@ async def _finalize_context_messages(
     return _decorate_context_messages(merged[start:end]), total
 
 
+def _known_conversation_nickname(value: object, peer_id: str, sid: str) -> str:
+    name = str(value or "").strip()
+    if name in {"买家", "闲鱼买家", "oofish", "goofish", peer_id[-6:], f"用户{sid[-4:]}"}:
+        return ""
+    return name
+
+
 async def _backfill_online_conversation_records(
     db: AsyncSession,
     account_id: int,
@@ -1920,11 +1927,13 @@ async def _backfill_online_conversation_records(
     conversation_by_sid_goods: dict[tuple[str, str], dict[str, Any]] = {}
     conversation_by_peer: dict[str, dict[str, Any]] = {}
     conversation_by_peer_goods: dict[tuple[str, str], dict[str, Any]] = {}
+    nickname_by_peer: dict[str, str] = {}
     for row in conversation_rows:
         row_goods_id = str(row.get("goods_id") or "").strip()
         row_sid_candidates = [
             candidate
             for candidate in (
+                _normalize_sid_value(row.get("s_id")),
                 _normalize_sid_value(row.get("peer_key")),
                 _normalize_sid_value(row.get("external_buyer_id")),
                 _normalize_sid_value(row.get("peer_external_uid")),
@@ -1946,6 +1955,9 @@ async def _backfill_online_conversation_records(
                 conversation_by_sid_goods.setdefault((sid, row_goods_id), row)
         for peer in row_peer_candidates:
             conversation_by_peer.setdefault(peer, row)
+            name = _known_conversation_nickname(row.get("buyer_name"), peer, _normalize_sid_value(row.get("s_id")))
+            if peer.isascii() and peer.isdigit() and name:
+                nickname_by_peer.setdefault(peer, name)
             if row_goods_id:
                 conversation_by_peer_goods.setdefault((peer, row_goods_id), row)
 
@@ -1985,14 +1997,17 @@ async def _backfill_online_conversation_records(
             conv["id"] = matched_conversation_id
 
         row_peer_user_id = _normalize_party_id(
-            matched_row.get("external_buyer_id") or matched_row.get("peer_external_uid")
+            matched_row.get("peer_external_uid") or matched_row.get("external_buyer_id")
         )
         if row_peer_user_id and (not peer_user_id or peer_user_id.startswith("sid:")):
             conv["peerUserId"] = _ensure_goofish_suffix(row_peer_user_id)
         if matched_row.get("peer_key") and not conv.get("peerKey"):
             conv["peerKey"] = matched_row.get("peer_key")
-        if matched_row.get("buyer_name") and not conv.get("peerUserName"):
-            conv["peerUserName"] = matched_row.get("buyer_name")
+        actual_peer = _normalize_party_id(conv.get("peerUserId")) or row_peer_user_id
+        if not _known_conversation_nickname(conv.get("peerUserName"), actual_peer, sid):
+            conv["peerUserName"] = nickname_by_peer.get(actual_peer, "")
+            if not conv["peerUserName"] and (actual_peer == row_peer_user_id or not actual_peer.isdigit()):
+                conv["peerUserName"] = _known_conversation_nickname(matched_row.get("buyer_name"), actual_peer, sid)
         if matched_row.get("buyer_avatar") and not conv.get("buyerAvatar"):
             conv["buyerAvatar"] = matched_row.get("buyer_avatar")
         if matched_row.get("goods_id") and not conv.get("goodsId"):
@@ -3963,6 +3978,10 @@ async def get_online_conversations_paged(
     )
     conversations = await _apply_ai_reply_preview(db, account_id, conversations)
     conversations = _hydrate_online_conversation_avatars_from_cache(conversations)
+    spawn_background_task(
+        _hydrate_online_conversation_avatars_async(account_id, conversations),
+        name="ws-storage.avatar-hydration",
+    )
 
     logger.info(
         "get_online_conversations_paged: IM 分页 tenantId=%d accountId=%d cursor=%s 返回 %d 条, hasMore=%s, nextCursor=%s", account_id, cursor, len(conversations), has_more, next_cursor,
@@ -4068,6 +4087,7 @@ async def _enrich_online_conversations_batch(
         sid = conv.get("sid", "")
         peer_user_id = conv.get("peerUserId", "") or ""
         peer_user_name = conv.get("peerUserName", "") or ""
+        peer_user_name = conv["peerUserName"] = _known_conversation_nickname(peer_user_name, str(peer_user_id), str(sid))
         goods_id = conv.get("goodsId", "") or ""
 
         if sid:
@@ -4369,11 +4389,11 @@ async def _enrich_online_conversations_batch(
             try:
                 order_buyer_rows = await db.execute(
                     text("""
-                        SELECT buyer_id, COALESCE(NULLIF(buyer_nickname, ''), NULLIF(buyer_name, '')) AS buyer_display_name
+                        SELECT buyer_id, buyer_name AS buyer_display_name
                         FROM xianyu_trade_order WHERE account_id = :account_id
                           AND deleted = 0
                           AND buyer_id IN :buyer_variants
-                          AND COALESCE(NULLIF(buyer_nickname, ''), NULLIF(buyer_name, '')) IS NOT NULL
+                          AND NULLIF(buyer_name, '') IS NOT NULL
                         ORDER BY id DESC
                     """).bindparams(bindparam("buyer_variants", expanding=True)),
                     {
@@ -4403,17 +4423,6 @@ async def _enrich_online_conversations_batch(
                             conv["peerUserName"] = name
             except Exception as exc:
                 logger.debug("批量订单买家名称查询失败 errorType=%s", type(exc).__name__)
-
-    # === 最终兜底：避免一律显示"买家"，优先使用更稳定但不误导的占位名 ===
-    for conv in conversations:
-        if conv.get("peerUserName"):
-            continue
-        peer_user_id = conv.get("peerUserId", "") or ""
-        sid = conv.get("sid", "") or ""
-        if peer_user_id and not peer_user_id.startswith("sid:"):
-            conv["peerUserName"] = peer_user_id[-6:]
-        elif sid and sid != "hello":
-            conv["peerUserName"] = f"用户{str(sid)[-4:]}"
 
     # === 批量持久化商品封面图/标题到 DB（避免每次查询都重新 enrichment）===
     # 仅对有 conversationId（DB行ID）且本次新获取到 goods_cover_pic/goods_title 的会话执行

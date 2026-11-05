@@ -1,6 +1,7 @@
 """The original rule table is authoritative; goods JSON is a transactionally updated projection."""
 import json
 import re
+from contextlib import nullcontext
 from app.services.desktop_delivery import DesktopDeliveryStore, encode
 from app.services.desktop_delivery_contracts import DeliveryPlan, DeliveryPart
 from app.services.official_delivery_contracts import TriggerPolicy, RuleVariant, GoodsDeliveryConfig
@@ -83,8 +84,8 @@ class UnifiedDeliveryRules(DesktopDeliveryStore):
                 self.project(conn,gid)
             return {"id":rule_id}
 
-    def save_goods(self,goods_id,config:GoodsDeliveryConfig):
-        with self.connection(write=True) as conn:
+    def save_goods(self,goods_id,config:GoodsDeliveryConfig,*,connection=None):
+        with (self.connection(write=True) if connection is None else nullcontext(connection)) as conn:
             goods=conn.execute("SELECT * FROM xianyu_goods WHERE id=? AND deleted=0",(goods_id,)).fetchone()
             if not goods:
                 raise InventoryError("商品不存在",404)
@@ -112,7 +113,38 @@ class UnifiedDeliveryRules(DesktopDeliveryStore):
                 if sku not in wanted:
                     conn.execute("UPDATE delivery_rule SET deleted=1,updated_time=? WHERE id=?",(now(),row["id"]))
             self.project(conn,goods_id)
-        return self.get_goods(goods_id)
+        if connection is None:
+            return self.get_goods(goods_id)
+
+    def bind_source(self, source_id, goods_ids, timing):
+        if timing != "payDelivery":
+            raise InventoryError("桌面版货源仅支持核验付款后发货")
+        with self.connection(write=True) as conn:
+            source = conn.execute(
+                "SELECT * FROM delivery_text_source WHERE id=? AND deleted=0", (source_id,)
+            ).fetchone()
+            if not source:
+                raise InventoryError("货源不存在", 404)
+            card = source["delivery_mode"] in ("card", "kami")
+            segments = json.loads(source["segments"] or "[]")
+            if card:
+                parts = (DeliveryPart(kind="card", content=(source["content"] or "").replace("{卡密占位}", "{卡密}")),)
+                if not source["card_group_id"]:
+                    raise InventoryError("卡密货源未配置卡密分组")
+            else:
+                parts = tuple(DeliveryPart(kind=part["type"],
+                    content=part.get("imageUrl") if part["type"] == "image" else part.get("content", ""))
+                    for part in segments) if segments else (DeliveryPart(kind="text", content=source["content"] or ""),)
+            for goods_id in goods_ids:
+                sku_ids = [row[0] for row in conn.execute(
+                    "SELECT sku_id FROM xianyu_goods_sku WHERE goods_id=? ORDER BY sku_id", (goods_id,)
+                )] or [""]
+                config = GoodsDeliveryConfig(variants=tuple(
+                    RuleVariant(sku_id=sku_id, enabled=True, plan=DeliveryPlan(
+                        sku_id=sku_id, parts=parts, card_group_id=source["card_group_id"] if card else None
+                    )) for sku_id in sku_ids
+                ))
+                self.save_goods(goods_id, config, connection=conn)
 
     def get_goods(self,goods_id):
         with self.connection() as conn:

@@ -267,3 +267,17 @@ def save_goods_config(goods_id:Id,repo:Inventory,body:dict=Body(...)):
     except ValidationError as exc:
         raise InventoryError("商品规则格式无效，保存已拒绝") from exc
     return ResultObject.success(rules.save_goods(goods_id,config))
+
+
+@router.post("/auto-delivery/sources/{source_id}/apply")
+def apply_source(source_id: Id, repo: Inventory, body: dict = Body(...)):
+    from app.api.v1.routes.delivery_workflow_compat import _normalize_goods_ids
+    from app.services.unified_delivery_rules import UnifiedDeliveryRules
+    try:
+        goods_ids = _normalize_goods_ids(body.get("goodsIds"))
+        UnifiedDeliveryRules(repo.path).bind_source(source_id, goods_ids, body.get("timing") or "payDelivery")
+    except InventoryError:
+        raise
+    except (ValueError, TypeError, KeyError) as exc:
+        raise InventoryError("货源或商品配置不完整，绑定未保存") from exc
+    return ResultObject.success({"appliedCount": len(goods_ids)}, "货源已绑定到付款后发货规则")

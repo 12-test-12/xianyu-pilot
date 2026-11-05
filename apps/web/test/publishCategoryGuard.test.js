@@ -23,7 +23,7 @@ test('a category without a marketplace catId never reaches the publish request',
   const result = validate()
   assert.equal(result.ok, false)
   assert.match(result.error, /平台类目 ID/)
-  assert.match(result.error, /重新识别分类/)
+  assert.match(result.error, /填写正确的平台类目 ID/)
 })
 
 test('the page source keeps the guard wired to the live category check', () => {

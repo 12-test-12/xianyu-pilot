@@ -2296,7 +2296,7 @@ function resolveConversationDisplayName(dto, sid, peerUserId) {
     dto.raw?.buyerName
   ].map(v => String(v || '').trim()).filter(Boolean)
 
-  const blocked = ['买家', '闲鱼买家', 'STIMULATED_SALE_BUY', 'shading_opening', '我', 'null', 'undefined']
+  const blocked = ['买家', '闲鱼买家', 'oofish', 'goofish', 'STIMULATED_SALE_BUY', 'shading_opening', '我', 'null', 'undefined']
   const valid = candidates.find(v => !blocked.includes(v))
   if (valid) return valid
   // peerUserId 的数字部分可作为兜底展示名

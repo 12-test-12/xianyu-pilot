@@ -11,7 +11,9 @@
 import hashlib
 import json
 import logging
+import sqlite3
 import time
+from contextlib import closing
 from typing import Any, Optional
 from urllib.parse import quote, urlencode
 
@@ -120,6 +122,17 @@ def _extract_updated_cookie_str(response: requests.Response, original_cookie_str
 def _get_account_auth(account_id: int) -> Optional[dict]:
     """Read credentials synchronously inside the caller's worker thread."""
     try:
+        if settings.is_desktop:
+            with closing(sqlite3.connect(settings.sqlite_path.as_uri() + "?mode=ro", uri=True)) as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute("""
+                    SELECT auth.encrypted_cookie, auth.encrypted_token, a.external_uid
+                    FROM xianyu_account_auth auth JOIN xianyu_account a ON a.id = auth.account_id
+                    WHERE auth.account_id = ? AND auth.deleted = 0 AND a.deleted = 0
+                      AND auth.cookie_status = 1 AND auth.last_login_status_code = 'OK'
+                    ORDER BY auth.updated_time DESC, auth.id DESC LIMIT 1
+                """, (account_id,)).fetchone()
+                return dict(row) if row else None
         connection = _open_sync_db_connection()
         try:
             with connection.cursor() as cursor:
@@ -142,7 +155,7 @@ def _get_account_auth(account_id: int) -> Optional[dict]:
         return None
 
 
-def _persist_account_auth_cookies(account_id: int, cookie_str: str) -> None:
+def _persist_account_auth_cookies(account_id: int, cookie_str: str, *, previous_cookie: str) -> None:
     """Persist refreshed credentials without creating a nested event loop."""
     if not account_id or not cookie_str:
         return
@@ -152,6 +165,21 @@ def _persist_account_auth_cookies(account_id: int, cookie_str: str) -> None:
         cookie_map = _parse_cookie_str(cookie_str)
         encrypted_cookie = encrypt_cookie_for_storage(cookie_str)
         encrypted_token = encrypt_cookie_for_storage(cookie_map.get("_m_h5_tk")) if cookie_map.get("_m_h5_tk") else None
+
+        if settings.is_desktop:
+            with closing(sqlite3.connect(settings.sqlite_path.as_uri() + "?mode=rw", uri=True)) as conn, conn:
+                row = conn.execute("""
+                    SELECT id, encrypted_cookie FROM xianyu_account_auth
+                    WHERE account_id = ? AND deleted = 0 AND cookie_status = 1 AND last_login_status_code = 'OK'
+                    ORDER BY updated_time DESC, id DESC LIMIT 1
+                """, (account_id,)).fetchone()
+                if row and _decrypt_value(row[1]) == previous_cookie:
+                    conn.execute("""
+                        UPDATE xianyu_account_auth
+                        SET encrypted_cookie = ?, encrypted_token = COALESCE(?, encrypted_token)
+                        WHERE id = ? AND encrypted_cookie = ? AND deleted = 0 AND cookie_status = 1
+                    """, (encrypted_cookie, encrypted_token, *row))
+            return
 
         connection = _open_sync_db_connection()
         try:
@@ -420,9 +448,9 @@ def fetch_conversation_user_info(
 
         merged_cookie_str = _extract_updated_cookie_str(response, current_cookie_str)
         if merged_cookie_str != current_cookie_str:
+            _persist_account_auth_cookies(account_id, merged_cookie_str, previous_cookie=current_cookie_str)
             current_cookie_str = merged_cookie_str
             current_m_h5_tk = _parse_cookie_str(current_cookie_str).get("_m_h5_tk") or current_m_h5_tk
-            _persist_account_auth_cookies(account_id, current_cookie_str)
 
         ret = result.get("ret", [])
         ret_str = " ".join(ret) if isinstance(ret, list) else str(ret)
@@ -710,7 +738,7 @@ def _post_mtop_with_token_retry(
         new_cookie_str = result.get("updatedCookieStr")
         if new_cookie_str and new_cookie_str != cookie_str:
             logger.info("MTOP 接口令牌过期，刷新 Cookie 后重试: accountId=%s api=%s", account_id, api_name)
-            _persist_account_auth_cookies(account_id, new_cookie_str)
+            _persist_account_auth_cookies(account_id, new_cookie_str, previous_cookie=cookie_str)
             return _do_post_mtop_api(account_id, new_cookie_str, api_name, data_str, timeout)
 
     return result
