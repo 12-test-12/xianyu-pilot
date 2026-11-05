@@ -20,9 +20,18 @@ const server = http.createServer((req, res) => {
   });
 });
 
+async function launchBrowser() {
+  try {
+    return await chromium.launch({ channel: 'msedge', headless: true });
+  } catch {
+    // CI/无 Edge 环境回落到 Playwright 自带 Chromium（先 npx playwright install chromium）。
+    return await chromium.launch({ headless: true });
+  }
+}
+
 (async () => {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  const browser = await chromium.launch({ channel: 'msedge', headless: true });
+  const browser = await launchBrowser();
   const checks = [], errors = [];
   try {
     const page = await browser.newPage({ viewport: { width: 1180, height: 820 } });

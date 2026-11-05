@@ -1,6 +1,7 @@
 """扫码登录 Playwright 浏览器会话的单元测试（不启动真实浏览器）。"""
 import time
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -285,12 +286,46 @@ def test_verification_in_popup_frame_and_detached_frames():
             raise qlb.PlaywrightError("Frame detached")
 
     env = _Env()
-    env.verification_text = "请进行安全验证"
+    env.verification_text = "请拖动滑块完成验证"
     context = SimpleNamespace(pages=[
         SimpleNamespace(frames=[DetachedFrame()]),
         SimpleNamespace(frames=[_FakePage(env)]),
     ])
     assert qlb.needs_verification(context)
+
+
+def test_real_login_page_copy_never_trips_verification_gate():
+    """真实登录页正文绝不能触发验证闸门，挑战文案仍然必须命中。"""
+    fixture = Path(__file__).parent / "fixtures" / "goofish_login_page_text.txt"
+    rendered = "".join(
+        line for line in fixture.read_text(encoding="utf-8").splitlines(keepends=True)
+        if not line.startswith("#")
+    )
+    assert rendered.strip()
+    assert not qlb.text_needs_verification(rendered)
+    # 被剔除的通用词出现在普通文案里时同样不得阻塞登录。
+    assert not qlb.text_needs_verification("账号安全验证记录：身份验证状态正常")
+    # 挑战界面文案必须继续命中，否则验证等待逻辑会失效。
+    assert qlb.text_needs_verification("请拖动滑块完成验证")
+    assert qlb.text_needs_verification("请完成人脸识别")
+
+
+def test_verification_resumes_to_prior_status_instead_of_claiming_scan(monkeypatch):
+    """验证在扫码前结束时必须回到未扫码状态，不能谎报“已成功扫码”。"""
+    env = _Env(cookie_after_polls=0)  # 始终没有 Cookie，验证结束后停在未扫码
+    env.verification_text = "请完成人脸识别"
+    monkeypatch.setattr(qlb, "sync_playwright", _fake_sync_playwright(env))
+    worker = qlb.QrLoginWorker(timeout=15).start()
+    try:
+        worker.wait_qr_ready(timeout=5)
+        _wait_status(worker, "verification_required")
+        env.verification_text = ""
+        # 旧实现会无条件落到 scaned，这里必须回到 new（回归保护）。
+        _wait_status(worker, "new")
+        assert worker.snapshot()["status"] != "scaned"
+    finally:
+        worker.cancel()
+        worker.join(5)
 
 
 def test_cancelling_during_verification_closes_browser_without_saving(monkeypatch):

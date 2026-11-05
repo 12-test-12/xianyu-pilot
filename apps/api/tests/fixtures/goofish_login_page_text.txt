@@ -1,0 +1,12 @@
+# Rendered body.innerText of the goofish passport mini login page
+# (qrCodeFirst=true, LOGIN_URL in qr_login_browser.py), captured 2026-11-05
+# with headless Edge. Pins that ordinary login copy never trips
+# needs_verification(); challenge phrases must still match.
+短信登录密码登录
+登录
+忘记账号名忘记密码
+您已阅读并同意《闲鱼社区用户服务协议》《隐私政策》《软件许可协议》
+手机扫码安全登录
+
+闲鱼APP扫码
+点击首页左上角"扫一扫"

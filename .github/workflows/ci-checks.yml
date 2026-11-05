@@ -107,6 +107,25 @@ jobs:
       - name: Build component
         working-directory: apps/${{ matrix.component }}
         run: npm run build
+      - name: Install crawler Playwright for the UI navigation check
+        if: matrix.component == 'web'
+        working-directory: apps/crawler
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Install Chromium for the UI navigation check
+        if: matrix.component == 'web'
+        working-directory: apps/crawler
+        run: PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD= npx playwright install --with-deps chromium
+      - name: Run production UI navigation regression
+        if: matrix.component == 'web'
+        run: node scripts/ci/web_navigation_check.cjs
+      - name: Upload navigation check evidence
+        if: matrix.component == 'web' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-navigation-report
+          path: reports/navigation-*
+          if-no-files-found: warn
+          retention-days: 14
       - name: Record tested source and compiled file checksums
         run: python scripts/ci/artifacts.py record --component ${{ matrix.component }} --directory apps/${{ matrix.component }}/dist
       - uses: actions/upload-artifact@v4

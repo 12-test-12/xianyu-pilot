@@ -38,6 +38,9 @@ export function useQrLogin({ onConfirmed, generate = generateQrLogin, getStatus 
         qr.message = data.message || '已成功扫码，请在手机上点击确认登录'
       } else if (qr.status === 'verification_required') {
         qr.message = data.message || '闲鱼要求人脸或安全验证，请在登录浏览器或闲鱼 App 中完成；完成后会自动继续，请勿刷新二维码'
+      } else if (qr.status === 'new') {
+        // 验证结束恢复到“未扫码”时，清掉残留的验证提示。
+        qr.message = data.message || '请使用闲鱼 App 扫码'
       } else {
         qr.message = data.message || qr.message
       }

@@ -193,3 +193,22 @@ test('verification keeps polling the same session until the account is saved', a
   t.mock.timers.tick(10000)
   assert.equal(calls, 2)
 })
+
+test('verification clearing before any scan restores the scan prompt, not a stale warning', async t => {
+  let calls = 0
+  const replies = [
+    { status: 'verification_required', message: '请完成人脸验证，完成后自动继续' },
+    { status: 'new' },
+  ]
+  const state = flow(t, { getStatus: async () => ({ data: replies[calls++] }) })
+  await state.startQrLogin()
+  t.mock.timers.tick(2000)
+  await flush()
+  assert.equal(state.qr.status, 'verification_required')
+  assert.match(state.qr.message, /人脸/)
+  t.mock.timers.tick(2000)
+  await flush()
+  assert.equal(state.qr.status, 'new')
+  assert.match(state.qr.message, /扫码/)
+  assert.doesNotMatch(state.qr.message, /人脸|验证/)
+})

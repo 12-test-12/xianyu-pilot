@@ -215,7 +215,7 @@ class LoginWindow(QDialog):
             self.worker._set(status="verification_required")
             return
         if self.worker.snapshot()["status"] == "verification_required":
-            self.worker._set(status="scaned")
+            self.worker.resume_after_verification()
         status = classify_qr_panel(data.get("text", ""))
         if status == "expired" and not self.visiting_home:
             self.worker._set(status="expired", error=QR_EXPIRED_ERROR)

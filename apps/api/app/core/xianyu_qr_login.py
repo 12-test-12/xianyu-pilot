@@ -474,17 +474,3 @@ def _format_cookies(cookies: dict) -> str:
     if not cookies:
         return ""
     return "; ".join(f"{k}={v}" for k, v in cookies.items())
-
-
-def _extract_unb(cookies: dict) -> str:
-    """从 Cookie dict 中提取 unb"""
-    if not cookies:
-        return ""
-    return cookies.get("unb", "")
-
-
-def _extract_m_h5_tk(cookies: dict) -> str:
-    """从 Cookie dict 中提取 _m_h5_tk"""
-    if not cookies:
-        return ""
-    return cookies.get("_m_h5_tk", "")

@@ -38,7 +38,13 @@ QR_EXPIRED_ERROR = "二维码已过期，请重新生成。"
 
 _EXPIRED_WORDS = ("二维码已失效", "二维码已过期", "二维码失效", "二维码过期")
 _SCANNED_WORDS = ("扫码成功", "扫描成功", "已扫码", "请在手机")
-_VERIFICATION_WORDS = ("人脸识别", "人脸验证", "刷脸", "安全验证", "身份验证", "滑动验证", "拖动滑块", "请完成验证")
+# 只认挑战界面专属文案。"安全验证/身份验证"这类通用词会出现在普通页面
+# 正文里；一旦误判，worker 循环会一直 continue 跳过 Cookie 采集直到超时。
+_VERIFICATION_WORDS = ("人脸识别", "人脸验证", "刷脸", "滑动验证", "拖动滑块", "请完成验证")
+
+
+def text_needs_verification(text: str) -> bool:
+    return any(word in (text or "") for word in _VERIFICATION_WORDS)
 
 
 def needs_verification(context) -> bool:
@@ -46,8 +52,7 @@ def needs_verification(context) -> bool:
     for page in context.pages:
         for frame in page.frames:
             try:
-                text = frame.locator("body").inner_text(timeout=500)
-                if any(word in text for word in _VERIFICATION_WORDS):
+                if text_needs_verification(frame.locator("body").inner_text(timeout=500)):
                     return True
             except PlaywrightError:
                 continue  # 登录跳转可能同时销毁 frame，下一轮再检查。
@@ -169,6 +174,7 @@ class QrLoginWorker:
         self._cancel = threading.Event()
         self._thread = None
         self._status = "starting"
+        self._status_before_verification = None
         self._qr_image = None
         self._cookies = None
         self._error = None
@@ -228,6 +234,9 @@ class QrLoginWorker:
             if self._cancel.is_set() or self._status in ("confirmed", "failed", "expired", "cancelled"):
                 return
             if status is not None:
+                if status == "verification_required" and self._status != "verification_required":
+                    # 记住进入验证前的真实状态，验证结束后原样恢复。
+                    self._status_before_verification = self._status
                 self._status = status
             if qr_image is not None:
                 self._qr_image = qr_image
@@ -235,6 +244,14 @@ class QrLoginWorker:
                 self._cookies = cookies
             if error is not None:
                 self._error = error
+
+    def resume_after_verification(self) -> None:
+        """验证结束：恢复进入验证前的状态，绝不把未扫码谎报成 scaned。"""
+        with self._lock:
+            if self._status != "verification_required":
+                return
+            self._status = self._status_before_verification or "new"
+            self._status_before_verification = None
 
     def _run(self):
         deadline = time.monotonic() + self._timeout
@@ -275,7 +292,7 @@ class QrLoginWorker:
                             self._cancel.wait(POLL_INTERVAL)
                             continue
                         if self.snapshot()["status"] == "verification_required":
-                            self._set(status="scaned")
+                            self.resume_after_verification()
                         try:
                             keep_login = page.locator(".keep-login-confirm-btn.primary:visible")
                             if keep_login.count():
