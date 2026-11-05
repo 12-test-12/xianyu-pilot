@@ -114,7 +114,7 @@ jobs:
       - name: Install Chromium for the UI navigation check
         if: matrix.component == 'web'
         working-directory: apps/crawler
-        run: PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD= npx playwright install --with-deps chromium
+        run: PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD='' npx playwright install --with-deps chromium
       - name: Run production UI navigation regression
         if: matrix.component == 'web'
         run: node scripts/ci/web_navigation_check.cjs
