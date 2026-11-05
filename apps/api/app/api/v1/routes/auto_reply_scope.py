@@ -474,4 +474,4 @@ def _compute_effective(
     accounts = account_scopes.get("accounts", {}) if account_scopes else {}
     if account_id is not None and str(account_id) in accounts:
         return bool(accounts[str(account_id)])  # 账号级
-    return False  # 默认关闭（NULL 不继承全局）
+    return True  # 未显式禁用时继承全局启用

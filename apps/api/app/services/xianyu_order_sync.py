@@ -76,20 +76,73 @@ def _parse_order_time(value: Any) -> Optional[datetime.datetime]:
     return None
 
 
-def _parse_order_amount(total_price: Any, unit_price: Any, quantity: int) -> str:
-    """解析订单金额，优先用 totalPrice，其次 unit_price * quantity。"""
-    total_text = _text(total_price)
-    if total_text:
-        try:
-            return f"{float(total_text):.2f}"
-        except (ValueError, TypeError):
-            pass
-    unit_text = _text(unit_price)
-    if unit_text:
-        try:
-            return f"{float(unit_text) * max(quantity, 1):.2f}"
-        except (ValueError, TypeError):
-            pass
+def _parse_order_amount(
+    total_price: Any = None,
+    unit_price: Any = None,
+    quantity: int = 1,
+    *,
+    price_vo: Optional[dict[str, Any]] = None,
+    common: Optional[dict[str, Any]] = None,
+    item: Optional[dict[str, Any]] = None,
+) -> str:
+    """解析订单金额，全面支持闲鱼 mtop 各种金额字段（含 cent 分单位转换）。"""
+    p_vo = price_vo or {}
+    c_data = common or {}
+    i_data = item or {}
+
+    for val in (
+        total_price,
+        p_vo.get("realPayPrice"),
+        p_vo.get("totalPrice"),
+        p_vo.get("orderPrice"),
+        p_vo.get("payPrice"),
+        p_vo.get("actualPaidFee"),
+        c_data.get("totalPrice"),
+        c_data.get("orderPrice"),
+        c_data.get("payPrice"),
+        i_data.get("totalPrice"),
+        i_data.get("orderPrice"),
+    ):
+        text_val = _text(val)
+        if text_val:
+            try:
+                amt = float(text_val)
+                if amt >= 0:
+                    return f"{amt:.2f}"
+            except (ValueError, TypeError):
+                pass
+
+    for cent_val in (
+        c_data.get("amountCent"),
+        i_data.get("amountCent"),
+        p_vo.get("amountCent"),
+        p_vo.get("realPayCent"),
+        p_vo.get("totalCent"),
+        c_data.get("priceCent"),
+    ):
+        if cent_val is not None:
+            try:
+                amt = float(cent_val) / 100.0
+                if amt >= 0:
+                    return f"{amt:.2f}"
+            except (ValueError, TypeError):
+                pass
+
+    for u in (
+        unit_price,
+        p_vo.get("auctionPrice"),
+        p_vo.get("unitPrice"),
+        c_data.get("price"),
+    ):
+        text_u = _text(u)
+        if text_u:
+            try:
+                amt = float(text_u) * max(quantity, 1)
+                if amt >= 0:
+                    return f"{amt:.2f}"
+            except (ValueError, TypeError):
+                pass
+
     return "0.00"
 
 
@@ -150,8 +203,30 @@ def _parse_remote_order_item(item: dict[str, Any]) -> Optional[dict[str, Any]]:
         or item_buy_info.get("itemPic")
         or item.get("itemMainPic")
     )
-    goods_price = _text(price_vo.get("auctionPrice") or price_vo.get("unitPrice"))
-    total_amount = _parse_order_amount(price_vo.get("totalPrice"), goods_price, quantity)
+    goods_price = _text(
+        price_vo.get("auctionPrice")
+        or price_vo.get("unitPrice")
+        or price_vo.get("realPayPrice")
+        or price_vo.get("orderPrice")
+        or item_info.get("price")
+        or common.get("price")
+    )
+    if not goods_price:
+        for c in (common.get("priceCent"), price_vo.get("priceCent"), item_info.get("priceCent")):
+            if c is not None:
+                try:
+                    goods_price = f"{float(c) / 100.0:.2f}"
+                    break
+                except (ValueError, TypeError):
+                    pass
+    total_amount = _parse_order_amount(
+        price_vo.get("totalPrice"),
+        goods_price,
+        quantity,
+        price_vo=price_vo,
+        common=common,
+        item=item,
+    )
 
     in_refund = bool(common.get("inRefund"))
     order_status = _map_order_status(common.get("orderStatus"), in_refund)

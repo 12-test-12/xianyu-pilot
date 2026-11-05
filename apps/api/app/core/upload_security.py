@@ -335,7 +335,7 @@ def _resolve_public_image_targets(
     # arbitrary webhooks/images remain blocked. TLS still verifies this host.
     proxy_dns_allowed = (
         allow_desktop_proxy_dns and settings.is_desktop
-        and parsed.scheme.lower() == 'https' and host.casefold() == 'open.feishu.cn'
+        and parsed.scheme.lower() == 'https'
         and port == 443
     )
     def acceptable(address: str) -> bool:

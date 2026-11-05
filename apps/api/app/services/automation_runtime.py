@@ -809,7 +809,9 @@ async def _check_auto_reply_scope(
     # 商品级 NULL → 按账号级
     account_scopes = await _load_account_scopes(db)
     accounts = account_scopes.get("accounts", {}) if isinstance(account_scopes, dict) else {}
-    return bool(accounts.get(str(account_id), False))
+    if str(account_id) in accounts:
+        return bool(accounts[str(account_id)])
+    return True
 
 
 async def _load_global_enabled(db: AsyncSession) -> bool:

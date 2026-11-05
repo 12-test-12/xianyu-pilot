@@ -467,9 +467,101 @@ async def _process_delivery(
     item_id = str(msg.get("xyGoodsId") or "").strip()
     if not item_id:
         item_id = extract_goods_id_from_url(reminder_url) or ""
-    peer_id = str(msg.get("senderUserId") or "").strip()
+    peer_id = str(
+        msg.get("senderUserId")
+        or msg.get("peerUserId")
+        or msg.get("peer_id")
+        or msg.get("buyerId")
+        or msg.get("buyer_id")
+        or ""
+    ).strip()
     if not peer_id:
         peer_id = extract_peer_user_id_from_url(reminder_url) or ""
+
+    if not peer_id and session_id:
+        try:
+            sid_norm = session_id.split("@")[0].strip()
+            conv_row = (await db.execute(text("""
+                SELECT peer_external_uid, external_buyer_id, peer_key
+                FROM xianyu_conversation
+                WHERE account_id = :account_id
+                  AND (s_id = :sid OR s_id = :sid_goofish)
+                ORDER BY id DESC LIMIT 1
+            """), {
+                "account_id": account_id,
+                "sid": sid_norm,
+                "sid_goofish": f"{sid_norm}@goofish",
+            })).mappings().first()
+            if conv_row:
+                peer_id = str(conv_row.get("peer_external_uid") or conv_row.get("external_buyer_id") or conv_row.get("peer_key") or "").strip()
+        except Exception:
+            pass
+
+    if not peer_id and external_order_id:
+        try:
+            order_row = (await db.execute(text("""
+                SELECT buyer_id
+                FROM xianyu_trade_order
+                WHERE account_id = :account_id AND external_order_id = :order_id
+                ORDER BY id DESC LIMIT 1
+            """), {"account_id": account_id, "order_id": str(external_order_id)})).mappings().first()
+            if order_row and order_row.get("buyer_id"):
+                peer_id = str(order_row.get("buyer_id")).strip()
+        except Exception:
+            pass
+
+    if not peer_id and session_id and "_" in session_id:
+        try:
+            parts = session_id.split("@")[0].split("_")
+            if len(parts) == 2:
+                acc_row = (await db.execute(text("SELECT user_id FROM xianyu_account WHERE id = :aid"), {"aid": account_id})).first()
+                own_uid = str(acc_row[0]) if acc_row and acc_row[0] else ""
+                if own_uid:
+                    if parts[0] == own_uid and parts[1]:
+                        peer_id = parts[1]
+                    elif parts[1] == own_uid and parts[0]:
+                        peer_id = parts[0]
+                if not peer_id:
+                    peer_id = parts[0] if parts[0] else parts[1]
+        except Exception:
+            pass
+
+    if not item_id and external_order_id:
+        try:
+            order_row = (await db.execute(text("""
+                SELECT item_id FROM xianyu_trade_order
+                WHERE account_id = :account_id AND external_order_id = :order_id
+                ORDER BY id DESC LIMIT 1
+            """), {"account_id": account_id, "order_id": str(external_order_id)})).first()
+            if order_row and order_row[0]:
+                item_id = str(order_row[0]).strip()
+        except Exception:
+            pass
+    if not item_id and session_id:
+        try:
+            sid_norm = session_id.split("@")[0].strip()
+            conv_row = (await db.execute(text("""
+                SELECT goods_id FROM xianyu_conversation
+                WHERE account_id = :account_id AND (s_id = :sid OR s_id = :sid_goofish)
+                ORDER BY id DESC LIMIT 1
+            """), {"account_id": account_id, "sid": sid_norm, "sid_goofish": f"{sid_norm}@goofish"})).first()
+            if conv_row and conv_row[0]:
+                item_id = str(conv_row[0]).strip()
+        except Exception:
+            pass
+
+    if not session_id and peer_id:
+        try:
+            conv_row = (await db.execute(text("""
+                SELECT s_id FROM xianyu_conversation
+                WHERE account_id = :account_id
+                  AND (external_buyer_id = :peer_id OR peer_external_uid = :peer_id OR peer_key = :peer_id)
+                ORDER BY id DESC LIMIT 1
+            """), {"account_id": account_id, "peer_id": peer_id})).first()
+            if conv_row and conv_row[0]:
+                session_id = str(conv_row[0]).strip()
+        except Exception:
+            pass
     source_event_id = _extract_source_event_id(msg)
     if not source_event_id and external_order_id:
         source_event_id = f"order:{external_order_id}"

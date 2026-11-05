@@ -171,6 +171,9 @@
               <div v-if="!rowItemSlice(row).length" class="subtle">{{ row.itemSummary }}</div>
             </div>
           </template>
+          <template #amount="{ row }">
+            <div class="strong amount-cell">¥{{ formatMoney(row.totalAmount) }}</div>
+          </template>
           <template #quantity="{ row }">
             <div class="qty-text strong">{{ row.deliveryProgressText || '1 / 1' }}</div>
             <div class="qty-progress">
@@ -241,6 +244,7 @@
                 <div class="detail-item"><span class="detail-label">买家昵称</span><span class="detail-value">{{ detailView.buyerName || '-' }}</span></div>
                 <div class="detail-item"><span class="detail-label">所属账号</span><span class="detail-value">{{ accountLabel(detailView.accountId) }}</span></div>
                 <div class="detail-item"><span class="detail-label">订单状态</span><span class="detail-value"><Badge :type="detailView.orderStatusBadge">{{ detailView.orderStatusText }}</Badge></span></div>
+                <div class="detail-item"><span class="detail-label">订单金额</span><span class="detail-value strong amount-text">¥{{ formatMoney(detailView.totalAmount) }}</span></div>
                 <div class="detail-item"><span class="detail-label">是否小刀</span><span class="detail-value"><Badge :type="detailView.isBargainBadge">{{ detailView.isBargainText }}</Badge></span></div>
                 <div class="detail-item"><span class="detail-label">已评价</span><span class="detail-value"><Badge :type="detailView.isRatedBadge">{{ detailView.isRatedText }}</Badge></span></div>
                 <div class="detail-item"><span class="detail-label">求小红花</span><span class="detail-value"><Badge :type="detailView.isRedFlowerBadge">{{ detailView.isRedFlowerText }}</Badge></span></div>
@@ -456,6 +460,7 @@ const columns = [
   { key: 'orderNo', title: '订单信息', sortable: true, sortField: 'createdAt' },
   { key: 'buyer', title: '买家信息', sortable: true, sortField: 'buyerName' },
   { key: 'items', title: '商品信息' },
+  { key: 'amount', title: '订单金额', sortable: true, sortField: 'totalAmount' },
   { key: 'quantity', title: '数量 / 进度' },
   { key: 'orderStatus', title: '订单状态', sortable: true, sortField: 'orderStatus' },
   { key: 'delivery', title: '发货状态' },
@@ -959,10 +964,7 @@ async function refreshFromPlatform(options = {}) {
 }
 
 function onSyncButtonClick() {
-  if (query.accountId) {
-    return syncAccountOrders()
-  }
-  return syncAllAccountsOrders()
+  return refreshFromPlatform()
 }
 
 function search() {
@@ -1334,6 +1336,16 @@ onBeforeUnmount(() => {
 }
 .stat-card .stat-value.amount {
   font-size: 22px;
+}
+.amount-cell {
+  font-family: var(--font-mono, monospace);
+  font-weight: 600;
+  color: #1e293b;
+}
+.amount-text {
+  font-family: var(--font-mono, monospace);
+  font-weight: 600;
+  color: #059669;
 }
 
 .stat-trend {

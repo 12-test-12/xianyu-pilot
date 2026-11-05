@@ -360,6 +360,7 @@ async def generate_text(
             timeout_seconds=max(int(cfg.get("request_timeout") or 30), 5),
             max_request_bytes=512 * 1024,
             max_response_bytes=1024 * 1024,
+            allow_desktop_proxy_dns=True,
         )
         result["httpStatus"] = response.status_code
         if response.status_code < 200 or response.status_code >= 300:

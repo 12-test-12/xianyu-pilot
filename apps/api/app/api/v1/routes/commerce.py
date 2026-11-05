@@ -1179,7 +1179,8 @@ async def sync_orders(
     sync_result = await sync_orders_for_account(account_id=account_id)
     if not sync_result.get("success"):
         return ResultObject.failed(f"订单同步失败: {sync_result.get('error', '未知错误')}")
-    # 同步完成后查询本地订单数量
+    # 同步完成后查询本地订单数量（先回退快照读取并发连接提交的最新数据）
+    await db.rollback()
     count_result = await db.execute(
         select(func.count()).select_from(XianyuTradeOrder).where(
             XianyuTradeOrder.deleted == 0,

@@ -156,8 +156,8 @@
               </div>
               <button class="config-modal-close" type="button" aria-label="关闭" :disabled="configSaving || skuSaving" @click="closeConfig">×</button>
             </div>
-
-          <fieldset class="config-edit-fields" :disabled="configSaving || skuSaving">
+            <div v-if="modalError" class="global-notice error" style="margin-bottom: 12px">{{ modalError }}</div>
+            <fieldset class="config-edit-fields" :disabled="configSaving || skuSaving">
           <div class="config-tabs">
             <button v-for="timing in configTimings" :key="timing.key" :class="['config-tab', { active: configTiming === timing.key }]" @click="switchTiming(timing.key)">
               {{ timing.label }}
@@ -275,29 +275,32 @@
             </div>
 
             <div v-if="configForm.mode === 'text'" class="form-section">
-              <div class="form-section-title">发货内容</div>
+              <div class="form-section-title">发货内容（买家付款后自动发送）</div>
               <div class="form-row">
-                <label>关联货源库</label>
-                <div class="toolbar" style="justify-content:flex-start">
-                <select v-model="configForm.sourceId" class="input" style="max-width:320px" :disabled="sourcesAvailable === false">
-                  <option value="">不使用货源库，直接手写内容</option>
-                  <option v-for="source in textSources" :key="source.id" :value="source.id">{{ source.title }}</option>
-                </select>
-                <AppButton @click="goSourceLibrary">管理货源库</AppButton>
-              </div>
-              <div v-if="sourcesAvailable === false" class="global-notice error">货源库暂不可用，无法确认可关联的文本货源。</div>
-              <div v-if="configForm.sourceId" class="subtle">
-                已关联货源：{{ sourceTitle(configForm.sourceId) }}
-              </div>
-            </div>
-
-              <div class="form-row">
-                <label>正文内容</label>
+                <label>发货正文（直接手写/粘贴）</label>
                 <textarea
                   v-model="configForm.content"
                   rows="5"
-                  :placeholder="configForm.sourceId ? '已引用货源库正文，可继续补充或覆盖' : '请输入买家将收到的发货内容'"
+                  placeholder="在此直接输入发货内容（例如百度网盘链接、提取码、解压密码或使用说明等），买家付款后将自动发送。无需提前创建货源库。"
                 ></textarea>
+                <div class="subtle" style="margin-top: 4px;">
+                  💡 单个商品可直接在上方输入发货内容；若多个商品发相同内容，可使用下方货源库模板快速填入。
+                </div>
+              </div>
+
+              <div class="form-row">
+                <label>从货源库模板引用（可选）</label>
+                <div class="toolbar" style="justify-content:flex-start">
+                  <select v-model="configForm.sourceId" class="input" style="max-width:320px" :disabled="sourcesAvailable === false">
+                    <option value="">不使用模板（使用上方直接手写内容）</option>
+                    <option v-for="source in textSources" :key="source.id" :value="source.id">{{ source.title }}</option>
+                  </select>
+                  <AppButton size="small" @click="goSourceLibrary">管理货源模板</AppButton>
+                </div>
+                <div v-if="sourcesAvailable === false" class="global-notice error">货源库暂不可用，无法确认可关联的文本货源。</div>
+                <div v-if="configForm.sourceId" class="subtle">
+                  已关联货源模板：{{ sourceTitle(configForm.sourceId) }}（内容已自动填入上方正文，可继续修改）
+                </div>
               </div>
             </div>
 
@@ -306,8 +309,8 @@
               <div class="form-row">
                 <label>卡密来源</label>
                 <select v-model="configForm.cardSource" class="input" style="max-width:320px">
+                  <option value="direct">直接录入卡密（无需提前建组，自动入库）</option>
                   <option value="existing">绑定已有卡密分组</option>
-                  <option value="direct">直接录入卡密（自动入库）</option>
                 </select>
               </div>
 
@@ -531,6 +534,7 @@ const query = reactive({
 })
 
 const configTarget = ref(null)
+const modalError = ref('')
 const configTiming = ref('payDelivery')
 const configTimings = [
   { key: 'payDelivery', label: '付款后发货' },
@@ -727,6 +731,9 @@ function goDeliveryRecords() {
 function appendError(message) {
   const text = String(message || '').trim()
   if (!text) return
+  if (configTarget.value) {
+    modalError.value = text
+  }
   const parts = error.value ? error.value.split('；') : []
   if (!parts.includes(text)) error.value = [...parts, text].filter(Boolean).join('；')
 }
@@ -878,7 +885,7 @@ function fillConfigForm(config = {}) {
     sourceId: config.sourceId || '',
     sourceTitle: config.sourceTitle || '',
     cardGroupId: config.cardGroupId || '',
-    cardSource: config.cardGroupId ? 'existing' : (config.cardSource || 'existing'),
+    cardSource: config.cardGroupId ? 'existing' : (config.cardSource || 'direct'),
     cardKeysText: '',
     cardTemplate: config.cardTemplate || '',
     header: config.header || '',
@@ -911,6 +918,7 @@ function focusGoodsConfig(goods) {
 }
 
 function openConfig(goods, timing) {
+  modalError.value = ''
   if (goods?._configUnavailable) {
     appendError('该商品发货配置状态未知，为避免覆盖已有规则，暂不允许编辑。')
     return false
@@ -933,6 +941,7 @@ function switchTiming(timing) {
 function closeConfig(force = false) {
   if ((configSaving.value || skuSaving.value) && force !== true) return
   configTarget.value = null
+  modalError.value = ''
   skuList.value = []
   skuRules.value = []
   skuError.value = ''
@@ -1130,10 +1139,23 @@ async function saveConfig() {
       autoDisableOnLowStock: configForm.autoDisableOnLowStock,
       autoConfirmShipment: !!configForm.autoConfirmShipment
     })
+    if (configTarget.value?.goods?._config) {
+      configTarget.value.goods._config[configTiming.value] = {
+        enabled: configForm.enabled,
+        mode: configForm.mode,
+        content: configForm.content,
+        sourceId: configForm.mode === 'text' && configForm.sourceId ? Number(configForm.sourceId) : null,
+        sourceTitle: configForm.mode === 'text' ? configForm.sourceTitle : '',
+        cardGroupId: configForm.mode === 'card' ? cardGroupId : null,
+        cardTemplate: configForm.cardTemplate,
+        autoConfirmShipment: !!configForm.autoConfirmShipment
+      }
+    }
     success.value = '配置已保存'
-    await Promise.all([loadGoods(), loadStats()])
     closeConfig(true)
+    Promise.all([loadGoods(), loadStats()]).catch(() => {})
   } catch (e) {
+    modalError.value = e.message || '保存失败'
     error.value = e.message || '保存失败'
   } finally {
     configSaving.value = false

@@ -75,6 +75,7 @@ async def generate_embedding(
             timeout_seconds=60.0,
             max_request_bytes=256 * 1024,
             max_response_bytes=512 * 1024,
+            allow_desktop_proxy_dns=True,
         )
     except UnsafeRemoteURLError as exc:
         raise RuntimeError("Embedding API endpoint is unsafe or unavailable") from exc

@@ -139,11 +139,17 @@
               </div>
             </template>
             <template #type="{row}">
-              <button v-if="row.type === '未配置'" class="delivery-type-configurable" type="button" @click.stop="goToAutoDelivery(row)">
-                <Badge type="orange">暂未配置</Badge>
-                <span class="config-hint">去配置</span>
+              <button
+                class="delivery-type-configurable"
+                type="button"
+                :title="row.type === '未配置' ? '点击配置自动发货' : '点击查看或修改发货配置'"
+                @click.stop="goToAutoDelivery(row)"
+              >
+                <Badge :type="row.type === '未配置' ? 'orange' : row.type === '卡密' ? 'purple' : row.type === '自定义' ? 'blue' : 'green'">
+                  {{ row.type === '未配置' ? '暂未配置' : row.type }}
+                </Badge>
+                <span v-if="row.type === '未配置'" class="config-hint">去配置</span>
               </button>
-              <Badge v-else :type="row.type==='卡密'?'purple':row.type==='自定义'?'blue':'green'">{{ row.type }}</Badge>
             </template>
             <template #reply="{row}"><div class="cell-center"><Badge v-if="row.replyOn === null" type="gray">未知</Badge><ToggleSwitch v-else :on="row.replyOn" @click.stop="toggleReply(row)" /></div></template>
             <template #autorelist="{row}"><div class="cell-center"><Badge v-if="row.autoRelistOn === null" type="gray">未知</Badge><ToggleSwitch v-else :on="row.autoRelistOn" @click.stop="toggleAutoRelist(row)" /></div></template>
