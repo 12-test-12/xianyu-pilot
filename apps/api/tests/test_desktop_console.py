@@ -142,7 +142,7 @@ async def test_conversation_uses_account_scoped_order_nickname(console):
     try:
         async with runtime.session() as db:
             rows = await _enrich_online_conversations_batch(db, 11, [
-                {"sid": "888", "peerUserId": "123456@goofish", "peerUserName": "oofish"},
+                {"sid": "888", "peerUserId": "123456@goofish", "peerUserName": "123456"},
             ])
         assert rows[0]['peerUserName'] == '买家真实昵称'
     finally:
@@ -177,9 +177,26 @@ def test_desktop_conversation_profile_reads_local_auth(console, monkeypatch):
     monkeypatch.setattr(xianyu_api_service, 'settings', config)
     with sqlite3.connect(config.sqlite_path) as db:
         db.execute("INSERT INTO xianyu_account(id,external_uid,nickname,deleted,status) VALUES(11,'fixture-seller','本机账号',0,1)")
-        db.execute("INSERT INTO xianyu_account_auth(account_id,encrypted_cookie,cookie_status,last_login_status_code,deleted) VALUES(11,'fixture-cookie',1,'OK',0)")
-    assert xianyu_api_service._get_account_auth(11)['encrypted_cookie'] == 'fixture-cookie'
+        db.execute("""INSERT INTO xianyu_account_auth(account_id,encrypted_cookie,cookie_status,last_login_status_code,updated_time,deleted)
+            VALUES(11, ?, 1, 'OK', '2020-01-01 00:00:00', 0)""",
+            (xianyu_api_service.encrypt_cookie_for_storage('old_cookie; _m_h5_tk=old_tk'),)
+        )
+    assert xianyu_api_service._get_account_auth(11) is not None
     assert xianyu_api_service._get_account_auth(12) is None
+
+    # Refresh cookie with matching previous_cookie updates credentials and updated_time
+    xianyu_api_service._persist_account_auth_cookies(11, 'new_cookie; _m_h5_tk=new_tk', previous_cookie='old_cookie; _m_h5_tk=old_tk')
+    with sqlite3.connect(config.sqlite_path) as db:
+        row = db.execute("SELECT encrypted_cookie, encrypted_token, updated_time FROM xianyu_account_auth WHERE account_id=11").fetchone()
+    assert xianyu_api_service._decrypt_value(row[0]) == 'new_cookie; _m_h5_tk=new_tk'
+    assert xianyu_api_service._decrypt_value(row[1]) == 'new_tk'
+    assert row[2] != '2020-01-01 00:00:00'
+
+    # Stale previous_cookie does not update (CAS guard)
+    xianyu_api_service._persist_account_auth_cookies(11, 'stale_write', previous_cookie='wrong_cookie')
+    with sqlite3.connect(config.sqlite_path) as db:
+        row2 = db.execute("SELECT encrypted_cookie FROM xianyu_account_auth WHERE account_id=11").fetchone()
+    assert xianyu_api_service._decrypt_value(row2[0]) == 'new_cookie; _m_h5_tk=new_tk'
 
 
 def test_original_business_modules_use_real_persistent_storage(console):

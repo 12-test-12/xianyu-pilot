@@ -278,6 +278,8 @@ def apply_source(source_id: Id, repo: Inventory, body: dict = Body(...)):
         UnifiedDeliveryRules(repo.path).bind_source(source_id, goods_ids, body.get("timing") or "payDelivery")
     except InventoryError:
         raise
-    except (ValueError, TypeError, KeyError) as exc:
+    except ValueError as exc:
+        raise InventoryError(str(exc) if any(k in str(exc) for k in ("发货内容", "卡密", "请至少选择")) else "货源或商品配置不完整，绑定未保存") from exc
+    except (TypeError, KeyError) as exc:
         raise InventoryError("货源或商品配置不完整，绑定未保存") from exc
     return ResultObject.success({"appliedCount": len(goods_ids)}, "货源已绑定到付款后发货规则")

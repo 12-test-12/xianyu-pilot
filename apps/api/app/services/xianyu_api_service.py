@@ -1,4 +1,4 @@
-﻿"""
+"""
 闲鱼 H5 API 调用与签名服务。
 
 提供通用签名和API调用能力，参考文档的 XianyuApiCallUtils / XianyuSignUtils。
@@ -176,7 +176,7 @@ def _persist_account_auth_cookies(account_id: int, cookie_str: str, *, previous_
                 if row and _decrypt_value(row[1]) == previous_cookie:
                     conn.execute("""
                         UPDATE xianyu_account_auth
-                        SET encrypted_cookie = ?, encrypted_token = COALESCE(?, encrypted_token)
+                        SET encrypted_cookie = ?, encrypted_token = COALESCE(?, encrypted_token), updated_time = CURRENT_TIMESTAMP
                         WHERE id = ? AND encrypted_cookie = ? AND deleted = 0 AND cookie_status = 1
                     """, (encrypted_cookie, encrypted_token, *row))
             return

@@ -4087,7 +4087,7 @@ async def _enrich_online_conversations_batch(
         sid = conv.get("sid", "")
         peer_user_id = conv.get("peerUserId", "") or ""
         peer_user_name = conv.get("peerUserName", "") or ""
-        peer_user_name = conv["peerUserName"] = _known_conversation_nickname(peer_user_name, str(peer_user_id), str(sid))
+        peer_user_name = conv["peerUserName"] = _known_conversation_nickname(peer_user_name, _normalize_party_id(peer_user_id), str(sid))
         goods_id = conv.get("goodsId", "") or ""
 
         if sid:
