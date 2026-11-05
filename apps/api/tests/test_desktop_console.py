@@ -171,6 +171,7 @@ async def test_conversation_placeholder_does_not_override_a_known_buyer(console)
 
 
 def test_desktop_conversation_profile_reads_local_auth(console, monkeypatch):
+    from app.core.cookie_crypto import encrypt_cookie_for_storage
     from app.services import xianyu_api_service
 
     _, config, _ = console
@@ -179,7 +180,7 @@ def test_desktop_conversation_profile_reads_local_auth(console, monkeypatch):
         db.execute("INSERT INTO xianyu_account(id,external_uid,nickname,deleted,status) VALUES(11,'fixture-seller','本机账号',0,1)")
         db.execute("""INSERT INTO xianyu_account_auth(account_id,encrypted_cookie,cookie_status,last_login_status_code,updated_time,deleted)
             VALUES(11, ?, 1, 'OK', '2020-01-01 00:00:00', 0)""",
-            (xianyu_api_service.encrypt_cookie_for_storage('old_cookie; _m_h5_tk=old_tk'),)
+            (encrypt_cookie_for_storage('old_cookie; _m_h5_tk=old_tk'),)
         )
     assert xianyu_api_service._get_account_auth(11) is not None
     assert xianyu_api_service._get_account_auth(12) is None
