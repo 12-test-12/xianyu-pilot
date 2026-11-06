@@ -1426,6 +1426,8 @@ async def _async_fetch_details(
                 continue
 
             item_status = card_data.get("itemStatus", 0)
+            if isinstance(item_status, str) and item_status in ("0", "1", "2", "3"):
+                item_status = int(item_status)
 
             # 延迟策略（增大延迟，降低风控触发概率）
             if item_status == 0:  # 在售

@@ -33,3 +33,56 @@ def test_messages_page_image_send_paths_only_refresh_conversations():
 
     assert source.count("await refreshAll(true)") == 1
     assert source.count("await loadConversations(true, { background: true })") >= 6
+
+
+@pytest.mark.asyncio
+async def test_verify_cookie_via_token_api_uses_asyncio_to_thread(monkeypatch):
+    """验证 _verify_cookie_via_token_api 正确调用 asyncio.to_thread 且根据 ws_token 返回分类。"""
+    class _MockResult:
+        def mappings(self):
+            return self
+
+        def first(self):
+            return {
+                "encrypted_cookie": "test-encrypted-cookie",
+                "encrypted_token": "test-encrypted-token",
+            }
+
+    class _MockDb:
+        async def execute(self, *args, **kwargs):
+            return _MockResult()
+
+    class _MockSessionCtx:
+        async def __aenter__(self):
+            return _MockDb()
+
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+    monkeypatch.setattr(captcha_solver, "async_session", lambda: _MockSessionCtx())
+    monkeypatch.setattr(captcha_solver, "decrypt_cookie_if_needed", lambda x: f"decrypted_{x}")
+
+    # 1. 成功返回 access_token -> 应返回 "ok"
+    monkeypatch.setattr(
+        "app.services.ws_token.get_ws_token_with_refreshed_m_h5_tk",
+        lambda cookie, token: ("mock-access-token", "token", None, None),
+    )
+    res_ok = await captcha_solver._verify_cookie_via_token_api(123)
+    assert res_ok == "ok"
+
+    # 2. 会话过期 -> 应返回 "expired" 而非 unavailable
+    monkeypatch.setattr(
+        "app.services.ws_token.get_ws_token_with_refreshed_m_h5_tk",
+        lambda cookie, token: (None, None, "expired", None),
+    )
+    res_expired = await captcha_solver._verify_cookie_via_token_api(123)
+    assert res_expired == "expired"
+
+    # 3. 遇到验证码 -> 应返回 "captcha"
+    monkeypatch.setattr(
+        "app.services.ws_token.get_ws_token_with_refreshed_m_h5_tk",
+        lambda cookie, token: (None, None, "captcha", None),
+    )
+    res_captcha = await captcha_solver._verify_cookie_via_token_api(123)
+    assert res_captcha == "captcha"
+

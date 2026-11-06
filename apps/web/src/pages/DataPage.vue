@@ -422,18 +422,25 @@ function buildParams(params) {
   return p
 }
 
+let lastPlatformRefreshAt = 0
+const PLATFORM_REFRESH_COOLDOWN_MS = 60000
+
 async function refreshData() {
   if (syncingOrders.value) return
-  syncingOrders.value = true
-  orderSyncError.value = ''
-  try {
-    const result = await refreshOrders(buildParams({ accountId: accountId.value }))
-    const errors = result?.data?.syncErrors || []
-    if (errors.length) orderSyncError.value = `订单同步未全部完成：${errors[0].error}`
-  } catch (error) {
-    orderSyncError.value = error.message || '订单同步失败'
-  } finally {
-    syncingOrders.value = false
+  const elapsed = Date.now() - lastPlatformRefreshAt
+  if (lastPlatformRefreshAt === 0 || elapsed >= PLATFORM_REFRESH_COOLDOWN_MS) {
+    syncingOrders.value = true
+    orderSyncError.value = ''
+    lastPlatformRefreshAt = Date.now()
+    try {
+      const result = await refreshOrders(buildParams({ accountId: accountId.value }))
+      const errors = result?.data?.syncErrors || []
+      if (errors.length) orderSyncError.value = `订单同步未全部完成：${errors[0].error}`
+    } catch (error) {
+      orderSyncError.value = error.message || '订单同步失败'
+    } finally {
+      syncingOrders.value = false
+    }
   }
   await load()
 }

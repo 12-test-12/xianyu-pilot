@@ -389,7 +389,7 @@ def get_ws_token(cookie_str: str, m_h5_tk: str) -> Optional[str]:
         if result == CAPTCHA_NEEDED:
             logger.warning("DB 中的 _m_h5_tk 触发滑块验证，尝试从 Cookie 提取")
         elif result == SESSION_EXPIRED:
-            return None
+            logger.warning("DB 中的 _m_h5_tk 会话已过期，尝试从 Cookie 提取")
         elif result:
             logger.info("获取 WebSocket Token 成功, 长度=%d", len(result))
             return result
@@ -399,13 +399,13 @@ def get_ws_token(cookie_str: str, m_h5_tk: str) -> Optional[str]:
     # 降级：从 Cookie 字符串中提取 _m_h5_tk
     cookie_m_h5_tk = extract_m_h5_tk_from_cookie(cookie_str)
     logger.info("get_ws_token: Cookie credential_present=%s", bool(cookie_m_h5_tk))
-    if cookie_m_h5_tk:
+    if cookie_m_h5_tk and cookie_m_h5_tk != m_h5_tk:
         logger.info("从 Cookie 字符串中提取到 _m_h5_tk")
         result = _call_token_api(cookie_str, cookie_m_h5_tk)
         if result == CAPTCHA_NEEDED:
             logger.error("Cookie 中的 _m_h5_tk 也触发滑块验证，需要更换 Cookie")
         elif result == SESSION_EXPIRED:
-            return None
+            logger.error("Cookie 中的 _m_h5_tk 也已过期")
         elif result:
             logger.info("使用 Cookie 中的 _m_h5_tk 获取 WS Token 成功, 长度=%d", len(result))
             return result
@@ -469,23 +469,31 @@ def get_ws_token_with_refreshed_m_h5_tk(
         "get_ws_token_with_refreshed: cookie_credential=%s db_credential=%s cache_hit=%s",
         bool(cookie_m_h5_tk), bool(m_h5_tk), False,
     )
+    last_error_type = "unavailable"
     for candidate in dict.fromkeys((cookie_m_h5_tk, m_h5_tk)):
         if not candidate:
             continue
         result = _call_token_api(cookie_str, candidate)
         if result == CAPTCHA_NEEDED:
-            return None, None, "captcha", None
+            last_error_type = "captcha"
+            logger.warning("get_ws_token_with_refreshed: 候选 _m_h5_tk 触发滑块验证，尝试后续凭据或刷新")
+            continue
         if result == SESSION_EXPIRED:
-            return None, None, "expired", None
+            last_error_type = "expired"
+            logger.warning("get_ws_token_with_refreshed: 候选 _m_h5_tk 会话已过期，尝试后续凭据或刷新")
+            continue
         if result:
             if unb:
                 cache_token(unb, result, candidate, cookie_str)
             return result, candidate, None, None
 
     # 最后尝试：刷新 _m_h5_tk（参考 Java refreshMH5Tk 三部曲）
+    # 不直接返回，继续尝试 refresh_m_h5_tk 刷新令牌。
+    # 刷新后的新 _m_h5_tk（不同 token 前缀）可能绕过风控标记，
+    # 因为 FAIL_SYS_USER_VALIDATE 通常与具体 token 绑定。
     logger.info(
-        "get_ws_token_with_refreshed: 尝试刷新 _m_h5_tk cookieCredential=%s",
-        bool(cookie_m_h5_tk),
+        "get_ws_token_with_refreshed: 尝试刷新 _m_h5_tk cookieCredential=%s lastError=%s",
+        bool(cookie_m_h5_tk), last_error_type,
     )
     new_cookie_str, new_m_h5_tk = refresh_m_h5_tk(cookie_str)
     if new_cookie_str and new_m_h5_tk:
@@ -495,6 +503,7 @@ def get_ws_token_with_refreshed_m_h5_tk(
             logger.error("刷新后的 _m_h5_tk 也触发滑块验证，需要更换 Cookie")
             return None, None, "captcha", None
         if result == SESSION_EXPIRED:
+            logger.error("刷新后的 _m_h5_tk 会话已过期")
             return None, None, "expired", None
         if result:
             logger.info("使用刷新后的 _m_h5_tk 获取 WS Token 成功, 长度=%d", len(result))
@@ -503,4 +512,7 @@ def get_ws_token_with_refreshed_m_h5_tk(
             if new_unb:
                 cache_token(new_unb, result, new_m_h5_tk, new_cookie_str)
             return result, new_m_h5_tk, None, new_cookie_str
-    return None, None, "unavailable", None
+        logger.error("刷新后的 _m_h5_tk 调用 Token API 仍然失败")
+        return None, None, last_error_type, None
+    logger.error("_m_h5_tk 刷新失败，Cookie 可能已完全失效")
+    return None, None, last_error_type, None

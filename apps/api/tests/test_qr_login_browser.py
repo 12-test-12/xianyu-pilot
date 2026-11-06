@@ -308,6 +308,13 @@ def test_real_login_page_copy_never_trips_verification_gate():
     assert not qlb.text_needs_verification("了解人脸验证和刷脸登录的隐私政策")
     # 挑战界面文案必须继续命中，否则验证等待逻辑会失效。
     assert qlb.text_needs_verification("请拖动滑块完成验证")
+    assert qlb.text_needs_verification("拖动滑块完成验证")
+    assert qlb.text_needs_verification("请按住滑动验证")
+    assert qlb.text_needs_verification("按住滑动验证")
+    assert qlb.text_needs_verification("请按住滑块，拖动到最右边")
+    assert qlb.text_needs_verification("向右滑动完成验证")
+    assert qlb.text_needs_verification("拖动滑块")
+    assert qlb.text_needs_verification("滑动验证")
     assert qlb.text_needs_verification("请完成人脸识别")
 
 

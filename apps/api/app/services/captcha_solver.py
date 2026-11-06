@@ -33,6 +33,7 @@ broadcaster.broadcast(event_type, data) 仅两参数。
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
