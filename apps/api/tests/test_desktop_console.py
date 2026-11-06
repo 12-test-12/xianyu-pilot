@@ -113,6 +113,91 @@ def test_ai_customer_service_with_deepseek(console, monkeypatch, upstream_status
         assert 'private upstream diagnostic' not in response.text
 
 
+def test_ai_customer_service_openai_endpoint_and_text_parts(console, monkeypatch):
+    from app.core.upload_security import PublicHTTPResponse
+    from app.services import ai_provider
+
+    async def complete(url, **kwargs):
+        assert url == 'https://models.example/v2/chat/completions'
+        assert json.loads(kwargs['content'])['model'] == 'example-chat'
+        return PublicHTTPResponse(200, httpx.Headers(),
+            b'{"choices":[{"message":{"content":[{"type":"text","text":"Hello"}]}}]}')
+
+    monkeypatch.setattr(ai_provider, 'request_public_https', complete)
+    client, _, _ = console
+    saved = client.put('/api/system/open-source-config', json={'generalModel': {
+        'provider': 'openai', 'modelName': 'example-chat',
+        'baseUrl': 'https://models.example/v2/chat/completions', 'apiKey': 'fixture-model-key',
+    }})
+    assert saved.json()['code'] == 200
+    response = client.post('/api/business-settings/ai-customer-service/test', json={'message': 'Hello'})
+    assert response.json()['data']['reply'] == 'Hello'
+
+
+def test_ai_customer_service_latest_automatic_result_contains_only_diagnostics(console):
+    client, config, _ = console
+    with sqlite3.connect(config.sqlite_path) as db:
+        db.execute("""INSERT INTO message_automation_outbox
+            (account_id,chat_message_id,source_message_digest,branch,state,retry_safe,attempt_count,last_error_code,updated_time)
+            VALUES(1,1,'digest','ai','completed',0,1,'scope_disabled',CURRENT_TIMESTAMP)""")
+    response = client.get('/api/auto-reply-scope/latest-run')
+    assert response.status_code == 200
+    data = response.json()['data']
+    assert set(data) == {'state', 'reason', 'updatedAt'}
+    assert data['reason'] == 'scope_disabled'
+
+
+@pytest.mark.asyncio
+async def test_automatic_reply_requires_opt_in_and_sends_after_platform_ack(tmp_path, monkeypatch):
+    from app.core import paths, secret_store
+    from app.core.database import use_database_runtime
+    from app.desktop_storage import DesktopStore
+    from app.services import automation_runtime, ws_startup
+    from app.services.business_settings import save_raw_business_setting
+
+    monkeypatch.setattr(paths, 'SOURCE_ROOT', tmp_path)
+    config = Settings(runtime_mode='desktop')
+    monkeypatch.setattr(secret_store, 'settings', config)
+    DesktopStore(config.sqlite_path).initialize()
+    runtime = DatabaseRuntime(config)
+    sent = []
+
+    class Client:
+        is_connected = True
+        _sid = 'registered'
+
+        async def send_text_message(self, *, cid, to_id, text, persist):
+            assert (cid, to_id, persist) == ('session@goofish', 'buyer@goofish', False)
+            sent.append(text)
+            return {'code': 200}
+
+    async def load_model():
+        return {'enabled': True, 'base_url': 'https://models.example', 'model': 'example-chat', 'api_key': 'fixture-model-key'}
+
+    async def generate(**kwargs):
+        assert kwargs['messages'][-1]['content'] == '现在有货吗？'
+        return {'ok': True, 'content': '您好，有货。'}
+
+    monkeypatch.setitem(automation_runtime.ws_manager._clients, 1, Client())
+    monkeypatch.setattr(automation_runtime, '_resolve_ai_config', load_model)
+    monkeypatch.setattr(automation_runtime, 'generate_text', generate)
+    messages = [{'sId': 'session', 'pnmId': 'inbound', 'senderUserId': 'buyer', 'msgContent': '现在有货吗？'}]
+    with use_database_runtime(runtime):
+        async with runtime.session() as db:
+            await save_raw_business_setting(db, 'ai-customer-service', {'enabled': True})
+            await db.commit()
+        await ws_startup._dispatch_ai_auto_reply_batch(1, messages, 'seller')
+        assert not sent
+        async with runtime.session() as db:
+            await save_raw_business_setting(db, 'auto-reply-account-scopes', {'accounts': {'1': True}})
+            await db.commit()
+        await ws_startup._dispatch_ai_auto_reply_batch(1, messages, 'seller')
+        await runtime.dispose()
+    assert sent == ['您好，有货。']
+    with sqlite3.connect(config.sqlite_path) as db:
+        assert db.execute('SELECT state FROM ai_auto_reply_attempt').fetchone() == ('confirmed',)
+
+
 def test_desktop_source_apply_creates_the_rules_used_by_paid_orders(console):
     from app.services.unified_delivery_rules import UnifiedDeliveryRules
 

@@ -24,6 +24,10 @@ export function testAiCustomerService(message) {
   return request.post('/business-settings/ai-customer-service/test', { message }, { uiMode: 'silent', timeout: 70000 })
 }
 
+export function getLatestAutoReplyRun() {
+  return request.get('/auto-reply-scope/latest-run', { uiMode: 'silent' })
+}
+
 /**
  * 一次性读取所有分类（并发）
  */

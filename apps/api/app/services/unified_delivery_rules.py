@@ -223,15 +223,17 @@ class UnifiedDeliveryRules(DesktopDeliveryStore):
             text_parts(body.get("content"))
         text_parts(body.get("footer"))
         sku=body.get("skuId", "")
-        words=body.get("keywords",())
+        original=self.get_goods(goods_id)
+        variants=[RuleVariant.model_validate(v) for v in original["variants"]]
+        previous=next((variant for variant in variants if variant.sku_id==sku),None)
+        words=body.get("keywords",previous.trigger.keywords if previous else ())
         if isinstance(words,str):
             words=tuple(w.strip() for w in re.split(r"[,，|]",words) if w.strip())
-        trigger=TriggerPolicy(mode=body.get("triggerMode","payment"),keywords=words)
+        trigger=TriggerPolicy(mode=body.get("triggerMode",previous.trigger.mode if previous else "payment"),keywords=words)
         variant=RuleVariant(sku_id=sku,enabled=boolean("enabled",False),trigger=trigger,
             plan=DeliveryPlan(sku_id=sku,card_group_id=body.get("cardGroupId") if kind in ("card","kami") else None,
                 confirm_shipment=boolean("autoConfirmShipment",True),max_attempts=retries+1,
                 low_stock_threshold=threshold,pause_on_low_stock=boolean("autoDisableOnLowStock",False),parts=tuple(parts)))
-        original=self.get_goods(goods_id)
-        variants=[RuleVariant.model_validate(v) for v in original["variants"] if v["skuId"]!=sku]
+        variants=[existing for existing in variants if existing.sku_id!=sku]
         variants.append(variant)
         return GoodsDeliveryConfig(variants=tuple(variants),expected_version=body.get("expectedVersion",original["version"]))

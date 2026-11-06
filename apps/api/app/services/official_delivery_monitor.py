@@ -19,7 +19,7 @@ from app.services.delivery_gate import DeliveryGate
 def notice_from_ws(message,seller_id):
     if str(message.get("direction", "IN")).upper()!="IN":
         return None
-    mid=str(message.get("pnmId") or "")
+    mid=str(message.get("pnmId") or message.get("_sourceMessageUid") or "")
     if not mid:
         return None
     timestamp=message.get("messageTime")
@@ -30,11 +30,11 @@ def notice_from_ws(message,seller_id):
                 return None
         except (TypeError,ValueError):
             return None
-    query=parse_qs(urlparse(str(message.get("reminderUrl") or "")).query)
+    query=parse_qs(urlparse(str(message.get("reminderUrl") or message.get("reminder_url") or "")).query)
     def single(key):
         values=query.get(key,[])
         return values[0] if len(values)==1 else ""
-    order_id=single("orderId") or single("tradeId")
+    order_id=single("orderId") or single("tradeId") or str(message.get("orderId") or message.get("tradeId") or "")
     sender=str(message.get("senderUserId") or "").removesuffix("@goofish")
     if order_id:
         return IncomingNotice(message_id=mid,kind="order_hint",order_id=order_id,
@@ -145,6 +145,9 @@ class OfficialDeliveryMonitor:
                     try:
                         await self.consider(account_id,notice.order_id,notice)
                         outcome="done"
+                    except PlatformOrderError as exc:
+                        await self.record_verification_failure(account_id, exc, "order_hint_not_verified")
+                        continue
                     except InventoryError:
                         outcome="blocked"
                         await asyncio.to_thread(self.store.monitor_state,account_id,"blocked","configuration_or_identity_mismatch")
@@ -172,6 +175,11 @@ class OfficialDeliveryMonitor:
         if self.gate.blocked or account_id in self._resume_required:
             return None
         official=await self.source.get_order(account_id,order_id)
+        return await self._consider_verified(account_id,order_id,official,notice)
+
+    async def _consider_verified(self,account_id,order_id,official,notice=None):
+        if self.gate.blocked or self._stopping or account_id in self._resume_required:
+            return None
         if official.account_id!=account_id or official.order_id!=order_id:
             raise PlatformOrderError("order_identity_mismatch")
         if notice and ((notice.item_id and notice.item_id!=official.item_id) or (notice.buyer_id and notice.buyer_id!=official.buyer_id)):
@@ -288,7 +296,10 @@ class OfficialDeliveryMonitor:
             for queued_record in queued:
                 if self._stopping or self.gate.blocked:
                     return
-                await self.execute(queued_record[0])
+                try:
+                    await self.execute(queued_record[0])
+                except PlatformOrderError:
+                    await asyncio.to_thread(self.store.monitor_state,account_id,"attention","queued_order_not_verified")
             if self._stopping or self.gate.blocked:
                 return
             await self.reconcile_confirmation(account_id)
@@ -299,8 +310,16 @@ class OfficialDeliveryMonitor:
                 if order.status==WAITING and not order.refunding and order.order_id not in {row["external_order_id"] for row in queued}:
                     try:
                         await self.consider(account_id,order.order_id)
+                    except PlatformOrderError as exc:
+                        await self.record_verification_failure(account_id, exc, "sold_order_not_verified")
                     except InventoryError:
                         await asyncio.to_thread(self.store.monitor_state,account_id,"blocked","configuration_or_identity_mismatch")
+
+    async def record_verification_failure(self, account_id, error, fallback):
+        reason = str(error)
+        if reason not in {"sold_order_facts_incomplete", "sold_order_sku_missing", "conversation_unverified"}:
+            reason = fallback
+        await asyncio.to_thread(self.store.monitor_state, account_id, "attention", reason)
 
     async def reconcile_confirmation(self,account_id):
         with self.store.connection() as conn:

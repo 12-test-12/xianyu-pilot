@@ -474,7 +474,7 @@ def fetch_conversation_user_info(
     return {"success": False, "error": "用户资料接口调用失败"}
 
 
-def confirm_shipment(account_id: int, order_id: str) -> Optional[dict]:
+def confirm_shipment(account_id: int, order_id: str, *, expected_seller_id: str | None = None) -> Optional[dict]:
     """确认发货（无需物流）。
 
     调用 API: mtop.taobao.idle.logistic.consign.dummy
@@ -491,6 +491,8 @@ def confirm_shipment(account_id: int, order_id: str) -> Optional[dict]:
     if not cookie_str:
         return {"success": False, "error": "Cookie为空"}
 
+    if not _seller_matches(auth, cookie_str, expected_seller_id):
+        return {"success": False, "error": "SELLER_MISMATCH"}
     data_str = json.dumps(
         {
             "orderId": order_id,
@@ -704,9 +706,12 @@ def _do_post_mtop_api(
         return {"success": False, "error": "PLATFORM_REQUEST_FAILED"}
 
     updated_cookie_str = _extract_updated_cookie_str(response, cookie_str)
+    if not isinstance(result, dict):
+        return {"success": False, "error": "PLATFORM_RESPONSE_INVALID"}
     ret = result.get("ret", [])
-    ret_str = " ".join(ret) if isinstance(ret, list) else str(ret)
-    if not ret or "SUCCESS" not in ret_str:
+    ret_str = " ".join(map(str, ret)) if isinstance(ret, list) else str(ret)
+    first = ret[0] if isinstance(ret, list) and ret else ""
+    if response.status_code != 200 or not isinstance(first, str) or first.split("::", 1)[0] != "SUCCESS":
         return {
             "success": False,
             "error": ret_str[:500] or "订单接口调用失败",
@@ -736,12 +741,20 @@ def _post_mtop_with_token_retry(
     # 令牌过期 → 刷新 Cookie 后重试一次
     if _is_token_expired_error(result.get("ret")):
         new_cookie_str = result.get("updatedCookieStr")
-        if new_cookie_str and new_cookie_str != cookie_str:
+        if (new_cookie_str and new_cookie_str != cookie_str
+                and _parse_cookie_str(new_cookie_str).get("unb") == _parse_cookie_str(cookie_str).get("unb")):
             logger.info("MTOP 接口令牌过期，刷新 Cookie 后重试: accountId=%s api=%s", account_id, api_name)
             _persist_account_auth_cookies(account_id, new_cookie_str, previous_cookie=cookie_str)
             return _do_post_mtop_api(account_id, new_cookie_str, api_name, data_str, timeout)
 
     return result
+
+
+def _seller_matches(auth, cookie, expected_seller_id):
+    return expected_seller_id is None or (
+        auth.get("external_uid") == expected_seller_id
+        and _parse_cookie_str(cookie).get("unb") == expected_seller_id
+    )
 
 
 def fetch_sold_orders_page(
@@ -750,6 +763,8 @@ def fetch_sold_orders_page(
     page_size: int = 30,
     query_code: str = "ALL",
     timeout: int = 20,
+    *,
+    expected_seller_id: str | None = None,
 ) -> Optional[dict]:
     """Fetch one seller-order page using the seller console request shape."""
     auth = _get_account_auth(account_id)
@@ -759,6 +774,8 @@ def fetch_sold_orders_page(
     cookie_str = _decrypt_value(auth.get("encrypted_cookie") or "")
     if not cookie_str:
         return {"success": False, "error": "Cookie为空"}
+    if not _seller_matches(auth, cookie_str, expected_seller_id):
+        return {"success": False, "error": "卖家登录身份不匹配", "errorCode": "SELLER_MISMATCH"}
 
     data_str = json.dumps(
         {
@@ -801,7 +818,10 @@ def fetch_sold_orders_page(
             "errorCode": error_code,
         }
 
-    module = result.get("data", {}).get("module", {})
+    data = result.get("data")
+    module = data.get("module") if isinstance(data, dict) else None
+    if not isinstance(module, dict) or not isinstance(module.get("items"), list):
+        return {"success": False, "error": "平台未返回有效的订单列表", "errorCode": "ORDER_SCHEMA_CHANGED"}
     return {
         "success": True,
         "data": {
@@ -994,6 +1014,8 @@ def confirm_freeshipping(
     order_id: str,
     item_id: Any,
     buyer_id: Any,
+    *,
+    expected_seller_id: str | None = None,
 ) -> Optional[dict]:
     """调用闲鱼 MTOP 免拼发货接口（小刀订单专用，商业版同步）。
 
@@ -1037,6 +1059,8 @@ def confirm_freeshipping(
             "message": f"账号 {account_id} 的 Cookie 为空",
         }
 
+    if not _seller_matches(auth, cookie_str, expected_seller_id):
+        return {"success": False, "error": "SELLER_MISMATCH"}
     api_name = "mtop.idle.groupon.activity.seller.freeshipping"
     # itemId / buyerId 在闲鱼接口中为整数类型（不带引号），bizOrderId 为字符串
     data_str = json.dumps(
@@ -1099,6 +1123,8 @@ def confirm_order_shipment(
     is_bargain: bool = False,
     item_id: Any = None,
     buyer_id: Any = None,
+    *,
+    expected_seller_id: str | None = None,
 ) -> Optional[dict]:
     """统一确认发货调度：小刀订单走免拼发货，普通订单走虚拟发货（商业版同步）。
 
@@ -1112,6 +1138,10 @@ def confirm_order_shipment(
     Returns:
         {"success": True, ...} 或 {"success": False, "error": "...", ...}
     """
+    if expected_seller_id is not None:
+        if is_bargain:
+            return confirm_freeshipping(account_id, order_id, item_id, buyer_id, expected_seller_id=expected_seller_id)
+        return confirm_shipment(account_id, order_id, expected_seller_id=expected_seller_id)
     if is_bargain:
         return confirm_freeshipping(account_id, order_id, item_id, buyer_id)
     return confirm_shipment(account_id, order_id)

@@ -5,6 +5,7 @@ import logging
 import re
 import uuid
 from typing import Any, Dict, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 from app.core.config import settings
 from app.core.upload_security import (
@@ -319,8 +320,6 @@ async def generate_text(
     # DeepSeek uses the same API key for both protocols; this client speaks OpenAI.
     if base_url == "https://api.deepseek.com/anthropic":
         base_url = "https://api.deepseek.com"
-    if base_url and base_url != "https://api.deepseek.com" and not base_url.endswith("/v1"):
-        base_url += "/v1"
 
     result: Dict[str, Any] = {
         "requestId": request_id,
@@ -331,7 +330,7 @@ async def generate_text(
         "configSource": cfg["source"],
     }
     if not result["configured"]:
-        result.update({"ok": False, "error": AI_NOT_CONFIGURED_ERROR})
+        result.update({"ok": False, "error": AI_NOT_CONFIGURED_ERROR, "errorCode": "model_not_configured"})
         return result
 
     if messages is None:
@@ -349,8 +348,15 @@ async def generate_text(
     }
 
     try:
+        parsed = urlsplit(base_url)
+        path = parsed.path.rstrip("/")
+        if not path.endswith("/chat/completions"):
+            if not path and base_url != "https://api.deepseek.com":
+                path = "/v1"
+            path += "/chat/completions"
+        endpoint = urlunsplit(parsed._replace(path=path))
         response = await request_public_https(
-            f"{base_url}/chat/completions",
+            endpoint,
             method="POST",
             content=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
             headers={
@@ -360,11 +366,10 @@ async def generate_text(
             timeout_seconds=max(int(cfg.get("request_timeout") or 30), 5),
             max_request_bytes=512 * 1024,
             max_response_bytes=1024 * 1024,
-            allow_desktop_proxy_dns=True,
         )
         result["httpStatus"] = response.status_code
         if response.status_code < 200 or response.status_code >= 300:
-            result.update({"ok": False, "error": f"AI Provider returned HTTP {response.status_code}"})
+            result.update({"ok": False, "error": f"AI Provider returned HTTP {response.status_code}", "errorCode": f"model_http_{response.status_code}"})
             return result
         data = response.json()
         if not isinstance(data, dict):
@@ -372,18 +377,23 @@ async def generate_text(
         choices = data.get("choices") or []
         content = ""
         if isinstance(choices, list) and choices and isinstance(choices[0], dict):
-            content = (
-                (choices[0].get("message") or {}).get("content")
-                or choices[0].get("text")
-                or ""
-            ).strip()
+            message = choices[0].get("message")
+            raw = message.get("content") if isinstance(message, dict) else None
+            if isinstance(raw, list):
+                raw = "\n".join(part["text"] for part in raw if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str))
+            if not raw:
+                raw = choices[0].get("text")
+            if isinstance(raw, str):
+                content = raw.strip()
         result.update({"ok": bool(content), "content": content, "usage": data.get("usage") or {}})
+        if not content:
+            result["errorCode"] = "model_reply_empty"
         return result
     except UnsafeRemoteURLError as exc:
         logger.warning("AI Provider endpoint rejected or unavailable: kind=%s", exc.__class__.__name__)
-        result.update({"ok": False, "error": "AI Provider endpoint must be a reachable public HTTPS address"})
+        result.update({"ok": False, "error": "AI Provider endpoint must be a reachable public HTTPS address", "errorCode": "model_endpoint_unreachable"})
         return result
     except Exception as exc:  # noqa: BLE001
         logger.warning("AI Provider request failed: kind=%s", exc.__class__.__name__)
-        result.update({"ok": False, "error": "AI Provider request failed"})
+        result.update({"ok": False, "error": "AI Provider request failed", "errorCode": "model_generation_failed"})
         return result

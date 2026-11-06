@@ -295,6 +295,10 @@
             </div>
           </div>
         </CardPanel>
+        <CardPanel title="最近一次自动回复">
+          <p class="aics-hint">{{ latestRunText }}</p>
+          <button type="button" class="aics-retry-btn" @click="loadLatestRun">刷新状态</button>
+        </CardPanel>
       </aside>
     </div>
   </div>
@@ -306,6 +310,7 @@ import CardPanel from '../../components/CardPanel.vue'
 import {
   getAiCsDefaults,
   getBusinessSettings,
+  getLatestAutoReplyRun,
   saveBusinessSettings,
   testAiCustomerService,
   uploadKnowledgeBase
@@ -325,6 +330,41 @@ const testMessage = ref('你好，这个商品还能再优惠点吗？')
 const testReply = ref('')
 const testError = ref('')
 const testConfigured = ref(null)
+const latestRunText = ref('正在读取自动回复状态…')
+
+async function loadLatestRun() {
+  try {
+    const { data } = await getLatestAutoReplyRun()
+    const messages = {
+      reply_confirmed: '平台已确认自动回复送达',
+      scope_disabled: 'AI 客服主开关未开启，或账号和商品未启用自动回复',
+      manual_mode: '当前处于人工接待模式',
+      manual_disabled: '该会话已手动关闭自动回复',
+      pause_window: '该会话处于人工接管暂停期',
+      human_intervention_active: '该会话处于人工接管暂停期',
+      outside_work_hours: '当前时段超出配置的工作时间',
+      keyword_rule_used: '已由关键词规则接待',
+      handoff_keyword_matched: '买家消息命中转人工关键词',
+      blacklist_keyword_matched: '买家消息命中会话黑名单',
+      daily_quota_reached: '该账号已达到每日回复上限',
+      model_not_configured: '未配置可用的通用模型',
+      model_reply_empty: '模型未返回可发送的正文',
+      model_endpoint_unreachable: '无法通过公共 HTTPS 连接模型服务',
+      model_generation_failed: '模型调用失败',
+      model_http_400: '模型服务拒绝请求，请核对模型名称和接口协议',
+      model_http_401: '模型服务拒绝了 API Key',
+      model_http_403: '模型服务拒绝访问，请检查 API Key 和权限',
+      model_http_404: '模型服务找不到接口或模型',
+      model_http_429: '模型服务请求过于频繁',
+      late_message: '消息到达时会话已处理'
+    }
+    latestRunText.value = data
+      ? (messages[data.reason] || (data.state === 'unknown' ? '发送结果待核对' : '本次未确认自动回复')) + `（${data.reason}）`
+      : '暂无自动回复记录'
+  } catch {
+    latestRunText.value = '暂时无法读取自动回复状态'
+  }
+}
 
 const kbFileInputRef = ref(null)
 const kbUploading = ref(false)
@@ -673,6 +713,7 @@ function onHeaderAction(event) {
 onMounted(() => {
   window.addEventListener('xya-header-action', onHeaderAction)
   load()
+  loadLatestRun()
 })
 
 onBeforeUnmount(() => {

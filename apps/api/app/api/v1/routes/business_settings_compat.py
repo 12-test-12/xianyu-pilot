@@ -181,6 +181,8 @@ async def test_ai_customer_service(
             429: "模型服务请求过于频繁，请稍后重试",
         }[result["httpStatus"]]
         raise HTTPException(status_code=503, detail=detail)
+    if isinstance(result, dict) and result.get("errorCode") == "model_endpoint_unreachable":
+        raise HTTPException(status_code=503, detail="无法通过公共 HTTPS 连接模型服务，请检查接口地址、DNS 和代理设置")
 
     raise HTTPException(
         status_code=503,

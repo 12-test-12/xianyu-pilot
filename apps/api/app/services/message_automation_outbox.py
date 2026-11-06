@@ -270,7 +270,7 @@ async def _finish_claim(
         return bool(result.rowcount)
 
 
-async def complete_deferred_messages(messages: list[dict]) -> int:
+async def complete_deferred_messages(messages: list[dict], *, reason: str = "") -> int:
     """Complete AI rows only after their quiet-period batch has really run."""
 
     completed = 0
@@ -280,6 +280,7 @@ async def complete_deferred_messages(messages: list[dict]) -> int:
             claim,
             state="completed",
             retry_safe=False,
+            error_code=reason[:64],
         ):
             completed += 1
     return completed

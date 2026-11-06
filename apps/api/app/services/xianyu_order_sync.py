@@ -10,6 +10,7 @@
 import asyncio
 import datetime
 import logging
+from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
 from sqlalchemy import select, text
@@ -51,7 +52,7 @@ def _safe_int(value: Any, default: int = 0) -> int:
     except (ValueError, TypeError):
         try:
             return int(float(value))
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):
             return default
 
 
@@ -84,66 +85,65 @@ def _parse_order_amount(
     price_vo: Optional[dict[str, Any]] = None,
     common: Optional[dict[str, Any]] = None,
     item: Optional[dict[str, Any]] = None,
-) -> str:
+) -> Optional[str]:
     """解析订单金额，全面支持闲鱼 mtop 各种金额字段（含 cent 分单位转换）。"""
     p_vo = price_vo or {}
     c_data = common or {}
     i_data = item or {}
 
+    def money(value, multiplier=1, divisor=1):
+        try:
+            amount = Decimal(_text(value))
+            if amount.is_finite() and 0 <= amount < 10**15:
+                return f"{amount * multiplier / divisor:.2f}"
+        except InvalidOperation:
+            pass
+        return None
+
+    for val, divisor in (
+        (p_vo.get("realPayPrice"), 1),
+        (p_vo.get("actualPaidFee"), 1),
+        (p_vo.get("realPayCent"), 100),
+        (p_vo.get("payPrice"), 1),
+        (c_data.get("payPrice"), 1),
+        (p_vo.get("amountCent"), 100),
+        (c_data.get("amountCent"), 100),
+        (i_data.get("amountCent"), 100),
+        (p_vo.get("totalCent"), 100),
+    ):
+        amount = money(val, divisor=divisor)
+        if amount is not None:
+            return amount
+
     for val in (
         total_price,
-        p_vo.get("realPayPrice"),
         p_vo.get("totalPrice"),
         p_vo.get("orderPrice"),
-        p_vo.get("payPrice"),
-        p_vo.get("actualPaidFee"),
         c_data.get("totalPrice"),
         c_data.get("orderPrice"),
-        c_data.get("payPrice"),
         i_data.get("totalPrice"),
         i_data.get("orderPrice"),
     ):
-        text_val = _text(val)
-        if text_val:
-            try:
-                amt = float(text_val)
-                if amt >= 0:
-                    return f"{amt:.2f}"
-            except (ValueError, TypeError):
-                pass
+        amount = money(val)
+        if amount is not None:
+            return amount
 
-    for cent_val in (
-        c_data.get("amountCent"),
-        i_data.get("amountCent"),
-        p_vo.get("amountCent"),
-        p_vo.get("realPayCent"),
-        p_vo.get("totalCent"),
-        c_data.get("priceCent"),
+    if quantity < 1:
+        return None
+    for val, divisor in (
+        (unit_price, 1),
+        (p_vo.get("auctionPrice"), 1),
+        (p_vo.get("unitPrice"), 1),
+        (c_data.get("price"), 1),
+        (c_data.get("priceCent"), 100),
+        (p_vo.get("priceCent"), 100),
+        (i_data.get("priceCent"), 100),
     ):
-        if cent_val is not None:
-            try:
-                amt = float(cent_val) / 100.0
-                if amt >= 0:
-                    return f"{amt:.2f}"
-            except (ValueError, TypeError):
-                pass
+        amount = money(val, multiplier=quantity, divisor=divisor)
+        if amount is not None:
+            return amount
 
-    for u in (
-        unit_price,
-        p_vo.get("auctionPrice"),
-        p_vo.get("unitPrice"),
-        c_data.get("price"),
-    ):
-        text_u = _text(u)
-        if text_u:
-            try:
-                amt = float(text_u) * max(quantity, 1)
-                if amt >= 0:
-                    return f"{amt:.2f}"
-            except (ValueError, TypeError):
-                pass
-
-    return "0.00"
+    return None
 
 
 def _detect_bargain_from_buttons(item: dict[str, Any]) -> bool:
@@ -185,7 +185,7 @@ def _parse_remote_order_item(item: dict[str, Any]) -> Optional[dict[str, Any]]:
     if not external_order_id:
         return None
 
-    quantity = _safe_int(price_vo.get("buyNum"), 1)
+    quantity = _safe_int(price_vo.get("buyNum", common.get("quantity")))
     goods_id_raw = _text(
         common.get("itemId") or item_info.get("itemId") or item_buy_info.get("itemId")
     )
@@ -206,8 +206,6 @@ def _parse_remote_order_item(item: dict[str, Any]) -> Optional[dict[str, Any]]:
     goods_price = _text(
         price_vo.get("auctionPrice")
         or price_vo.get("unitPrice")
-        or price_vo.get("realPayPrice")
-        or price_vo.get("orderPrice")
         or item_info.get("price")
         or common.get("price")
     )
@@ -225,7 +223,7 @@ def _parse_remote_order_item(item: dict[str, Any]) -> Optional[dict[str, Any]]:
         quantity,
         price_vo=price_vo,
         common=common,
-        item=item,
+        item={**item_info, **item},
     )
 
     in_refund = bool(common.get("inRefund"))
@@ -253,8 +251,8 @@ def _parse_remote_order_item(item: dict[str, Any]) -> Optional[dict[str, Any]]:
                 "goods_title": goods_title,
                 "goods_image": goods_image,
                 "goods_price": goods_price,
-                "goods_count": quantity,
-                "quantity": quantity,
+                "goods_count": max(quantity, 1),
+                "quantity": max(quantity, 1),
             }
         ],
     }
@@ -270,7 +268,7 @@ async def _replace_order_items(db: AsyncSession, order_id: int, items: list[Any]
         async with db.begin_nested():
             await db.execute(
                 text(
-                    "UPDATE xianyu_trade_order_item SET deleted = 1, updated_time = NOW() "
+                    "UPDATE xianyu_trade_order_item SET deleted = 1, updated_time = CURRENT_TIMESTAMP "
                     "WHERE order_id = :oid AND deleted = 0"
                 ),
                 {"oid": order_id},
@@ -336,7 +334,7 @@ async def _upsert_order(db: AsyncSession, account_id: int, parsed: dict[str, Any
     else:
         if parsed.get("order_status") is not None:
             order.order_status = parsed["order_status"]
-        if parsed.get("total_amount"):
+        if parsed.get("total_amount") is not None:
             order.total_amount = parsed["total_amount"]
         if parsed.get("buyer_name"):
             order.buyer_name = parsed["buyer_name"]
@@ -426,6 +424,7 @@ async def _sync_orders_for_account_impl(
     failed = 0
     sold_item_ids_to_relist: list = []  # 新售订单对应的商品 ID，用于触发售整自动上架
     page_number = 1
+    issue = {}
 
     try:
         while page_number <= max_pages:
@@ -446,12 +445,7 @@ async def _sync_orders_for_account_impl(
                     page_number,
                     error_code,
                 )
-                if page_number == 1 and total_fetched == 0:
-                    return {
-                        "success": False,
-                        "error": error_msg,
-                        "errorCode": error_code,
-                    }
+                issue = {"error": f"第 {page_number} 页：{error_msg}", "errorCode": error_code}
                 break
 
             data = page_result.get("data", {})
@@ -459,9 +453,8 @@ async def _sync_orders_for_account_impl(
             has_next = data.get("nextPage", False)
             total_count = data.get("totalCount", 0)
 
-            if not items:
-                break
-
+            page_inserted = page_updated = 0
+            page_sold_items = []
             async with async_session() as db:
                 for item in items:
                     try:
@@ -474,14 +467,13 @@ async def _sync_orders_for_account_impl(
                         async with db.begin_nested():
                             action, _ = await _upsert_order(db, account_id, parsed)
                         if action == "inserted":
-                            inserted += 1
+                            page_inserted += 1
                             # 新售订单插入成功，记录商品 ID 用于触发售整自动上架钩子
                             sold_item_id = str(parsed.get("item_id") or "").strip()
                             if sold_item_id:
-                                sold_item_ids_to_relist.append(sold_item_id)
+                                page_sold_items.append(sold_item_id)
                         else:
-                            updated += 1
-                        total_fetched += 1
+                            page_updated += 1
                     except Exception as exc:
                         failed += 1
                         logger.warning(
@@ -492,13 +484,20 @@ async def _sync_orders_for_account_impl(
                             type(exc).__name__,
                         )
                 await db.commit()
+            inserted += page_inserted
+            updated += page_updated
+            total_fetched += page_inserted + page_updated
+            sold_item_ids_to_relist.extend(page_sold_items)
 
             logger.info(
                 "订单同步分页完成: accountId=%d page=%d 本页=%d 累计=%d 总数=%s",
                 account_id, page_number, len(items), total_fetched, total_count,
             )
 
-            if not has_next or len(items) < page_size:
+            if not has_next:
+                break
+            if page_number == max_pages:
+                issue = {"error": f"已读取 {max_pages} 页，平台仍有后续订单", "errorCode": "ORDER_SYNC_PAGE_LIMIT"}
                 break
 
             page_number += 1
@@ -525,8 +524,12 @@ async def _sync_orders_for_account_impl(
                     "触发售整自动上架失败 accountId=%d errorType=%s",
                     account_id, type(exc).__name__,
                 )
+        if failed and not issue:
+            issue = {"error": f"{failed} 笔订单无法读取或入库，请重试同步", "errorCode": "ORDER_SYNC_ROW_FAILED"}
         return {
-            "success": True,
+            "success": not issue,
+            "partial": bool(issue and total_fetched),
+            **issue,
             "total": total_fetched,
             "inserted": inserted,
             "updated": updated,
@@ -540,7 +543,12 @@ async def _sync_orders_for_account_impl(
         )
         return {
             "success": False,
-            "error": "订单同步未完成，请检查账号状态后重试",
+            "partial": bool(total_fetched),
+            "total": total_fetched,
+            "inserted": inserted,
+            "updated": updated,
+            "failed": failed,
+            "error": f"第 {page_number} 页同步未完成，请重试",
             "errorCode": "ORDER_SYNC_FAILED",
         }
 
@@ -653,7 +661,7 @@ async def sync_order_by_external_id(
                     result["found"] = True
                 return result
 
-            if not data.get("nextPage", False) or len(items) < page_size:
+            if not data.get("nextPage", False):
                 break
             page_number += 1
             await asyncio.sleep(0.5)

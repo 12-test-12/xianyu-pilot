@@ -347,7 +347,6 @@ const autoSyncState = reactive({
   accountLabel: '',
   failedAccounts: []
 })
-const AUTO_DELIVERY_FOCUS_GOODS_KEY = 'xya:auto-delivery-focus-goods-id'
 const EXTERNAL_OPERATION_INTENTS_KEY = 'xya:product-external-operation-intents'
 const publishDraftIntents = reactive({})
 const priceIntents = reactive({})
@@ -1796,11 +1795,7 @@ function stopAutoRefreshTimer() {
 }
 // 跳转到自动发货配置页面
 const goToAutoDelivery = (row = null) => {
-  const goodsId = row?.raw?.id ?? row?.id
-  if (goodsId) {
-    sessionStorage.setItem(AUTO_DELIVERY_FOCUS_GOODS_KEY, String(goodsId))
-  }
-  emit('navigate', 'auto-delivery')
+  emit('navigate', 'auto-delivery', { focusGoodsId: row?.raw?.id ?? row?.id })
 }
 onMounted(()=>{ restoreExternalOperationIntents(); window.addEventListener('xya-header-action', onHeader); init(); startAutoRefreshTimer() })
 onBeforeUnmount(()=>{ syncPollCanceled = true; stopAutoRefreshTimer(); window.removeEventListener('xya-header-action', onHeader) })

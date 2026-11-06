@@ -461,6 +461,11 @@ async def _process_delivery(
     account_id: int,
     msg: dict,
 ) -> RealtimeDeliveryOutcome | None:
+    from ..core.database import current_desktop_delivery_monitor
+
+    if current_desktop_delivery_monitor() is not None:
+        # Statement confirmation commits in its caller. The desktop probe reads the committed consent.
+        return None
     session_id = str(msg.get("sId") or msg.get("sid") or "").strip()
     reminder_url = str(msg.get("reminderUrl") or msg.get("reminder_url") or "")
     external_order_id = extract_order_id_from_url(reminder_url)

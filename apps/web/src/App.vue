@@ -65,6 +65,7 @@
           :active="active"
           :user="currentUserInfo"
           :requested-route="requestedRoute"
+          v-bind="active === 'auto-delivery' ? { focusGoodsId: autoDeliveryFocusId } : {}"
           @navigate="navigate"
           @prefetch="prefetchRoute"
         />
@@ -171,6 +172,7 @@ const bootMessage = ref('正在检查登录状态')
 const loggingIn = ref(false)
 const active = ref(initialRoute.page)
 const requestedRoute = ref(initialRoute.known ? '' : initialRoute.requestedPage)
+const autoDeliveryFocusId = ref(null)
 const currentUserInfo = ref({ username: getCachedUsername() || '管理员', avatar: '/xya/chat_ui_assets/chat_ui_assets_023.png' })
 const displaySseStatus = ref('disconnected')
 const globalNotice = ref(null)
@@ -300,6 +302,7 @@ async function navigate(key, options = {}) {
   }
 
   requestedRoute.value = known ? '' : requested
+  autoDeliveryFocusId.value = next === 'auto-delivery' ? (options.focusGoodsId ?? null) : null
   if (!options.preserveHash) location.hash = `#/${encodeURIComponent(requested)}`
   active.value = next
 

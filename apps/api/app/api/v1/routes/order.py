@@ -5,7 +5,7 @@ import math
 from typing import Optional
 
 from fastapi import APIRouter, Body, Depends
-from sqlalchemy import func, or_, select
+from sqlalchemy import Numeric, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ....core.database import get_db
@@ -42,14 +42,15 @@ _ORDER_SORT_FIELD_MAP = {
     "createdAt": XianyuTradeOrder.create_time,
     "buyerName": XianyuTradeOrder.buyer_name,
     "orderStatus": XianyuTradeOrder.order_status,
+    "totalAmount": cast(XianyuTradeOrder.total_amount, Numeric(20, 2)),
 }
 
 
-def _resolve_order_sort(req: "OrderQueryReqDTO"):
+def resolve_order_sort(sort_field, sort_order):
     """根据请求中的 sort_field / sort_order 构造排序条件，默认 create_time DESC。"""
-    field_name = (req.sort_field or "createdAt").strip()
+    field_name = (sort_field or "createdAt").strip()
     column = _ORDER_SORT_FIELD_MAP.get(field_name, XianyuTradeOrder.create_time)
-    order = (req.sort_order or "desc").strip().lower()
+    order = (sort_order or "desc").strip().lower()
     return column.asc() if order == "asc" else column.desc()
 
 
@@ -206,7 +207,7 @@ async def list_orders(
     try:
         page_num = max(req.page_num or 1, 1)
         page_size = max(min(req.page_size or 20, 100), 1)
-        query = select(XianyuTradeOrder)
+        query = select(XianyuTradeOrder).where(XianyuTradeOrder.deleted == 0)
         if req.xianyu_account_id is not None:
             query = query.where(XianyuTradeOrder.account_id == req.xianyu_account_id)
         if req.xy_goods_id:
@@ -236,7 +237,7 @@ async def list_orders(
         total = total_result.scalar() or 0
 
         offset = (page_num - 1) * page_size
-        query = query.order_by(_resolve_order_sort(req)).offset(offset).limit(page_size)
+        query = query.order_by(resolve_order_sort(req.sort_field, req.sort_order), XianyuTradeOrder.id.desc()).offset(offset).limit(page_size)
         result = await db.execute(query)
         orders = result.scalars().all()
 
@@ -492,6 +493,10 @@ async def batch_refresh_orders(
                     "errorCode": "ORDER_SYNC_FAILED",
                 })
                 continue
+            synced_count += int(result.get("total") or 0)
+            inserted += int(result.get("inserted") or 0)
+            updated += int(result.get("updated") or 0)
+            failed += int(result.get("failed") or 0)
             if not result.get("success"):
                 error_msg = result.get("error") or "订单同步失败"
                 logger.warning(
@@ -505,10 +510,6 @@ async def batch_refresh_orders(
                 })
                 continue
             synced_accounts.append(sync_account_id)
-            synced_count += int(result.get("total") or 0)
-            inserted += int(result.get("inserted") or 0)
-            updated += int(result.get("updated") or 0)
-            failed += int(result.get("failed") or 0)
 
     # 指定 orderIds 时，对本地仍缺失的订单号做单笔补录
     missing_order_ids = order_ids

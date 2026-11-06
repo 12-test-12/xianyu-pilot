@@ -123,6 +123,10 @@ def current_delivery_gate():
     return getattr(_active_database.get(),'delivery_gate',None)
 
 
+def current_desktop_delivery_monitor():
+    return getattr(_active_database.get(), "desktop_delivery_monitor", None)
+
+
 class Base(DeclarativeBase):
     pass
 

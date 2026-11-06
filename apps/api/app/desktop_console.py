@@ -16,8 +16,11 @@ from app.core.response import ResultObject
 
 class ConsoleServices:
     """Own the original message/AI workers under the desktop database lifecycle."""
-    def __init__(self,gate):
+    def __init__(self,gate,delivery_monitor):
         self.gate=gate
+        self.delivery_monitor=delivery_monitor
+        self.delivery_task=None
+        self.delivery_stop=asyncio.Event()
         self.startup=None
         self.stoppers=[]
 
@@ -40,6 +43,7 @@ class ConsoleServices:
         from app.services.ws_startup import auto_start_all
         start_background_task_runtime()
         self.startup=asyncio.create_task(auto_start_all(),name='desktop-original-services')
+        self.delivery_task=asyncio.create_task(self.poll_delivery(),name='desktop-sold-order-probe')
         from app.services.cookie_token_refresher import start_dispatcher, stop_dispatcher
         from app.services.auto_rate_scheduler import start_auto_rate_scheduler, stop_auto_rate_scheduler
         from app.services.relist_scheduler import start_relist_scheduler, stop_relist_scheduler
@@ -47,15 +51,30 @@ class ConsoleServices:
             await start()
             self.stoppers.append(stop)
 
+    async def poll_delivery(self):
+        while not self.delivery_stop.is_set():
+            self.delivery_monitor.wake_probe.clear()
+            await self.delivery_monitor.probe_connected_accounts(configured_only=True)
+            try:
+                if not self.delivery_stop.is_set():
+                    await asyncio.wait_for(self.delivery_monitor.wake_probe.wait(), self.delivery_monitor.interval)
+            except asyncio.TimeoutError:
+                pass
+
     async def stop(self):
         from app.services.ws_startup import stop_all
         from app.core.background_tasks import begin_background_task_shutdown, shutdown_background_tasks
         begin_background_task_shutdown()
+        self.delivery_monitor._stopping=True
+        self.delivery_stop.set()
+        self.delivery_monitor.wake_probe.set()
         if self.startup is not None:
             self.startup.cancel()
             await asyncio.gather(self.startup,return_exceptions=True)
         for stop in reversed(self.stoppers):await stop()
         await stop_all()
+        if self.delivery_task is not None:
+            await self.delivery_task
         await shutdown_background_tasks()
 
 

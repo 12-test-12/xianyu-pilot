@@ -37,7 +37,12 @@ def create_desktop_app(config=None, *, web_dir=None, platform_runtime=None, inst
     from app.desktop_console import ConsoleServices
     from app.services.delivery_gate import DeliveryGate
     runtime.delivery_gate=host_gate if host_gate is not None else DeliveryGate()
-    console_services=ConsoleServices(runtime.delivery_gate) if platform_runtime is None else None
+    if platform_runtime is None:
+        from app.services.desktop_order_delivery import DesktopOrderDelivery
+        runtime.desktop_delivery_monitor = DesktopOrderDelivery(config.sqlite_path, runtime.delivery_gate)
+        console_services = ConsoleServices(runtime.delivery_gate, runtime.desktop_delivery_monitor)
+    else:
+        console_services = None
     store = DesktopStore(config.sqlite_path)
     web_dir = Path(web_dir) if web_dir is not None else Path(__file__).resolve().parents[2] / "web" / "dist"
     origins = {f"http://127.0.0.1:{config.desktop_port}", f"http://localhost:{config.desktop_port}"}
@@ -124,7 +129,7 @@ def create_desktop_app(config=None, *, web_dir=None, platform_runtime=None, inst
                 "deliveryLifecycle":lifecycle,
                 "realPlatformConnections":bool(lifecycle.get('connectedCount',0) or (platform_runtime and any(c.is_connected for c in platform_runtime.clients.values()))), "businessRoutesEnabled": True,
                 "enabledBusinessModules": ["accounts","goods","orders","messages","cards","delivery-rules","goods-config","ai-auto-reply","logs","orders-read","delivery-records-read"],
-                "deliveryExecutionMode": "official-verification" if platform_runtime else "original-platform-services",
+                "deliveryExecutionMode": "official-verification",
                 "externalServicesRequired": [], "uiBuilt": (web_dir / "index.html").is_file(),
                 }
 

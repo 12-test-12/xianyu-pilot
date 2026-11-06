@@ -172,7 +172,7 @@
             </div>
           </template>
           <template #amount="{ row }">
-            <div class="strong amount-cell">¥{{ formatMoney(row.totalAmount) }}</div>
+            <div class="strong amount-cell">{{ formatMoney(row.totalAmount, '¥') }}</div>
           </template>
           <template #quantity="{ row }">
             <div class="qty-text strong">{{ row.deliveryProgressText || '1 / 1' }}</div>
@@ -244,7 +244,7 @@
                 <div class="detail-item"><span class="detail-label">买家昵称</span><span class="detail-value">{{ detailView.buyerName || '-' }}</span></div>
                 <div class="detail-item"><span class="detail-label">所属账号</span><span class="detail-value">{{ accountLabel(detailView.accountId) }}</span></div>
                 <div class="detail-item"><span class="detail-label">订单状态</span><span class="detail-value"><Badge :type="detailView.orderStatusBadge">{{ detailView.orderStatusText }}</Badge></span></div>
-                <div class="detail-item"><span class="detail-label">订单金额</span><span class="detail-value strong amount-text">¥{{ formatMoney(detailView.totalAmount) }}</span></div>
+                <div class="detail-item"><span class="detail-label">订单金额</span><span class="detail-value strong amount-text">{{ formatMoney(detailView.totalAmount, '¥') }}</span></div>
                 <div class="detail-item"><span class="detail-label">是否小刀</span><span class="detail-value"><Badge :type="detailView.isBargainBadge">{{ detailView.isBargainText }}</Badge></span></div>
                 <div class="detail-item"><span class="detail-label">已评价</span><span class="detail-value"><Badge :type="detailView.isRatedBadge">{{ detailView.isRatedText }}</Badge></span></div>
                 <div class="detail-item"><span class="detail-label">求小红花</span><span class="detail-value"><Badge :type="detailView.isRedFlowerBadge">{{ detailView.isRedFlowerText }}</Badge></span></div>
@@ -552,10 +552,11 @@ function formatNumber(n) {
   return num.toLocaleString('zh-CN')
 }
 
-function formatMoney(n) {
+function formatMoney(n, prefix = '') {
+  if (n == null || n === '') return '—'
   const num = Number(n)
-  if (!Number.isFinite(num)) return '0.00'
-  return num.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  if (!Number.isFinite(num)) return '—'
+  return prefix + num.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
 // 记录加载失败的图片 URL，避免污染原数据（切换页码再回来时可重新尝试）
@@ -942,14 +943,17 @@ async function refreshFromPlatform(options = {}) {
         .filter(Boolean)
         .slice(0, 3)
         .join('；')
-      failureMessage = `平台订单同步未完全成功${reasons ? `：${reasons}` : ''}`
+      failureMessage = `已同步 ${syncedCount} 条订单，仍有数据同步失败${reasons ? `：${reasons}` : ''}`
     }
   } catch (requestError) {
     failureMessage = requestError.message || '从平台刷新订单失败'
   } finally {
-    syncingList.value = false
+    try {
+      await loadOrders({ sync: false, silent: true })
+    } finally {
+      syncingList.value = false
+    }
   }
-  await loadOrders({ sync: false, silent: true })
   if (failureMessage) {
     if (ordersAvailable.value === true) {
       appendWarning(failureMessage)

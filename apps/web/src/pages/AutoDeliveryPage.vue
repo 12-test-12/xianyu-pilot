@@ -10,6 +10,10 @@
     <div v-if="error" class="global-notice error">{{ error }}</div>
     <div v-if="dependenciesError" class="global-notice warn">{{ dependenciesError }}</div>
     <div v-if="statsError" class="global-notice warn">{{ statsError }}</div>
+    <div v-if="monitorNotice" class="global-notice warn">
+      {{ monitorNotice }}
+      <button class="link" style="margin-left:8px" @click="goDeliveryRecords">查看发货记录</button>
+    </div>
     <div v-if="failureNotice" class="global-notice warn">
       {{ failureNotice }}
       <button class="link" style="margin-left:8px" @click="goDeliveryRecords">查看发货记录</button>
@@ -80,7 +84,8 @@
       <div class="main-content">
         <div class="timing-notice">
           <span class="timing-notice-icon">i</span>
-          <span><b>付款后发货</b>会由系统定时扫描自动执行；<b>确认收货后赠送</b>和<b>好评后赠送</b>可在发货记录页手动触发，也可接入后续事件自动化。漏发的订单每 10 分钟自动补发一次，也可点击"立即补发未发货订单"手动触发。</span>
+          <span v-if="desktopHost">收到付款通知后会核验订单。账号在线时也会定期检查近期订单，可点击“立即补发未发货订单”手动检查。</span>
+          <span v-else><b>付款后发货</b>会由系统定时扫描自动执行；<b>确认收货后赠送</b>和<b>好评后赠送</b>可在发货记录页手动触发，也可接入后续事件自动化。漏发的订单每 10 分钟自动补发一次，也可点击"立即补发未发货订单"手动触发。</span>
         </div>
 
         <CardPanel>
@@ -157,15 +162,26 @@
               <button class="config-modal-close" type="button" aria-label="关闭" :disabled="configSaving || skuSaving" @click="closeConfig">×</button>
             </div>
             <div v-if="modalError" class="global-notice error" style="margin-bottom: 12px">{{ modalError }}</div>
-            <fieldset class="config-edit-fields" :disabled="configSaving || skuSaving">
+            <p v-if="desktopHost && skuLoading" class="subtle">正在读取该商品的规格和发货配置…</p>
+            <p v-else-if="desktopHost && skuError" class="danger-text">
+              {{ skuError }} <button type="button" class="link" @click="loadSkuData(configTarget.goods.id)">重新加载</button>
+            </p>
+            <fieldset class="config-edit-fields" :disabled="configSaving || skuSaving || (desktopHost && skuLoading)">
           <div class="config-tabs">
             <button v-for="timing in configTimings" :key="timing.key" :class="['config-tab', { active: configTiming === timing.key }]" @click="switchTiming(timing.key)">
               {{ timing.label }}
             </button>
-            <button v-if="skuList.length" :class="['config-tab', { active: configTiming === 'skuRules' }]" @click="switchTiming('skuRules')">
+            <button v-if="!desktopHost && skuList.length" :class="['config-tab', { active: configTiming === 'skuRules' }]" @click="switchTiming('skuRules')">
               多规格配置
             </button>
           </div>
+          <label v-if="desktopHost && skuList.length" class="form-row">
+            商品规格
+            <select v-model="desktopSku" class="input" @change="fillDesktopSku">
+              <option value="">请选择商品规格</option>
+              <option v-for="sku in skuList" :key="sku.skuId" :value="String(sku.skuId)">{{ sku.propertyText || sku.skuId }}</option>
+            </select>
+          </label>
 
           <div v-if="configTiming === 'skuRules'" class="form-grid sku-rules-grid">
             <div class="form-section">
@@ -289,7 +305,7 @@
               </div>
 
               <div class="form-row">
-                <label>从货源库模板引用（可选）</label>
+                <label>{{ desktopHost ? '从货源库复制正文（可选）' : '从货源库模板引用（可选）' }}</label>
                 <div class="toolbar" style="justify-content:flex-start">
                   <select v-model="configForm.sourceId" class="input" style="max-width:320px" :disabled="sourcesAvailable === false">
                     <option value="">不使用模板（使用上方直接手写内容）</option>
@@ -299,7 +315,7 @@
                 </div>
                 <div v-if="sourcesAvailable === false" class="global-notice error">货源库暂不可用，无法确认可关联的文本货源。</div>
                 <div v-if="configForm.sourceId" class="subtle">
-                  已关联货源模板：{{ sourceTitle(configForm.sourceId) }}（内容已自动填入上方正文，可继续修改）
+                  {{ desktopHost ? '所选模板' : '已关联货源模板' }}：{{ sourceTitle(configForm.sourceId) }}（保存前可编辑正文）
                 </div>
               </div>
             </div>
@@ -415,8 +431,8 @@
             <label>发货时机</label>
             <select v-model="batchForm.action" class="input">
               <option value="payDelivery">付款后发货</option>
-              <option value="confirmDelivery">确认收货后赠送</option>
-              <option value="reviewDelivery">好评后赠送</option>
+              <option v-if="!desktopHost" value="confirmDelivery">确认收货后赠送</option>
+              <option v-if="!desktopHost" value="reviewDelivery">好评后赠送</option>
             </select>
           </div>
           <div class="form-row">
@@ -430,8 +446,8 @@
             <label>发货模式</label>
             <select v-model="batchForm.mode" class="input">
               <option value="">保持不变</option>
-              <option value="text">文本发货</option>
-              <option value="card">卡密发货</option>
+              <option v-if="!desktopHost" value="text">文本发货</option>
+              <option v-if="!desktopHost" value="card">卡密发货</option>
             </select>
           </div>
           <div v-if="batchForm.mode === 'card'" class="form-row">
@@ -469,13 +485,15 @@ import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
 import { confirmAction } from '../utils/confirmAction.js'
 import { getAccounts } from '../api/accounts.js'
-import { getGoods } from '../api/goods.js'
+import { getGoods, getGoodsDetail } from '../api/goods.js'
 import { getCards, createCard, batchCreateCardItems } from '../api/cards.js'
 import {
   batchDeleteDeliveryRules,
   batchSetDeliveryRules,
   getDeliverySources,
   getDeliveryStats,
+  getDesktopDeliveryStatus,
+  getGoodsDeliveryConfig,
   getGoodsDeliveryConfigs,
   saveGoodsDeliveryConfig,
   scanPendingOrders as scanApi,
@@ -489,7 +507,12 @@ import { recordsOf } from '../utils/apiData.js'
 import { importDeliveryCards } from '../utils/deliveryCardImport.js'
 
 const emit = defineEmits(['navigate'])
-const AUTO_DELIVERY_FOCUS_GOODS_KEY = 'xya:auto-delivery-focus-goods-id'
+const props = defineProps({ focusGoodsId: [Number, String] })
+const pendingFocus = ref(props.focusGoodsId)
+const desktopHost = document.documentElement.classList.contains('desktop-host')
+const desktopSku = ref('')
+const desktopConfig = ref(null)
+const desktopPlanReadOnly = ref(false)
 const accounts = ref([])
 const cardGroups = ref([])
 const textSources = ref([])
@@ -497,6 +520,8 @@ const allGoods = ref([])
 const error = ref('')
 const success = ref('')
 const statsError = ref('')
+const monitorStatuses = ref([])
+const monitorError = ref(false)
 const sourcesError = ref('')
 const dependenciesError = ref('')
 const statsAvailable = ref(false)
@@ -540,7 +565,7 @@ const configTimings = [
   { key: 'payDelivery', label: '付款后发货' },
   { key: 'confirmDelivery', label: '确认收货后赠送' },
   { key: 'reviewDelivery', label: '好评后赠送' }
-]
+].slice(0, desktopHost ? 1 : 3)
 
 const configForm = reactive({
   enabled: 1,
@@ -579,7 +604,7 @@ const columns = [
   { key: 'confirmDelivery', title: '确认收货后赠送' },
   { key: 'reviewDelivery', title: '好评后赠送' },
   { key: 'op', title: '操作' }
-]
+].filter(column => !desktopHost || !['confirmDelivery', 'reviewDelivery'].includes(column.key))
 
 const currentTimingLabel = computed(() => configTimings.find(item => item.key === configTiming.value)?.label || '')
 
@@ -601,7 +626,9 @@ const filteredGoods = computed(() => {
     if (query.goodsStatus !== '' && String(goods.status) !== String(query.goodsStatus)) return false
 
     const cfg = goods._config || {}
-    const timings = [cfg.payDelivery, cfg.confirmDelivery, cfg.reviewDelivery].filter(Boolean)
+    const timings = cfg.variants?.map(variant => ({
+      mode: variant.plan.cardGroupId ? 'card' : 'text'
+    })) || [cfg.payDelivery, cfg.confirmDelivery, cfg.reviewDelivery].filter(Boolean)
     const hasText = timings.some(item => item.mode === 'text')
     const hasCard = timings.some(item => item.mode === 'card')
 
@@ -624,7 +651,8 @@ const hasUnavailableGoods = computed(() => filteredConfigUnknownCount.value > 0)
 
 const configSaveDisabled = computed(() => {
   if (!configTarget.value) return true
-  if (configTarget.value.goods?._configUnavailable) return true
+  if (!desktopHost && configTarget.value.goods?._configUnavailable) return true
+  if (desktopHost && (!desktopConfig.value || desktopPlanReadOnly.value || skuLoading.value || skuError.value || (skuList.value.length && !desktopSku.value))) return true
   if (configForm.mode === 'card') {
     if (configForm.cardSource === 'direct' && configForm._directImportCreateUnknown) return true
     if (configForm.cardSource === 'existing' && cardGroupsAvailable.value === false) return true
@@ -712,6 +740,41 @@ async function loadStats() {
   }
 }
 
+async function loadMonitorStatus() {
+  if (!desktopHost) return
+  try {
+    const res = await getDesktopDeliveryStatus()
+    monitorStatuses.value = res.data || []
+    monitorError.value = false
+  } catch {
+    monitorError.value = true
+  }
+}
+
+const monitorNotice = computed(() => {
+  if (monitorError.value) return '暂时无法读取自动发货核验状态，请刷新后重试。'
+  const hints = {
+    sold_order_facts_incomplete: '闲鱼返回的订单信息不完整，暂未发货。请在闲鱼核对订单。',
+    sold_order_verification_failed: '暂时无法读取闲鱼已售订单，请检查账号连接后再扫描。',
+    configuration_or_identity_mismatch: '未找到匹配的商品规格发货规则，请核对配置。',
+    sold_order_sku_missing: '闲鱼未返回订单规格，暂未发货。请在闲鱼核对规格。',
+    conversation_unverified: '暂时无法确认这笔订单对应的买家会话，请同步消息后再扫描。',
+    delivery_result_unknown: '发货结果待确认，请先在闲鱼核对聊天和订单，避免重复发送。',
+    delivery_step_not_sent: '有发货步骤未发送，请查看记录后处理。',
+    manual_confirmation_required: '发货内容已发送，请在闲鱼确认发货。'
+  }
+  const messages = new Set()
+  for (const status of monitorStatuses.value) {
+    if (query.accountId && String(query.accountId) !== String(status.accountId)) continue
+    if (status.stockBlockedCount) messages.add('有订单因库存不足未发货，请补充卡密库存。')
+    if (status.needsReviewCount) messages.add(hints.delivery_result_unknown)
+    if (['attention', 'blocked', 'paused', 'waiting_manual_confirmation'].includes(status.state)) {
+      messages.add(hints[status.reason] || '有订单尚未通过发货核验，请检查闲鱼连接和订单状态。')
+    }
+  }
+  return [...messages].join(' ')
+})
+
 function statsMetric(value) {
   return statsAvailable.value ? value : '—'
 }
@@ -755,6 +818,7 @@ async function loadSources() {
 async function loadAll() {
   error.value = ''
   dependenciesError.value = ''
+  const independentLoads = Promise.allSettled([loadSources(), loadGoods(), loadStats(), loadFocusedGoods(), loadMonitorStatus()])
   const [accountResult, cardResult] = await Promise.allSettled([
     getAccounts({ page: 1, pageSize: 200 }),
     getCards({ size: 200 })
@@ -779,7 +843,7 @@ async function loadAll() {
   if (depErrors.length) {
     dependenciesError.value = `${depErrors.join('；')}。相关筛选与卡密发货可能受影响。`
   }
-  await Promise.allSettled([loadSources(), loadGoods(), loadStats()])
+  await independentLoads
 }
 
 async function loadGoods() {
@@ -814,6 +878,13 @@ async function loadGoods() {
         if (!hasConfigResult && configMap.size) configFailures += 1
         let configUnavailable = goodsIds.length > 0 && !hasConfigResult
         let configData = hasConfigResult ? configMap.get(String(goods.id)) : {}
+        if (desktopHost && configData?.variants?.length) {
+          const chosen = configData.variants.find(variant => variant.enabled) || configData.variants[0]
+          configData = { ...configData, payDelivery: {
+            enabled: chosen.enabled,
+            mode: chosen.plan.cardGroupId ? 'card' : 'text'
+          } }
+        }
         if (configData && typeof configData === 'object') {
           for (const timingKey of ['payDelivery', 'confirmDelivery', 'reviewDelivery']) {
             const timing = configData[timingKey]
@@ -847,13 +918,6 @@ async function loadGoods() {
     goodsAvailable.value = true
     if (configFailures) appendError(`${configFailures} 个商品的发货配置暂不可用。`)
     if (invalidConfigs) appendError(`${invalidConfigs} 个商品的发货配置字段异常（enabled 或 mode 非法），已标记为不可用。`)
-    const focusedGoodsId = consumeFocusedGoodsId()
-    if (focusedGoodsId) {
-      const target = withConfig.find(goods => String(goods.id) === String(focusedGoodsId))
-      if (target) {
-        focusGoodsConfig(target)
-      }
-    }
   } catch (e) {
     allGoods.value = []
     goodsAvailable.value = false
@@ -900,14 +964,6 @@ function fillConfigForm(config = {}) {
   })
 }
 
-function consumeFocusedGoodsId() {
-  const goodsId = sessionStorage.getItem(AUTO_DELIVERY_FOCUS_GOODS_KEY)
-  if (goodsId) {
-    sessionStorage.removeItem(AUTO_DELIVERY_FOCUS_GOODS_KEY)
-  }
-  return goodsId
-}
-
 function focusGoodsConfig(goods) {
   if (!goods) return false
   const config = goods._config || {}
@@ -917,16 +973,34 @@ function focusGoodsConfig(goods) {
   return true
 }
 
+async function loadFocusedGoods() {
+  const id = pendingFocus.value
+  if (!id) return
+  try {
+    const [goods, config] = await Promise.all([
+      getGoodsDetail(id),
+      desktopHost ? null : getGoodsDeliveryConfig(id)
+    ])
+    if (!goods.data || !focusGoodsConfig({ ...goods.data, _config: config?.data })) {
+      throw new Error('商品配置暂不可用')
+    }
+    pendingFocus.value = null
+  } catch (e) {
+    appendError(`无法打开商品 ${id} 的发货配置，请刷新重试。${e.message || ''}`)
+  }
+}
+
 function openConfig(goods, timing) {
   modalError.value = ''
-  if (goods?._configUnavailable) {
+  if (!desktopHost && goods?._configUnavailable) {
     appendError('该商品发货配置状态未知，为避免覆盖已有规则，暂不允许编辑。')
     return false
   }
   configTarget.value = { goods }
-  configTiming.value = timing || 'payDelivery'
+  configTiming.value = desktopHost ? 'payDelivery' : (timing || 'payDelivery')
   fillConfigForm(goods._config?.[configTiming.value] || {})
-  // 异步加载 SKU 数据（多规格发货功能），失败时不阻断配置弹窗
+  desktopConfig.value = null
+  desktopSku.value = ''
   loadSkuData(goods.id)
   return true
 }
@@ -948,28 +1022,71 @@ function closeConfig(force = false) {
   skuSuccess.value = ''
 }
 
+function fillDesktopSku() {
+  desktopPlanReadOnly.value = false
+  modalError.value = ''
+  const variant = desktopConfig.value?.variants.find(item => item.skuId === desktopSku.value)
+  if (!variant) {
+    fillConfigForm({})
+    return
+  }
+  const plan = variant.plan
+  const cards = plan.parts.filter(part => part.kind === 'card')
+  if (plan.maxAttempts > 11 || plan.parts.some(part => !['text', 'card'].includes(part.kind) || part.repeat !== 'order')) {
+    desktopPlanReadOnly.value = true
+    modalError.value = '该规格使用组合发货计划，请在发货规则中编辑，以保留段落和顺序。'
+    return
+  }
+  const cardIndex = cards.length ? plan.parts.indexOf(cards[0]) : -1
+  fillConfigForm({
+    enabled: variant.enabled,
+    mode: cards.length ? 'card' : 'text',
+    cardGroupId: plan.cardGroupId,
+    cardTemplate: cards[0]?.content,
+    header: cardIndex >= 0 ? plan.parts.slice(0, cardIndex).map(part => part.content).join('{分段}') : '',
+    content: plan.parts.slice(cardIndex + 1).map(part => part.content).join('{分段}'),
+    autoConfirmShipment: plan.confirmShipment,
+    retryCount: plan.maxAttempts - 1,
+    alertThreshold: plan.lowStockThreshold,
+    autoDisableOnLowStock: plan.pauseOnLowStock,
+    segmentSend: plan.parts.length > 1
+  })
+}
+
 async function loadSkuData(goodsId) {
   skuList.value = []
   skuRules.value = []
   skuError.value = ''
   if (!goodsId) return
+  const target = configTarget.value
   skuLoading.value = true
   try {
     const [skuRes, rulesRes] = await Promise.all([
       getGoodsSkus(goodsId),
-      getGoodsSkuRules(goodsId)
+      desktopHost ? getGoodsDeliveryConfig(goodsId) : getGoodsSkuRules(goodsId)
     ])
+    if (configTarget.value !== target) return
     const skus = recordsOf(skuRes.data) || []
     const rules = rulesRes.data
     skuList.value = skus
-    skuRules.value = Array.isArray(rules) ? mergeSkuRules(skus, rules) : []
+    if (desktopHost) {
+      desktopConfig.value = rules
+      const savedSkuIds = rules.variants.map(variant => variant.skuId).filter(Boolean)
+      skuList.value = [...skus, ...savedSkuIds.filter(id => !skus.some(sku => String(sku.skuId) === id)).map(skuId => ({ skuId }))]
+      const selected = skuList.value.find(sku => savedSkuIds.includes(String(sku.skuId))) || skuList.value[0]
+      desktopSku.value = selected ? String(selected.skuId) : ''
+      fillDesktopSku()
+    } else {
+      skuRules.value = Array.isArray(rules) ? mergeSkuRules(skus, rules) : []
+    }
   } catch (e) {
     // SKU 接口失败不影响主配置流程，仅记录告警
-    skuError.value = e?.message || 'SKU 信息加载失败，多规格配置暂不可用'
+    if (configTarget.value !== target) return
+    skuError.value = e?.message || '规格或发货配置加载失败，请关闭后重试'
     skuList.value = []
     skuRules.value = []
   } finally {
-    skuLoading.value = false
+    if (configTarget.value === target) skuLoading.value = false
   }
 }
 
@@ -1082,8 +1199,9 @@ function cleanSkuTimingForSave(cfg) {
 }
 
 async function saveConfig() {
+  if (desktopHost && configSaveDisabled.value) return
   if (!configTarget.value || configSaving.value || skuSaving.value) return
-  if (configTarget.value.goods?._configUnavailable) {
+  if (!desktopHost && configTarget.value.goods?._configUnavailable) {
     appendError('该商品发货配置状态未知，暂不允许保存。')
     return
   }
@@ -1101,6 +1219,10 @@ async function saveConfig() {
   }
   if (configForm.mode === 'text' && configForm.sourceId && sourcesAvailable.value === false) {
     appendError('文本货源库暂不可用，无法确认当前关联货源。')
+    return
+  }
+  if (desktopHost && configForm.mode === 'text' && ![configForm.header, configForm.content, configForm.footer].some(value => value.trim())) {
+    modalError.value = '请填写发货正文后保存。'
     return
   }
   configSaving.value = true
@@ -1126,8 +1248,9 @@ async function saveConfig() {
       timing: configTiming.value,
       enabled: configForm.enabled,
       mode: configForm.mode,
-      sourceId: configForm.mode === 'text' && configForm.sourceId ? Number(configForm.sourceId) : null,
-      sourceTitle: configForm.mode === 'text' ? configForm.sourceTitle : '',
+      ...(desktopHost ? { skuId: desktopSku.value, expectedVersion: desktopConfig.value.version } : {}),
+      sourceId: !desktopHost && configForm.mode === 'text' && configForm.sourceId ? Number(configForm.sourceId) : null,
+      sourceTitle: !desktopHost && configForm.mode === 'text' ? configForm.sourceTitle : '',
       cardGroupId: configForm.mode === 'card' ? cardGroupId : null,
       cardTemplate: configForm.cardTemplate,
       header: configForm.header,
@@ -1139,7 +1262,7 @@ async function saveConfig() {
       autoDisableOnLowStock: configForm.autoDisableOnLowStock,
       autoConfirmShipment: !!configForm.autoConfirmShipment
     })
-    if (configTarget.value?.goods?._config) {
+    if (!desktopHost && configTarget.value?.goods?._config) {
       configTarget.value.goods._config[configTiming.value] = {
         enabled: configForm.enabled,
         mode: configForm.mode,
@@ -1169,14 +1292,22 @@ async function removeConfig(goods) {
   }
   if (!await confirmAction({
     title: '确认禁用该商品自动发货？',
-    description: '会将三个发货时机全部停用，但保留已填写内容。',
+    description: '会停用该商品的发货规则并保留已填写内容。',
     dangerous: true,
     confirmText: '禁用'
   })) return
 
   try {
-    for (const timing of ['payDelivery', 'confirmDelivery', 'reviewDelivery']) {
-      await saveGoodsDeliveryConfig(goods.id, { timing, enabled: 0, mode: 'text', sourceId: null, sourceTitle: '' })
+    if (desktopHost) {
+      const { data } = await getGoodsDeliveryConfig(goods.id)
+      await saveGoodsDeliveryConfig(goods.id, {
+        expectedVersion: data.version,
+        variants: data.variants.map(variant => ({ ...variant, enabled: false }))
+      })
+    } else {
+      for (const { key: timing } of configTimings) {
+        await saveGoodsDeliveryConfig(goods.id, { timing, enabled: 0, mode: 'text', sourceId: null, sourceTitle: '' })
+      }
     }
     success.value = '已禁用该商品发货配置'
     await Promise.all([loadGoods(), loadStats()])
@@ -1201,6 +1332,15 @@ async function submitBatch() {
   batchLoading.value = true
   try {
     const goodsIds = filteredGoods.value.map(goods => goods.id)
+    if (desktopHost) {
+      const updated = await updateDesktopConfigs(goodsIds, variants => variants.map(variant => ({
+        ...variant, enabled: batchForm.enabled === 1
+      })))
+      if (!updated) throw new Error('当前范围暂无已配置的发货规则，请先为商品填写发货内容。')
+      success.value = `已批量更新 ${updated} 个商品，跳过 ${goodsIds.length - updated} 个未配置商品`
+      showBatchDialog.value = false
+      return
+    }
     await batchSetDeliveryRules({
       goodsIds,
       timing: batchForm.action,
@@ -1216,8 +1356,24 @@ async function submitBatch() {
   } catch (e) {
     error.value = e.message || '批量配置失败'
   } finally {
+    if (desktopHost) await Promise.all([loadGoods(), loadStats()])
     batchLoading.value = false
   }
+}
+
+async function updateDesktopConfigs(goodsIds, changeVariants) {
+  let updated = 0
+  for (const goodsId of goodsIds) {
+    try {
+      const { data } = await getGoodsDeliveryConfig(goodsId)
+      if (!data.variants.length) continue
+      await saveGoodsDeliveryConfig(goodsId, { expectedVersion: data.version, variants: changeVariants(data.variants) })
+      updated += 1
+    } catch (e) {
+      throw new Error(`已更新 ${updated} 个商品，商品 ${goodsId} 更新失败：${e.message}`)
+    }
+  }
+  return updated
 }
 
 async function batchDelete() {
@@ -1232,11 +1388,17 @@ async function batchDelete() {
     confirmText: '删除'
   })) return
   try {
-    await batchDeleteDeliveryRules({ goodsIds: filteredGoods.value.map(goods => goods.id) })
+    const goodsIds = filteredGoods.value.map(goods => goods.id)
+    if (desktopHost) {
+      await updateDesktopConfigs(goodsIds, () => [])
+    } else {
+      await batchDeleteDeliveryRules({ goodsIds })
+    }
     success.value = '批量删除完成'
-    await Promise.all([loadGoods(), loadStats()])
   } catch (e) {
     error.value = e.message || '删除失败'
+  } finally {
+    await Promise.all([loadGoods(), loadStats()])
   }
 }
 
@@ -1244,6 +1406,11 @@ async function scanPendingOrders() {
   try {
     const res = await scanApi()
     const scanned = res?.data
+    if (scanned && typeof scanned === 'object' && scanned.message) {
+      success.value = scanned.message
+      await loadStats()
+      return
+    }
     if (scanned !== undefined && scanned !== null) {
       if (!Number.isSafeInteger(Number(scanned))) {
         throw new Error('待发货订单扫描响应格式异常，未返回有效数量。')
@@ -1254,6 +1421,8 @@ async function scanPendingOrders() {
     success.value = `已触发待发货订单扫描${countText}，请前往发货记录页查看结果。`
   } catch (e) {
     error.value = e.message || '扫描失败'
+  } finally {
+    await loadMonitorStatus()
   }
 }
 
@@ -1269,6 +1438,7 @@ async function recoverPendingDeliveries() {
     error.value = e.message || '补发失败'
   } finally {
     recoverLoading.value = false
+    await loadMonitorStatus()
   }
 }
 

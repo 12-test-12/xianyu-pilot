@@ -813,6 +813,8 @@ async def _load_all_goods_configs(
         if not goods_id:
             continue
         current = config_map.get(goods_id)
+        if isinstance(current, dict) and current.get("schemaVersion") == 2:
+            continue
         if isinstance(current, dict) and any(isinstance(current.get(timing), dict) and current.get(timing) for timing in CONFIG_TIMINGS):
             continue
         legacy_mode = str(row.get("delivery_mode") or "").strip().lower()
@@ -3541,6 +3543,13 @@ async def retry_delivery_record(
     - text 模式：直接使用原 delivery_content 重新发送
     - card 模式：暂不支持，引导使用手动发货闭环
     """
+    from ....core.database import current_desktop_delivery_monitor
+
+    monitor = current_desktop_delivery_monitor()
+    if monitor is not None:
+        managed = await monitor.retry_record(record_id)
+        if managed is not None:
+            return ResultObject.success(managed)
     # 1. 读取发货记录详情
     record_row = (
         await db.execute(
@@ -3637,7 +3646,10 @@ async def retry_delivery_record(
         )
         await db.commit()
 
-        outcome = await coordinator.execute(int(order_id), command)
+        if monitor is None:
+            outcome = await coordinator.execute(int(order_id), command)
+        else:
+            outcome = await monitor.execute_manual(int(order_id), command, coordinator)
     except ManualDeliveryError as exc:
         # 标记为失败
         await db.execute(
@@ -3793,6 +3805,10 @@ async def scan_pending_orders(
     db: AsyncSession = Depends(get_db),
     _: dict = Depends(get_current_user),
 ):
+    from ....core.database import current_desktop_delivery_monitor
+
+    if current_desktop_delivery_monitor() is not None:
+        return await trigger_delivery_recovery(_)
     configs = await _load_all_goods_configs(db)
     if not configs:
         return ResultObject.success({"scanned": 0, "created": 0, "message": "暂无已配置的自动发货商品"})
@@ -3900,6 +3916,17 @@ async def trigger_delivery_recovery(
     但因 WS 事件丢失、可重试错误等未发出的订单。worker 已每 10 分钟自动执行；
     此接口用于立即验证或紧急补发。
     """
+
+    from ....core.database import current_desktop_delivery_monitor
+
+    monitor = current_desktop_delivery_monitor()
+    if monitor is not None:
+        results = await monitor.probe_connected_accounts()
+        if not results:
+            return ResultObject.failed("请连接闲鱼账号并确认自动发货未暂停")
+        if not all(results):
+            return ResultObject.failed("部分账号订单核验未完成，请检查账号连接后重试")
+        return ResultObject.success({"message": f"已核验 {len(results)} 个账号，请在发货记录查看结果"})
 
     from ....services.delivery_recovery import run_delivery_recovery_once
 

@@ -25,7 +25,7 @@ from typing import Any, Optional
 from sqlalchemy import and_, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .ai_provider import _resolve_ai_config, generate_text
+from .ai_provider import _resolve_ai_config, generate_text, is_ai_configured
 from .ai_auto_reply_attempt import (
     AiAutoReplyCommand,
     AiAutoReplyGenerationError,
@@ -34,7 +34,7 @@ from .ai_auto_reply_attempt import (
     AiAutoReplySendResult,
     SqlAiAutoReplyAttemptStore,
 )
-from .ai_auto_reply_policy import evaluate_ai_auto_reply_policy
+from .ai_auto_reply_policy import auto_reply_scope_enabled, evaluate_ai_auto_reply_policy
 from .business_settings import (
     AI_CS_SETTING_KEY,
     load_business_setting,
@@ -267,7 +267,7 @@ async def _try_keyword_auto_reply(
     return True
 
 
-async def process_incoming_message(db: AsyncSession, payload: dict[str, Any]) -> None:
+async def process_incoming_message(db: AsyncSession, payload: dict[str, Any]) -> str | None:
     """处理收到的买家消息，按需触发 AI 自动回复。
 
     Args:
@@ -290,7 +290,7 @@ async def process_incoming_message(db: AsyncSession, payload: dict[str, Any]) ->
             bool(s_id),
             len(content),
         )
-        return
+        return "message_context_missing"
 
     # Resolve the actual conversation product before checking product scope or
     # calling the model. WebSocket text packets often omit xyGoodsId even when
@@ -313,7 +313,7 @@ async def process_incoming_message(db: AsyncSession, payload: dict[str, Any]) ->
             account_id,
             bool(goods_id),
         )
-        return
+        return "scope_disabled"
 
     # Step 1.5: 会话级自动回复状态机检查（人工干预自动暂停/恢复）
     # 此检查在 AI 规则匹配之前生效，会话暂停时直接跳过 AI 回复
@@ -325,7 +325,7 @@ async def process_incoming_message(db: AsyncSession, payload: dict[str, Any]) ->
             "AI 自动回复跳过：会话级状态机 accountId=%d reason=%s",
             account_id, conv_state_reason,
         )
-        return
+        return conv_state_reason
 
     # Step 1.6: 关键词自动回复规则匹配（在 AI 自动回复之前）
     # 若匹配到关键词规则，直接发送规则配置的回复内容，跳过 AI 自动回复
@@ -340,13 +340,13 @@ async def process_incoming_message(db: AsyncSession, payload: dict[str, Any]) ->
         seller_external_uid=seller_external_uid,
     )
     if keyword_matched:
-        return
+        return "keyword_rule_used"
 
     # Step 2: 加载 AI 客服配置（含 systemPrompt / 知识库 / 聊天规则 / 人设）
     ai_config = await load_business_setting(db, AI_CS_SETTING_KEY)
     if not ai_config.get("enabled"):
         logger.info("AI 自动回复跳过：AI 客服主开关未开启 accountId=%d", account_id)
-        return
+        return "scope_disabled"
 
     # If a buyer packet was delivered late, its source timestamp can precede
     # the seller's newest reply.  The old implementation treated it as a new
@@ -367,7 +367,7 @@ async def process_incoming_message(db: AsyncSession, payload: dict[str, Any]) ->
             account_id,
             latest_message_time,
         )
-        return
+        return "late_message"
 
     policy = await evaluate_ai_auto_reply_policy(
         db,
@@ -382,13 +382,13 @@ async def process_incoming_message(db: AsyncSession, payload: dict[str, Any]) ->
             account_id,
             policy.reason,
         )
-        return
+        return policy.reason
 
     # Step 3: 检查通用模型是否已配置
     provider_config = await _resolve_ai_config()
-    if not provider_config.get("enabled"):
+    if not is_ai_configured(provider_config):
         logger.warning("AI 自动回复跳过：通用模型未配置或缺少 baseUrl/apiKey/model accountId=%d", account_id)
-        return
+        return "model_not_configured"
 
     # Step 4: 拼装 system prompt（systemPrompt + 商品事实 + 知识库 + 聊天规则 + 人设）
     system_prompt = _build_system_prompt(ai_config, goods_context)
@@ -456,7 +456,9 @@ async def process_incoming_message(db: AsyncSession, payload: dict[str, Any]) ->
             messages=messages,
         )
         if not isinstance(result, dict) or not result.get("ok"):
-            raise AiAutoReplyGenerationError("model_generation_failed")
+            raise AiAutoReplyGenerationError(
+                result.get("errorCode", "model_generation_failed") if isinstance(result, dict) else "model_generation_failed"
+            )
         reply = str(result.get("content") or "").strip()
         if not reply:
             raise AiAutoReplyGenerationError("model_reply_empty")
@@ -478,9 +480,12 @@ async def process_incoming_message(db: AsyncSession, payload: dict[str, Any]) ->
         # Close the final race between model completion and the actual socket
         # call. A policy lookup error is still a definite no-send at this point.
         try:
+            if not await _check_auto_reply_scope(db, account_id, goods_id):
+                return AiAutoReplySendResult.failed("scope_disabled", retry_safe=False)
+            ai_config_now = await load_business_setting(db, AI_CS_SETTING_KEY)
             send_policy = await evaluate_ai_auto_reply_policy(
                 db,
-                config=ai_config,
+                config=ai_config_now,
                 account_id=account_id,
                 session_id=s_id,
                 message_content=content,
@@ -530,7 +535,7 @@ async def process_incoming_message(db: AsyncSession, payload: dict[str, Any]) ->
             "AI auto-reply blocked by durable daily quota accountId=%d",
             account_id,
         )
-        return
+        return "daily_quota_reached"
     logger.info(
         "AI auto-reply state updated accountId=%d attemptId=%d state=%s repeated=%s",
         account_id,
@@ -808,10 +813,8 @@ async def _check_auto_reply_scope(
 
     # 商品级 NULL → 按账号级
     account_scopes = await _load_account_scopes(db)
-    accounts = account_scopes.get("accounts", {}) if isinstance(account_scopes, dict) else {}
-    if str(account_id) in accounts:
-        return bool(accounts[str(account_id)])
-    return True
+    accounts = account_scopes.get("accounts") or {}
+    return auto_reply_scope_enabled(global_enabled, None, accounts.get(str(account_id)))
 
 
 async def _load_global_enabled(db: AsyncSession) -> bool:

@@ -568,6 +568,91 @@ def test_legacy_json_does_not_turn_string_false_into_enabled(configured):
 
 
 @pytest.mark.asyncio
+async def test_desktop_payment_outbox_retries_verification_and_sends_exact_sku_once(configured, monkeypatch):
+    from app.core import paths
+    from app.core.database import DatabaseRuntime, use_database_runtime
+    from app.services import desktop_order_delivery, ws_startup
+    from app.services.delivery_gate import DeliveryGate
+
+    store, rules, *_ = configured
+    with store.connection(write=True) as conn:
+        conn.execute("""
+            INSERT INTO xianyu_conversation(account_id,external_buyer_id,goods_id,s_id)
+            VALUES(1,'buyer-1','item-1','session-1@goofish')
+        """)
+    rules.save_goods(1, GoodsDeliveryConfig(variants=tuple(
+        RuleVariant(sku_id=sku, enabled=True, plan=DeliveryPlan(sku_id=sku,
+            confirm_shipment=True, parts=(DeliveryPart(kind="text", content=sku),)))
+        for sku in ("sku-A", "sku-B")
+    )))
+    row = {
+        "commonData": {"orderId": "official-1", "itemId": "item-1", "skuId": "sku-B", "orderStatus": "待发货"},
+        "buyerInfoVO": {"buyerId": "buyer-1"},
+        "priceVO": {"buyNum": 1, "realPayPrice": "20.00", "totalPrice": "25.00"},
+    }
+    sent = []
+    confirmed = []
+    notified = []
+    notification_tasks = []
+
+    async def notify(account_id, message):
+        notified.append((account_id, message["reminderUrl"]))
+
+    def spawn_notification(coroutine, *, name):
+        notification_tasks.append(asyncio.create_task(coroutine, name=name))
+
+    def confirm(account_id, order_id, bargain, item_id, buyer_id, *, expected_seller_id):
+        assert (account_id, order_id, item_id, buyer_id, expected_seller_id) == (1, "official-1", "item-1", "buyer-1", "seller-1")
+        assert sent == [("session-1", "buyer-1", "sku-B")]
+        confirmed.append(order_id)
+        row["commonData"]["orderStatus"] = "已发货"
+        return {"success": True}
+
+    class Client:
+        is_connected = True
+        account_id = 1
+        unb = "seller-1"
+
+        async def send_text_message(self, cid, buyer, content, *, persist):
+            sent.append((cid, buyer, content))
+            return {"code": 200, "uuid": "test-ack"}
+
+    def fetch(account_id, page, *, expected_seller_id):
+        assert (account_id, page, expected_seller_id) == (1, 1, "seller-1")
+        return {"success": True, "data": {"items": [row], "nextPage": False}}
+
+    monkeypatch.setitem(desktop_order_delivery.ws_manager._clients, 1, Client())
+    monkeypatch.setattr(desktop_order_delivery, "fetch_sold_orders_page", fetch)
+    monkeypatch.setattr(desktop_order_delivery, "confirm_order_shipment", confirm)
+    monkeypatch.setattr(desktop_order_delivery, "notify_new_order", notify)
+    monkeypatch.setattr(desktop_order_delivery, "spawn_background_task", spawn_notification)
+    monkeypatch.setattr(ws_startup, "_trigger_account_orders_sync", lambda account_id: None)
+    monkeypatch.setattr(paths, "SOURCE_ROOT", store.path.parent.parent)
+    runtime = DatabaseRuntime(Settings(runtime_mode="desktop"))
+    runtime.desktop_delivery_monitor = monitor = desktop_order_delivery.DesktopOrderDelivery(store.path, DeliveryGate())
+    message = {"pnmId": "payment", "contentType": 26, "reminderContent": "[我已付款，等待你发货]",
+               "reminderUrl": "https://www.goofish.com/order?orderId=official-1"}
+    with use_database_runtime(runtime):
+        await ws_startup._run_delivery_after_message_saved(1, message)
+        assert monitor.wake_probe.is_set()
+        await monitor.probe_connected_accounts()
+        assert not sent
+        assert not notified
+        assert rows(store, "SELECT reason FROM delivery_monitor_state") == [{"reason": "sold_order_facts_incomplete"}]
+        assert rows(store, "SELECT state FROM delivery_inbox") == [{"state": "pending"}]
+        row["commonData"]["inRefund"] = False
+        await monitor.probe_connected_accounts()
+        await ws_startup._run_delivery_after_message_saved(1, message)
+        await monitor.probe_connected_accounts()
+        await asyncio.gather(*notification_tasks)
+        await runtime.dispose()
+    assert sent == [("session-1", "buyer-1", "sku-B")]
+    assert confirmed == ["official-1"]
+    assert notified == [(1, "?orderId=official-1")]
+    assert rows(store, "SELECT total_amount FROM xianyu_trade_order") == [{"total_amount": "20.00"}]
+
+
+@pytest.mark.asyncio
 async def test_desktop_im_credentials_use_injected_local_vault_and_no_legacy_db(configured,monkeypatch):
     from app.services.official_delivery_gateway import create_desktop_im_client
     from app.services import ws_token

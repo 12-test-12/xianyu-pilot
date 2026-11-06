@@ -11,7 +11,7 @@ import time
 from sqlalchemy import text
 
 from ..core.cookie_crypto import decrypt_cookie_if_needed
-from ..core.database import async_session
+from ..core.database import async_session, current_desktop_delivery_monitor
 from .ai_reply_batcher import (
     AiAutoReplyBatcher,
     AiAutoReplyBatcherCapacityError,
@@ -48,7 +48,9 @@ async def _run_delivery_after_message_saved(account_id: int, msg: dict):
         )
 
         payment_event = is_payment_message(msg)
-        if not payment_event and not is_bargain_success_message(msg):
+        bargain_event = is_bargain_success_message(msg)
+        monitor = current_desktop_delivery_monitor()
+        if not monitor and not payment_event and not bargain_event:
             return None
         # 收到付款消息时立即异步同步该账号最新订单入库
         if payment_event:
@@ -56,6 +58,9 @@ async def _run_delivery_after_message_saved(account_id: int, msg: dict):
                 _trigger_account_orders_sync(account_id)
             except Exception:
                 logger.debug("触发账号订单同步异常，忽略", exc_info=True)
+        if monitor:
+            await monitor.handle_message(account_id, msg, payment_event=payment_event or bargain_event)
+            return None
         async with async_session() as db:
             try:
                 outcome = await _process_delivery(db, account_id, msg)
@@ -258,7 +263,7 @@ async def _dispatch_ai_auto_reply_batch(
                 "sellerExternalUid": seller_external_uid,
             }
             command = _build_ai_reply_command(payload)
-            await process_incoming_message(reply_db, payload)
+            reason = await process_incoming_message(reply_db, payload)
             attempt_row = (
                 await reply_db.execute(
                     text(
@@ -278,13 +283,13 @@ async def _dispatch_ai_auto_reply_batch(
         )
         return
     if not attempt_row:
-        await complete_deferred_messages(messages)
+        await complete_deferred_messages(messages, reason=reason or "no_model_run")
         return
     state = str(attempt_row.get("state") or "failed")
     retry_safe = bool(attempt_row.get("retry_safe"))
     error_code = str(attempt_row.get("last_error_code") or f"ai_{state}")
     if state == "confirmed":
-        await complete_deferred_messages(messages)
+        await complete_deferred_messages(messages, reason="reply_confirmed")
     elif state == "unknown":
         await settle_deferred_messages(
             messages,

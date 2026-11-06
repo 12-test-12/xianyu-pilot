@@ -1,6 +1,10 @@
 import request from '../utils/request'
 import { pageParams } from '../utils/apiData.js'
 
+export function getDesktopDeliveryStatus() {
+  return request({ url: '/desktop/monitor-status', method: 'get' })
+}
+
 // ─── 发货规则 ───
 export function getAutoDeliveryRules(params = {}) {
   return request({ url: '/auto-delivery/rules', method: 'get', params: pageParams(params) })

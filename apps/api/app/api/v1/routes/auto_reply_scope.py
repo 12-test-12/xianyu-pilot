@@ -16,7 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ....core.database import get_db
 from ....core.response import ResultObject
-from ....models.entities import XianyuGoods
+from ....models.entities import MessageAutomationOutbox, XianyuGoods
+from ....services.ai_auto_reply_policy import auto_reply_scope_enabled
 from ....services.business_settings import (
     load_raw_business_setting,
     save_raw_business_setting,
@@ -28,6 +29,23 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auto-reply-scope", tags=["autoReplyScope"])
 
 ACCOUNT_SCOPES_KEY = "auto-reply-account-scopes"
+
+
+@router.get("/latest-run")
+async def latest_auto_reply_run(
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(verify_internal_token),
+):
+    outbox = MessageAutomationOutbox
+    result = await db.execute(
+        select(outbox.state, outbox.last_error_code, outbox.updated_time)
+        .where(outbox.branch == "ai", outbox.state.in_(("completed", "failed", "unknown")), outbox.last_error_code.is_not(None))
+        .order_by(outbox.updated_time.desc(), outbox.id.desc()).limit(1)
+    )
+    row = result.first()
+    return ResultObject.success({
+        "state": row.state, "reason": row.last_error_code, "updatedAt": row.updated_time
+    } if row else None)
 
 
 @router.get("/products")
@@ -467,11 +485,5 @@ def _compute_effective(
 
     优先级：商品级 > 账号级 > 全局（NULL 不继承全局，默认关闭）。
     """
-    if not global_enabled:
-        return False  # 主开关关闭
-    if product_enabled is not None:
-        return product_enabled == 1  # 商品级覆盖
-    accounts = account_scopes.get("accounts", {}) if account_scopes else {}
-    if account_id is not None and str(account_id) in accounts:
-        return bool(accounts[str(account_id)])  # 账号级
-    return True  # 未显式禁用时继承全局启用
+    accounts = (account_scopes or {}).get("accounts") or {}
+    return auto_reply_scope_enabled(global_enabled, product_enabled, accounts.get(str(account_id)))

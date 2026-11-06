@@ -104,6 +104,36 @@ def patch_page(monkeypatch, pages):
     return calls
 
 
+@pytest.mark.asyncio
+async def test_short_page_continues_and_later_failure_reports_committed_orders(runtime, db_path, monkeypatch):
+    seed_account(db_path)
+    order = remote_order()
+    order["priceVO"]["realPayPrice"] = "12.50"
+
+    def fetch(account_id, page_number, page_size):
+        if page_number == 1:
+            return {"success": True, "data": {"items": [order], "nextPage": True}}
+        return {"success": False, "error": "平台超时", "errorCode": "PLATFORM_TIMEOUT"}
+
+    monkeypatch.setattr(order_sync, "fetch_sold_orders_page", fetch)
+    with use_database_runtime(runtime):
+        result = await order_sync.sync_orders_for_account(1)
+        assert not result["success"] and result["partial"] and result["total"] == 1
+        assert result["errorCode"] == "PLATFORM_TIMEOUT" and "第 2 页" in result["error"]
+        order["priceVO"] = {"buyNum": 2}
+        assert (await order_sync.upsert_remote_order(1, order))["success"]
+        await runtime.dispose()
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT total_amount FROM xianyu_trade_order").fetchone() == ("12.50",)
+
+
+def test_order_amount_distinguishes_unit_cents_zero_and_unknown():
+    assert order_sync._parse_order_amount(quantity=2, common={"priceCent": 500}) == "10.00"
+    assert order_sync._parse_order_amount("100", price_vo={"realPayCent": 8000}) == "80.00"
+    assert order_sync._parse_order_amount("100", price_vo={"realPayPrice": 0}) == "0.00"
+    assert order_sync._parse_order_amount("Infinity", unit_price="5", quantity=0) is None
+
+
 def patch_failure(monkeypatch, error="账号登录已失效，请重新登录后同步订单", code="COOKIE_EXPIRED"):
     def fake_fetch(account_id, page_number=1, page_size=30, **kwargs):
         return {"success": False, "error": error, "errorCode": code}

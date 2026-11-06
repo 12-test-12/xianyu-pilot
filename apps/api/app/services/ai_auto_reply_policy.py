@@ -17,6 +17,10 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
+def auto_reply_scope_enabled(global_enabled, product_enabled, account_enabled) -> bool:
+    return bool(global_enabled) and (product_enabled == 1 if product_enabled is not None else account_enabled == 1)
+
+
 DEFAULT_POLICY_TIMEZONE = "Asia/Shanghai"
 SUPPORTED_POLICY_TIMEZONES: dict[str, dt.tzinfo] = {
     "Asia/Shanghai": dt.timezone(dt.timedelta(hours=8), name="Asia/Shanghai"),

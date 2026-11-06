@@ -10,7 +10,8 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import Float, and_, cast, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ....core.database import get_db
+from ....core.database import current_desktop_delivery_monitor, get_db
+from ....services.ai_auto_reply_policy import auto_reply_scope_enabled
 from ....core.response import ResultObject
 from ....schemas.order import ManualDeliveryReqDTO
 from ....services.business_settings import load_raw_business_setting
@@ -35,6 +36,7 @@ from ....models.entities import (
     XianyuTradeOrderItem,
 )
 from ..deps import get_current_user
+from .order import resolve_order_sort
 
 router = APIRouter(tags=["commerceCompat"])
 CONFIG_TIMINGS = ("payDelivery", "confirmDelivery", "reviewDelivery")
@@ -273,14 +275,8 @@ def _compute_effective_auto_reply(
     if ctx is None:
         # 未提供作用域上下文时退化为只看商品级，保持向后兼容
         return product_enabled == 1
-    if not ctx.get("global_enabled", False):
-        return False
-    if product_enabled is not None:
-        return product_enabled == 1
     accounts = ctx.get("account_scopes", {}) or {}
-    if account_id is not None and str(account_id) in accounts:
-        return bool(accounts[str(account_id)])
-    return False
+    return auto_reply_scope_enabled(ctx.get("global_enabled"), product_enabled, accounts.get(str(account_id)))
 
 
 async def _load_auto_reply_scope_ctx(db: AsyncSession) -> dict[str, Any]:
@@ -949,6 +945,8 @@ async def list_orders(
     current: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=200),
     sync: bool = Query(False),
+    sort_field: Optional[str] = Query(None, alias="sortField"),
+    sort_order: Optional[str] = Query(None, alias="sortOrder"),
     db: AsyncSession = Depends(get_db),
     _: dict = Depends(get_current_user),
 ):
@@ -976,6 +974,8 @@ async def list_orders(
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
     offset = (current - 1) * size
+    if isinstance(sort_field, str):
+        query = query.order_by(resolve_order_sort(sort_field, sort_order))
     result = await db.execute(query.order_by(XianyuTradeOrder.id.desc()).offset(offset).limit(size))
     orders = result.scalars().all()
     order_ids = [int(order.id) for order in orders]
@@ -1104,7 +1104,11 @@ async def manual_delivery(
         delivery_timing=body.delivery_timing,
     )
     try:
-        outcome = await coordinator.execute(order_id, command)
+        monitor = current_desktop_delivery_monitor()
+        if monitor is None:
+            outcome = await coordinator.execute(order_id, command)
+        else:
+            outcome = await monitor.execute_manual(order_id, command, coordinator)
     except ManualDeliveryError as exc:
         data = {
             "status": "failed",
@@ -1177,6 +1181,13 @@ async def sync_orders(
     # 调用闲鱼 API 同步该账号的已售订单
     from ....services.xianyu_order_sync import sync_orders_for_account
     sync_result = await sync_orders_for_account(account_id=account_id)
+    if sync_result.get("partial"):
+        return ResultObject.success({
+            "ok": False,
+            "accountId": account_id,
+            "syncResult": sync_result,
+            "message": f"已同步 {sync_result['total']} 条订单，{sync_result['error']}",
+        })
     if not sync_result.get("success"):
         return ResultObject.failed(f"订单同步失败: {sync_result.get('error', '未知错误')}")
     # 同步完成后查询本地订单数量（先回退快照读取并发连接提交的最新数据）
