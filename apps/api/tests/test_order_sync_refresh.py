@@ -134,6 +134,52 @@ def test_order_amount_distinguishes_unit_cents_zero_and_unknown():
     assert order_sync._parse_order_amount("Infinity", unit_price="5", quantity=0) is None
 
 
+@pytest.mark.asyncio
+async def test_dashboard_counts_sales_on_payment_date(runtime, db_path):
+    from datetime import date
+    from app.api.v1.routes.dashboard import get_dashboard_summary
+
+    seed_account(db_path)
+    order = remote_order()
+    order["commonData"].update(createTime="2026-01-01 12:00:00", payTime="2026-01-02 01:00:00")
+    unpaid = remote_order(order_id="unpaid", status_text="待付款")
+    unpaid["commonData"]["createTime"] = "2026-01-02 03:00:00"
+    with use_database_runtime(runtime):
+        assert (await order_sync.upsert_remote_order(1, order))["success"]
+        assert (await order_sync.upsert_remote_order(1, unpaid))["success"]
+        async with runtime.session() as db:
+            result = await get_dashboard_summary(date(2026, 1, 2), 1, 1, db, {})
+        await runtime.dispose()
+
+    assert result.data["todayOrderCount"] == 1
+    assert result.data["todaySalesAmount"] == 19.90
+
+
+@pytest.mark.asyncio
+async def test_goods_sync_persists_progress_without_contending_with_item_writes(
+    runtime, db_path, monkeypatch, caplog
+):
+    from app.services import xianyu_goods_sync as goods_sync
+
+    seed_account(db_path)
+    items = [
+        {"id": str(index), "title": f"商品 {index}", "itemStatus": status}
+        for index, status in enumerate((0, 1, "2"), start=1)
+    ]
+    monkeypatch.setattr(goods_sync, "_refresh_m_h5_tk", lambda cookie: cookie)
+    monkeypatch.setattr(goods_sync, "fetch_goods_list", lambda cookie: items)
+    with use_database_runtime(runtime):
+        result = await goods_sync.sync_goods_for_account(1, "unb=test", "test-goods-sync", None, False)
+        await runtime.dispose()
+
+    assert result["total"] == 3
+    assert "同步任务状态落库失败" not in caplog.text
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT status FROM xianyu_goods ORDER BY external_goods_id").fetchall() == [
+            (1,), (0,), (2,),
+        ]
+
+
 def patch_failure(monkeypatch, error="账号登录已失效，请重新登录后同步订单", code="COOKIE_EXPIRED"):
     def fake_fetch(account_id, page_number=1, page_size=30, **kwargs):
         return {"success": False, "error": error, "errorCode": code}

@@ -619,7 +619,7 @@ async def _update_cookie_status_for_captcha(
         )
 
 
-async def _verify_cookie_via_token_api(account_id: int) -> bool:
+async def _verify_cookie_via_token_api(account_id: int) -> str:
     """滑块求解成功后，调用 Token API 二次验证 Cookie 是否真正可用。
 
     滑块求解器在 Cookie Session 已过期时会误报成功（页面跳转到登录页，
@@ -628,8 +628,7 @@ async def _verify_cookie_via_token_api(account_id: int) -> bool:
     Args:
         account_id: 账号 ID
     Returns:
-        True: Cookie 可用，Token API 返回 SUCCESS
-        False: Cookie 已过期（FAIL_SYS_SESSION_EXPIRED）或不可用
+        "ok"、"expired"、"captcha" 或 "unavailable"
     """
     try:
         async with async_session() as db:
@@ -643,12 +642,12 @@ async def _verify_cookie_via_token_api(account_id: int) -> bool:
             )).mappings().first()
         if not row:
             logger.warning("_verify_cookie_via_token_api: 账号不存在 accountId=%d", account_id)
-            return False
+            return "unavailable"
 
         cookie_str = decrypt_cookie_if_needed(row["encrypted_cookie"])
         if not cookie_str:
             logger.warning("_verify_cookie_via_token_api: Cookie 为空 accountId=%d", account_id)
-            return False
+            return "unavailable"
 
         m_h5_tk = None
         if row["encrypted_token"]:
@@ -656,23 +655,24 @@ async def _verify_cookie_via_token_api(account_id: int) -> bool:
 
         # 调用 ws_token 模块的完整 Token 获取流程
         # （会自动尝试 cookie 中的 _m_h5_tk、DB 中的 _m_h5_tk、刷新 _m_h5_tk 三种路径）
-        # 单租户版 ws_token.get_ws_token_with_refreshed_m_h5_tk 为同步函数，无需 await
         from .ws_token import get_ws_token_with_refreshed_m_h5_tk
-        access_token, _, error_type, _ = get_ws_token_with_refreshed_m_h5_tk(cookie_str, m_h5_tk)
+        access_token, _, error_type, _ = await asyncio.to_thread(
+            get_ws_token_with_refreshed_m_h5_tk, cookie_str, m_h5_tk
+        )
         if access_token:
             logger.info(
                 "_verify_cookie_via_token_api: Cookie 验证通过 accountId=%d, accessToken长度=%d",
                 account_id, len(access_token),
             )
-            return True
+            return "ok"
         logger.warning(
             "_verify_cookie_via_token_api: Cookie 不可用 accountId=%d, error_type=%s",
             account_id, error_type,
         )
-        return False
+        return error_type or "unavailable"
     except Exception:
         logger.error("_verify_cookie_via_token_api 异常 accountId=%d", account_id, exc_info=True)
-        return False
+        return "unavailable"
 
 
 async def handle_captcha_for_account(
@@ -842,25 +842,28 @@ async def handle_captcha_for_account(
             # Token API 会因此返回失败，导致误判 Cookie 过期，错误地更改状态。
             # 手动触发场景下，信任求解器结果即可。
             skip_token_verify = trigger_scene in ("manual", "manual_retry")
-            cookie_valid = True
+            cookie_check = "ok"
             if not skip_token_verify:
-                cookie_valid = await _verify_cookie_via_token_api(account_id)
+                cookie_check = await _verify_cookie_via_token_api(account_id)
             else:
                 logger.info(
                     "手动触发滑块求解，跳过 Token API 二次验证 accountId=%d", account_id,
                 )
-            if not cookie_valid:
+            if cookie_check != "ok":
+                status_code, reason = {
+                    "expired": ("SESSION_EXPIRED", "Cookie 会话已过期，请重新扫码登录"),
+                    "captcha": ("CAPTCHA_REQUIRED", "闲鱼仍要求安全验证，请完成验证"),
+                }.get(cookie_check, ("COOKIE_UPDATED", "登录状态暂无法确认，请重试校验"))
                 logger.warning(
-                    "账号 %d 滑块求解器报告成功，但 Token API 验证 Cookie 仍不可用，"
-                    "Cookie Session 已真正过期，需要用户重新扫码登录",
-                    account_id,
+                    "账号 %d 滑块求解后登录校验未通过 status=%s",
+                    account_id, cookie_check,
                 )
                 # 不恢复 cookie_status=1，保持 0 状态，并附带明确错误信息
                 await _update_cookie_status_for_captcha(
                     account_id,
                     cookie_status=0,
-                    status_code="SESSION_EXPIRED",
-                    status_message="Cookie Session 已过期，请重新扫码登录闲鱼账号",
+                    status_code=status_code,
+                    status_message=reason,
                 )
 
                 # Cookie 已失效，主动断开 WS 连接，避免前端显示"WS 在线但 Cookie 失败"的矛盾状态
@@ -877,14 +880,11 @@ async def handle_captcha_for_account(
 
                 # 在 auto_solve_result 中附加验证失败标记，让前端能展示真实原因
                 auto_solve_result["cookieVerified"] = False
-                auto_solve_result["error"] = (
-                    "滑块已通过，但 Cookie Session 已真正过期（FAIL_SYS_SESSION_EXPIRED），"
-                    "请前往账号管理页重新扫码登录闲鱼账号获取新 Cookie"
-                )
+                auto_solve_result["error"] = reason
                 # 更新求解记录为失败 + 广播失败事件
                 await update_solve_record(
                     solve_record_id, status="fail", result="slider_success",
-                    error_message="Cookie Session 已过期，需重新扫码登录",
+                    error_message=reason,
                     retry_count=int(auto_solve_result.get("attempts") or 0),
                     duration_ms=int(auto_solve_result.get("durationMs") or 0),
                     screenshot_path=str(auto_solve_result.get("screenshotPath") or ""),
@@ -893,7 +893,7 @@ async def handle_captcha_for_account(
                 await broadcast_captcha_solve(
                     account_id, account_name,
                     status="fail", result="slider_success",
-                    reason="滑块已通过但 Cookie Session 已过期，需重新扫码登录",
+                    reason=reason,
                     record_id=solve_record_id,
                 )
                 # 不标记 recovered=True，让前端引导用户重新登录

@@ -104,7 +104,7 @@
             </button>
             <div v-if="batchMenuVisible" class="dropdown-menu">
               <button class="dropdown-item" @click="batchAction('mark-delivered')">标记已发货</button>
-              <button class="dropdown-item" @click="batchAction('sync')">批量同步</button>
+              <button class="dropdown-item" :disabled="!selectedKeys.length || syncingList || syncingOrderId !== null" @click="syncSelectedOrders">批量同步</button>
               <button class="dropdown-item" @click="batchAction('export-selected')">导出选中</button>
             </div>
           </div>
@@ -824,6 +824,7 @@ async function submitManualDelivery() {
 }
 
 async function syncCurrentOrder(row) {
+  if (syncingList.value || syncingOrderId.value !== null) return
   clearNotice()
   syncingOrderId.value = row.id
   try {
@@ -923,7 +924,7 @@ let lastPlatformRefreshAt = 0
 const PLATFORM_REFRESH_COOLDOWN_MS = 60000
 
 async function refreshFromPlatform(options = {}) {
-  if (syncingList.value) return
+  if (syncingList.value || syncingOrderId.value !== null) return
   const silent = options.silent === true
   if (!silent) clearNotice()
   lastPlatformRefreshAt = Date.now()
@@ -969,6 +970,34 @@ async function refreshFromPlatform(options = {}) {
 
 function onSyncButtonClick() {
   return refreshFromPlatform()
+}
+
+async function syncSelectedOrders() {
+  if (!selectedKeys.value.length || syncingList.value || syncingOrderId.value !== null) return
+  const ids = new Set(selectedKeys.value.map(String))
+  const accountIds = [...new Set(orders.value.filter(row => ids.has(String(row.id))).map(row => row.accountId))]
+  if (!accountIds.length) return
+  batchMenuVisible.value = false
+  clearNotice()
+  syncingList.value = true
+  let synced = 0
+  let firstFailure = ''
+  try {
+    for (const accountId of accountIds) {
+      try {
+        const res = await syncOrders({ accountId })
+        if (res?.data?.ok !== true) throw new Error(res?.data?.message || '订单同步失败')
+        synced++
+      } catch (requestError) {
+        firstFailure ||= requestError.message || '订单同步失败'
+      }
+    }
+    await loadOrders({ silent: true })
+    if (firstFailure) appendWarning(`同步成功 ${synced} 个账号，失败 ${accountIds.length - synced} 个：${firstFailure}`)
+    else success.value = `已同步选中订单所属的 ${synced} 个账号`
+  } finally {
+    syncingList.value = false
+  }
 }
 
 function search() {

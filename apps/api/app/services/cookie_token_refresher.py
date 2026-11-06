@@ -370,7 +370,7 @@ async def _do_cookie_keepalive(state: AccountRefreshState) -> bool:
             if "CAPTCHA_NEEDED" in err_str or "FAIL_SYS_USER_VALIDATE" in err_str or "RGV587" in err_str:
                 await _update_cookie_status(
                     state.account_id, 0,
-                    "COOKIE_EXPIRED", "Cookie 保活触发滑块验证，需要人工处理",
+                    "CAPTCHA_REQUIRED", "Cookie 保活触发安全验证，需要人工处理",
                 )
                 try:
                     await notify_captcha_required(state.account_id, err_str)
@@ -814,7 +814,7 @@ async def _do_ws_token_refresh(state: AccountRefreshState, cookie_str: str, m_h5
             if error_type == "captcha":
                 await _update_cookie_status(
                     state.account_id, 0,
-                    "COOKIE_EXPIRED", "WS Token 刷新触发滑块验证，需要人工处理",
+                    "CAPTCHA_REQUIRED", "WS Token 刷新触发安全验证，需要人工处理",
                 )
                 try:
                     await notify_captcha_required(

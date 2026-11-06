@@ -135,6 +135,7 @@ export function accountCookieLabel(account, wsState = null) {
       if (code === 'COOKIE_UPDATED') return '待校验'
       if (code === 'COOKIE_TOKEN_MISSING') return '缺少令牌'
       if (code === 'AUTH_MISSING') return '未登录'
+      if (code === 'CAPTCHA_REQUIRED') return '需安全验证'
       if (code === 'CAPTCHA_FAILED') return '滑块失败'
       if (code === 'SESSION_EXPIRED') return '需重新登录'
       return '失效/需验证'
@@ -150,6 +151,7 @@ export function accountCookieLabel(account, wsState = null) {
     if (code === 'COOKIE_UPDATED') return '待校验'
     if (code === 'COOKIE_TOKEN_MISSING') return '缺少令牌'
     if (code === 'AUTH_MISSING') return '未登录'
+    if (code === 'CAPTCHA_REQUIRED') return '需安全验证'
     return '失效/需验证'
   }
   if (status === 1 && code && code !== 'OK') return '状态异常'

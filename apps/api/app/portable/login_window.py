@@ -9,7 +9,7 @@ from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngin
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
 from app.core.qr_login_browser import (
-    QrLoginWorker, LOGIN_URL, GOOFISH_HOME, _VERIFICATION_WORDS,
+    QrLoginWorker, LOGIN_URL, GOOFISH_HOME, text_needs_verification,
     TIMEOUT_ERROR, QR_EXPIRED_ERROR,
     has_login_cookies, login_cookie_jar, classify_qr_panel,
 )
@@ -211,7 +211,7 @@ class LoginWindow(QDialog):
             buffer.open(QIODevice.OpenModeFlag.WriteOnly)
             image.save(buffer, "PNG")
             self.worker._set(status="new", qr_image="data:image/png;base64," + base64.b64encode(bytes(buffer.data())).decode("ascii"))
-        if any(word in data.get("text", "") for word in _VERIFICATION_WORDS):
+        if text_needs_verification(data.get("text", "")):
             self.worker._set(status="verification_required")
             return
         if self.worker.snapshot()["status"] == "verification_required":

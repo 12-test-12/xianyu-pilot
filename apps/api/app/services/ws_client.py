@@ -1045,11 +1045,14 @@ class XianyuWebSocketClient:
     async def _refresh_token(self) -> bool:
         """获取/刷新 accessToken。如果 DB 中的 _m_h5_tk 过期，自动从 cookie 提取并更新 DB。
         如果 cookie 中的 _m_h5_tk 也已过期，尝试调用 refresh_m_h5_tk 刷新令牌。
-        遇到滑块验证时自动更新 cookie_status 为 0（失效）。
+        仅在平台明确返回会话过期时标记失效。
         """
-        access_token, effective_m_h5_tk, error_type, refreshed_cookie = get_ws_token_with_refreshed_m_h5_tk(
-            self.cookie_str, self.m_h5_tk
+        credentials = (self.cookie_str, self.m_h5_tk)
+        access_token, effective_m_h5_tk, error_type, refreshed_cookie = await asyncio.to_thread(
+            get_ws_token_with_refreshed_m_h5_tk, *credentials
         )
+        if credentials != (self.cookie_str, self.m_h5_tk):
+            return False
         if access_token:
             self._access_token = access_token
             # 如果用了刷新后的 token，更新 DB 中的 token 和 cookie

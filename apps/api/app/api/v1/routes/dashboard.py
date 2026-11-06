@@ -187,9 +187,18 @@ async def get_dashboard_summary(
             )
             total_sold_count = sold_goods_count_result.scalar() or 0
 
-        # 当日销售额 — total_amount 是字符串类型，逐行求和以避免数据库隐式转换的不确定性
+        # 销售额以付款日为准，旧订单缺少付款时间时按下单日统计。
+        paid_at = func.coalesce(XianyuTradeOrder.pay_time, order_event_time)
+        sales_filters = [
+            XianyuTradeOrder.deleted == 0,
+            XianyuTradeOrder.order_status.in_((1, 2, 3, 4)),
+            paid_at >= day_start,
+            paid_at < day_end,
+        ]
+        if account_id is not None:
+            sales_filters.append(XianyuTradeOrder.account_id == account_id)
         amount_rows_result = await db.execute(
-            select(XianyuTradeOrder.total_amount).where(*order_filters)
+            select(XianyuTradeOrder.total_amount).where(*sales_filters)
         )
         today_sales_amount = 0.0
         for row in amount_rows_result:

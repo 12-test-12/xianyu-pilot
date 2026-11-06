@@ -19,7 +19,7 @@
             <select
               v-model="accountId"
               class="hero-select"
-              :disabled="accountsLoading"
+              :disabled="accountsLoading || syncingOrders"
             >
               <option value="all">全部账号</option>
               <option v-for="acc in accounts" :key="acc.id" :value="acc.id">
@@ -29,21 +29,21 @@
           </div>
           <div class="control-item">
             <label>日期</label>
-            <input v-model="date" class="hero-input" type="date">
+            <input v-model="date" class="hero-input" type="date" :disabled="syncingOrders">
           </div>
-          <button class="refresh-btn" :disabled="loading" @click="load">
+          <button class="refresh-btn" :disabled="loading || syncingOrders" @click="refreshData">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" :class="{ 'spin': loading }">
               <path d="M21 12a9 9 0 11-6.219-8.56"/><polyline points="21 3 21 9 15 9"/>
             </svg>
-            {{ loading ? '加载中' : '刷新' }}
+            {{ syncingOrders ? '同步订单中' : loading ? '加载中' : '刷新' }}
           </button>
         </div>
       </div>
     </div>
 
-    <div v-if="summaryError || trendError" class="error-banner">
+    <div v-if="orderSyncError || summaryError || trendError" class="error-banner">
       <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-      {{ summaryError || trendError }}
+      {{ orderSyncError || summaryError || trendError }}
     </div>
 
     <div class="metrics-strip">
@@ -220,6 +220,7 @@ import EmptyState from '../components/EmptyState.vue'
 import Icon from '../components/Icon.vue'
 import { getDashboardSummary, getDashboardSalesTrend } from '../api/dashboard.js'
 import { getAccounts } from '../api/accounts.js'
+import { refreshOrders } from '../api/order.js'
 import { shortText } from '../utils/format.js'
 import { getSseStatus } from '../utils/sse.js'
 import { createLatestRequestGuard, listRefreshRequestConfig } from '../utils/latestRequest.js'
@@ -269,6 +270,8 @@ const trendError = ref('')
 const summaryAvailable = ref(false)
 const trendAvailable = ref(false)
 const loading = ref(false)
+const syncingOrders = ref(false)
+const orderSyncError = ref('')
 const logs = ref([])
 const sseStatus = ref(getSseStatus())
 const date = ref('')
@@ -299,17 +302,18 @@ const quick = [
   { label: 'AI 客服设置', key: 'settings-ai-cs', icon: '🤖' },
 ]
 
-const dateLabel = computed(() => {
-  if (date.value) return date.value
+function localDate() {
   const d = new Date()
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-})
+}
+const dateLabel = computed(() => date.value || localDate())
 
 const scopeLabel = computed(() => {
   if (accountId.value === 'all' || !accountId.value) return '全部账号'
   const acc = accounts.value.find(a => String(a.id) === String(accountId.value))
   return acc ? (acc.nickname || acc.remark || acc.loginUsername || `账号 #${acc.id}`) : '全部账号'
 })
+const periodLabel = computed(() => dateLabel.value === localDate() ? '今日' : '当日')
 
 const totalDelivery = computed(() => Number(stats.value.deliverySuccessCount) + Number(stats.value.deliveryFailCount) + Number(stats.value.pendingDeliveryCount))
 
@@ -356,13 +360,13 @@ const metrics = computed(() => {
   const successSpark = t.deliverySuccess?.length > 1 ? buildSparkline(t.deliverySuccess) : null
   const replySpark = t.aiReplyCount?.length > 1 ? buildSparkline(t.aiReplyCount) : null
   return [
-    { key: 'orders', title: '今日订单', value: metricVal(s.todayOrderCount ?? s.orderCount), display: metricDisplay(s.todayOrderCount ?? s.orderCount), sub: '今日新增订单', icon: 'product', color: C.primary, spark: t.orderCount, sparkPoints: orderSpark?.points, sparkFillPoints: orderSpark?.fillPoints },
+    { key: 'orders', title: `${periodLabel.value}订单`, value: metricVal(s.todayOrderCount ?? s.orderCount), display: metricDisplay(s.todayOrderCount ?? s.orderCount), sub: '按下单日期统计', icon: 'product', color: C.primary, spark: t.orderCount, sparkPoints: orderSpark?.points, sparkFillPoints: orderSpark?.fillPoints },
     { key: 'success', title: '发货成功', value: metricVal(s.deliverySuccessCount), display: metricDisplay(s.deliverySuccessCount), sub: `成功率 ${successRate.value}%`, icon: 'record', color: C.green, spark: t.deliverySuccess, sparkPoints: successSpark?.points, sparkFillPoints: successSpark?.fillPoints },
     { key: 'fail', title: '发货失败', value: metricVal(s.deliveryFailCount), display: metricDisplay(s.deliveryFailCount), sub: '需处理', icon: 'task', color: C.red, spark: t.deliveryFail, sparkPoints: buildSparkline(t.deliveryFail)?.points, sparkFillPoints: buildSparkline(t.deliveryFail)?.fillPoints },
     { key: 'pending', title: '待发货', value: metricVal(s.pendingDeliveryCount), display: metricDisplay(s.pendingDeliveryCount), sub: '排队中', icon: 'task', color: C.orange, spark: null },
     { key: 'reply', title: 'AI 回复', value: metricVal(s.autoReplyCount ?? s.aiReplyCount), display: metricDisplay(s.autoReplyCount ?? s.aiReplyCount), sub: '今日命中次数', icon: 'chat', color: C.purple, spark: t.aiReplyCount, sparkPoints: replySpark?.points, sparkFillPoints: replySpark?.fillPoints },
     { key: 'msg', title: '今日消息', value: metricVal(s.messageCount), display: metricDisplay(s.messageCount), sub: '今日消息总数', icon: 'message', color: C.cyan, spark: null },
-    { key: 'sales', title: '今日销售额', value: s.todaySalesAmount, display: `¥${formatAmount(s.todaySalesAmount)}`, sub: '订单金额合计', icon: 'data', color: C.pink, spark: null },
+    { key: 'sales', title: `${periodLabel.value}销售额`, value: s.todaySalesAmount, display: `¥${formatAmount(s.todaySalesAmount)}`, sub: '已付款订单金额', icon: 'data', color: C.pink, spark: null },
     { key: 'goods', title: '商品总数', value: s.goodsCount, display: metricDisplay(s.goodsCount), sub: `在售 ${metricDisplay(s.sellingGoodsCount)} · 已售 ${metricDisplay(s.totalSoldCount)}`, icon: 'product', color: C.slate, spark: null },
   ]
 })
@@ -418,6 +422,22 @@ function buildParams(params) {
   return p
 }
 
+async function refreshData() {
+  if (syncingOrders.value) return
+  syncingOrders.value = true
+  orderSyncError.value = ''
+  try {
+    const result = await refreshOrders(buildParams({ accountId: accountId.value }))
+    const errors = result?.data?.syncErrors || []
+    if (errors.length) orderSyncError.value = `订单同步未全部完成：${errors[0].error}`
+  } catch (error) {
+    orderSyncError.value = error.message || '订单同步失败'
+  } finally {
+    syncingOrders.value = false
+  }
+  await load()
+}
+
 async function load() {
   const request = dataRequests.begin()
   loading.value = true
@@ -433,7 +453,7 @@ async function load() {
   const config = listRefreshRequestConfig(summaryAvailable.value || trendAvailable.value)
 
   const sp = date.value ? { date: date.value, accountId: accountId.value } : { accountId: accountId.value }
-  const tp = { days: trendDays.value, accountId: accountId.value }
+  const tp = { ...sp, days: trendDays.value }
 
   const [sr, tr] = await Promise.allSettled([
     getDashboardSummary(buildParams(sp), config),
@@ -854,9 +874,9 @@ function onSse(event) {
   logs.value = logs.value.slice(0, 5)
 }
 function onSseStatus(event) { sseStatus.value = String(event?.detail || 'disconnected') }
-function onHeader(e) { if (e.detail === 'refresh-data-panel') load() }
+function onHeader(e) { if (e.detail === 'refresh-data-panel') refreshData() }
 
-watch(accountId, () => { load() })
+watch(accountId, () => { orderSyncError.value = ''; load() })
 watch(date, () => { load() })
 
 onMounted(() => {

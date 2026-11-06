@@ -8,6 +8,7 @@ login_token/login.do 返回的 HTML/JS，Cookie 里始终拿不到 unb；浏览�
 import base64
 import logging
 import os
+import re
 import shutil
 import threading
 import time
@@ -40,11 +41,15 @@ _EXPIRED_WORDS = ("二维码已失效", "二维码已过期", "二维码失效",
 _SCANNED_WORDS = ("扫码成功", "扫描成功", "已扫码", "请在手机")
 # 只认挑战界面专属文案。"安全验证/身份验证"这类通用词会出现在普通页面
 # 正文里；一旦误判，worker 循环会一直 continue 跳过 Cookie 采集直到超时。
-_VERIFICATION_WORDS = ("人脸识别", "人脸验证", "刷脸", "滑动验证", "拖动滑块", "请完成验证")
+_VERIFICATION_PROMPT = re.compile(
+    r"请(?:先)?(?:完成|进行|通过|使用)(?:人脸识别|人脸验证|刷脸|滑动验证|验证)"
+    r"|请(?:先)?(?:刷脸|滑动验证|拖动滑块)"
+    r"|(?:^|\n)\s*(?:人脸识别|人脸验证|刷脸|滑动验证|拖动滑块)\s*(?=\n|$)"
+)
 
 
 def text_needs_verification(text: str) -> bool:
-    return any(word in (text or "") for word in _VERIFICATION_WORDS)
+    return bool(_VERIFICATION_PROMPT.search(text or ""))
 
 
 def needs_verification(context) -> bool:

@@ -666,6 +666,8 @@ def _parse_card_to_goods(card_data: dict, account_id: int) -> dict:
     # 新版: 0=在售, 1=下架, 2=已售
     # 旧版: 1=在售, 2=下架, 3=已售
     raw_item_status = card_data.get("itemStatus", 0)
+    if isinstance(raw_item_status, str) and raw_item_status in ("0", "1", "2", "3"):
+        raw_item_status = int(raw_item_status)
     if raw_item_status in (0, 1, 2) and ("priceInfo" in card_data or "picInfo" in card_data or "id" in card_data):
         status_map = {0: 0, 1: 1, 2: 2}
     else:
@@ -1292,8 +1294,6 @@ async def sync_goods_for_account(
                         _sync_tasks[sync_id]["updated"] = updated_count
                         _sync_tasks[sync_id]["skipped"] = 0
                         _sync_tasks[sync_id]["new"] = new_count
-                    if (i + 1) == total_count or (i + 1) % 10 == 0:
-                        await _persist_sync_task(sync_id, account_id=account_id, status="running", progress=min(progress, 80), total=total_count, updated=updated_count, skipped=0, new=new_count)
 
                 # Step 4: 标记本地多余商品为下架
                 off_shelf_count = 0

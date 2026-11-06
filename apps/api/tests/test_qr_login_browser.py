@@ -305,6 +305,7 @@ def test_real_login_page_copy_never_trips_verification_gate():
     assert not qlb.text_needs_verification(rendered)
     # 被剔除的通用词出现在普通文案里时同样不得阻塞登录。
     assert not qlb.text_needs_verification("账号安全验证记录：身份验证状态正常")
+    assert not qlb.text_needs_verification("了解人脸验证和刷脸登录的隐私政策")
     # 挑战界面文案必须继续命中，否则验证等待逻辑会失效。
     assert qlb.text_needs_verification("请拖动滑块完成验证")
     assert qlb.text_needs_verification("请完成人脸识别")
