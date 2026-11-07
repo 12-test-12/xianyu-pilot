@@ -332,16 +332,17 @@ async def _do_cookie_keepalive(state: AccountRefreshState) -> bool:
             # 保活成功时恢复 cookie_status=1，避免之前被设为 0 的状态无法恢复
             # （_load_ws_credentials 校验要求 cookie_status==1 且 login_status_code=="OK"）
             try:
+                cookie_val = result.get("cookie", "")
                 status_persisted = await _update_cookie_status(
                     state.account_id, 1,
                     "OK", "Cookie 保活成功",
-                    expected_cookie=result["cookie"],
+                    expected_cookie=cookie_val,
                 )
                 if not status_persisted:
                     state.last_cookie_keepalive_ok = False
                     state.last_error = "平台登录已验证，但本地状态保存失败"
                     return False
-                _notify_ws_client_credentials_updated(state.account_id, result["cookie"], result["token"])
+                _notify_ws_client_credentials_updated(state.account_id, cookie_val, result.get("token"))
                 await clear_cookie_expired_state(state.account_id)
             except Exception:
                 logger.warning(
@@ -360,7 +361,7 @@ async def _do_cookie_keepalive(state: AccountRefreshState) -> bool:
                 if not await _update_cookie_status(
                     state.account_id, 0,
                     "CAPTCHA_REQUIRED", "Cookie 保活触发安全验证，需要人工处理",
-                    expected_cookie=result["cookie"],
+                    expected_cookie=result.get("cookie", ""),
                 ):
                     return False
                 try:
@@ -391,7 +392,7 @@ async def _do_cookie_keepalive(state: AccountRefreshState) -> bool:
                 if not await _update_cookie_status(
                     state.account_id, 0,
                     "COOKIE_EXPIRED", "Cookie 会话已过期，请重新登录",
-                    expected_cookie=result["cookie"],
+                    expected_cookie=result.get("cookie", ""),
                 ):
                     return False
                 try:
@@ -619,15 +620,16 @@ async def check_cookie_login(
 
     if result.get("success") is True:
         checked_at = datetime.now()
+        cookie_val = result.get("cookie", "")
         status_persisted = await _update_cookie_status(
             account_id,
             1,
             "OK",
             "平台登录校验通过",
-            expected_cookie=result["cookie"],
+            expected_cookie=cookie_val,
         )
         if status_persisted:
-            _notify_ws_client_credentials_updated(account_id, result["cookie"], result["token"])
+            _notify_ws_client_credentials_updated(account_id, cookie_val, result.get("token"))
             try:
                 await clear_cookie_expired_state(account_id)
             except Exception as exc:
@@ -659,7 +661,7 @@ async def check_cookie_login(
             0,
             "CAPTCHA_REQUIRED",
             "平台要求完成安全验证",
-            expected_cookie=result["cookie"],
+            expected_cookie=result.get("cookie", ""),
         )
         if not status_persisted:
             return CookieLoginCheck(
@@ -682,7 +684,7 @@ async def check_cookie_login(
             0,
             "SESSION_EXPIRED",
             "Cookie 会话已过期，请重新登录",
-            expected_cookie=result["cookie"],
+            expected_cookie=result.get("cookie", ""),
         )
         if not status_persisted:
             return CookieLoginCheck(
@@ -721,7 +723,7 @@ async def _load_refresh_credentials(account_id: int) -> tuple[str, str]:
     async with async_session() as db:
         row = (await db.execute(
             select(auth.encrypted_cookie, auth.encrypted_token)
-            .where(auth.account_id == account_id, auth.deleted == 0)
+            .where(auth.account_id == account_id, func.coalesce(auth.deleted, 0) == 0)
             .order_by(auth.id.desc()).limit(1)
         )).first()
     if row is None:

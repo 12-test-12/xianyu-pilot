@@ -125,3 +125,27 @@ def test_ws_token_heals_via_refresh_after_captcha_or_expired(monkeypatch):
 
     assert result == ("healed_access_token_456", "refreshed_token", None, "_m_h5_tk=refreshed_token; unb=123456")
     assert attempts == ["stale_token", "refreshed_token"]
+
+
+@pytest.mark.asyncio
+async def test_cookie_keepalive_handles_missing_cookie_field_without_crashing(monkeypatch):
+    from app.services import cookie_token_refresher
+
+    state = cookie_token_refresher.AccountRefreshState(account_id=99)
+    monkeypatch.setattr(
+        cookie_token_refresher,
+        "_call_has_login",
+        AsyncMock(return_value={"success": False, "error": "CAPTCHA_NEEDED"}),
+    )
+    status_updated = AsyncMock(return_value=True)
+    monkeypatch.setattr(cookie_token_refresher, "_update_cookie_status", status_updated)
+    monkeypatch.setattr(cookie_token_refresher, "notify_captcha_required", AsyncMock())
+    monkeypatch.setattr(
+        "app.services.remote_slider_config.is_trigger_scene_enabled",
+        AsyncMock(return_value=False),
+    )
+
+    res = await cookie_token_refresher._do_cookie_keepalive(state)
+    assert res is False
+    assert status_updated.await_args.kwargs["expected_cookie"] == ""
+
