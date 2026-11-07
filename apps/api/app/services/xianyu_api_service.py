@@ -800,7 +800,12 @@ def fetch_sold_orders_page(
             else str(raw_ret or "")
         ).upper()
         combined = f"{failure_text} {ret_text}"
-        if any(marker in combined for marker in ("SESSION_EXPIRED", "TOKEN_EXPIRED", "ILLEGAL_ACCESS_TOKEN")):
+        if "PERMISSION_EXCEPTION" in combined:
+            error_code = "ORDER_PERMISSION_DENIED"
+            public_error = "当前账号没有闲鱼卖家工作台的订单读取权限，请在闲鱼卖家工作台确认账号权限"
+        elif _is_token_expired_error(raw_ret) or any(
+            marker in combined for marker in ("SESSION_EXPIRED", "TOKEN_EXPIRED", "ILLEGAL_ACCESS_TOKEN")
+        ):
             error_code = "COOKIE_EXPIRED"
             public_error = "账号登录已失效，请重新登录后同步订单"
         elif any(marker in combined for marker in ("USER_VALIDATE", "RGV587", "CAPTCHA")):

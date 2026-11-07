@@ -60,6 +60,7 @@ def console(tmp_path,monkeypatch):
     (web/'xya/brand').mkdir(parents=True)
     (web/'xya/brand/icon.png').write_bytes(b'fixture image')
     config=Settings(runtime_mode='desktop')
+    monkeypatch.setattr(config, 'scheduler_poll_interval_seconds', 1)
     app=create_desktop_app(config,web_dir=web)
     with TestClient(app,base_url='http://127.0.0.1:15177') as client:
         html=client.get('/')
@@ -67,6 +68,47 @@ def console(tmp_path,monkeypatch):
         session=client.post('/api/desktop/session',json={},headers={'X-Desktop-Bootstrap':marker})
         client.headers['Authorization']='Bearer '+session.json()['data']['token']
         yield client,config,app
+
+
+def test_scheduled_task_enable_runs_automatically_and_disable_preserves_result(console, monkeypatch):
+    from app.services.scheduled_task_runtime import ScheduledTaskExecutor, TaskExecutionOutcome
+
+    async def execute(self, task):
+        return TaskExecutionOutcome(status="success", result={"synced": 3})
+
+    monkeypatch.setattr(ScheduledTaskExecutor, "execute", execute)
+    client, config, _ = console
+    with sqlite3.connect(config.sqlite_path) as db:
+        db.execute("INSERT INTO xianyu_account(id, status, deleted) VALUES(11, 1, 0)")
+
+    route = "/api/scheduled-tasks"
+    created = client.post(route, json={
+        "taskName": "定时同步商品", "taskType": "sync_goods", "cronExpression": "0 8 * * *",
+        "accountId": 11, "enabled": False,
+    }).json()["data"]
+    task_id = created["id"]
+    toggle = f"{route}/{task_id}/enabled"
+    with sqlite3.connect(config.sqlite_path) as db:
+        db.execute("UPDATE scheduled_task SET lease_until='2099-01-01' WHERE id=?", (task_id,))
+    assert client.patch(toggle, json={"enabled": 1}).status_code == 409
+    with sqlite3.connect(config.sqlite_path) as db:
+        db.execute("UPDATE scheduled_task SET lease_until=NULL WHERE id=?", (task_id,))
+    assert client.patch(toggle, json={"enabled": 1}).json()["data"]["enabled"] == 1
+    task = client.get(route).json()["data"]["records"][0]
+    assert task["nextRunTime"]
+    with sqlite3.connect(config.sqlite_path) as db:
+        db.execute("UPDATE scheduled_task SET next_run_time='2000-01-01' WHERE id=?", (task_id,))
+
+    deadline = time.monotonic() + 5
+    while task["lastStatus"] != "success" and time.monotonic() < deadline:
+        time.sleep(0.05)
+        task = client.get(route).json()["data"]["records"][0]
+    assert task["lastStatus"] == "success"
+    assert task["lastResult"]["result"] == {"synced": 3}
+    assert client.patch(toggle, json={"enabled": 0}).json()["data"]["enabled"] == 0
+    disabled = client.get(route).json()["data"]["records"][0]
+    assert disabled["nextRunTime"] is None
+    assert disabled["lastResult"] == task["lastResult"]
 
 
 def test_original_index_assets_session_and_boundary(console):

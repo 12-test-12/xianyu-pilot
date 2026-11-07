@@ -2,6 +2,7 @@
 import hmac
 import asyncio
 import inspect
+import logging
 import re
 import secrets
 import time
@@ -13,13 +14,17 @@ from fastapi.staticfiles import StaticFiles
 
 from app.core.response import ResultObject
 
+logger = logging.getLogger(__name__)
+
 
 class ConsoleServices:
     """Own the original message/AI workers under the desktop database lifecycle."""
-    def __init__(self,gate,delivery_monitor):
+    def __init__(self,gate,delivery_monitor,config):
         self.gate=gate
         self.delivery_monitor=delivery_monitor
+        self.config=config
         self.delivery_task=None
+        self.scheduler_task=None
         self.delivery_stop=asyncio.Event()
         self.startup=None
         self.stoppers=[]
@@ -44,6 +49,7 @@ class ConsoleServices:
         start_background_task_runtime()
         self.startup=asyncio.create_task(auto_start_all(),name='desktop-original-services')
         self.delivery_task=asyncio.create_task(self.poll_delivery(),name='desktop-sold-order-probe')
+        self.scheduler_task = asyncio.create_task(self.poll_scheduled_tasks(), name="desktop-scheduled-tasks")
         from app.services.cookie_token_refresher import start_dispatcher, stop_dispatcher
         from app.services.auto_rate_scheduler import start_auto_rate_scheduler, stop_auto_rate_scheduler
         from app.services.relist_scheduler import start_relist_scheduler, stop_relist_scheduler
@@ -61,6 +67,17 @@ class ConsoleServices:
             except asyncio.TimeoutError:
                 pass
 
+    async def poll_scheduled_tasks(self):
+        from app.services.scheduled_task_runtime import get_scheduled_task_runtime
+
+        runtime = get_scheduled_task_runtime()
+        while True:
+            try:
+                await runtime.run_due_once(limit=self.config.scheduler_batch_size)
+            except Exception:
+                logger.exception("Desktop scheduled task polling failed")
+            await asyncio.sleep(self.config.scheduler_poll_interval_seconds)
+
     async def stop(self):
         from app.services.ws_startup import stop_all
         from app.core.background_tasks import begin_background_task_shutdown, shutdown_background_tasks
@@ -68,6 +85,9 @@ class ConsoleServices:
         self.delivery_monitor._stopping=True
         self.delivery_stop.set()
         self.delivery_monitor.wake_probe.set()
+        if self.scheduler_task is not None:
+            self.scheduler_task.cancel()
+            await asyncio.gather(self.scheduler_task, return_exceptions=True)
         if self.startup is not None:
             self.startup.cancel()
             await asyncio.gather(self.startup,return_exceptions=True)

@@ -21,7 +21,7 @@ from croniter import CroniterBadCronError, croniter
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from ..core.camel import CamelModel
-from sqlalchemy import text
+from sqlalchemy import DateTime, text
 
 from ..core.logging_security import redact_sensitive, redact_sensitive_text
 
@@ -100,55 +100,12 @@ class ScheduledTaskStore(Protocol):
 
     async def delete(self, task_id: int) -> None: ...
 
-
     async def set_enabled(
         self,
         task_id: int,
         *,
         enabled: bool,
-    ) -> ScheduledTaskRecord:
-        now = datetime.now()
-        async with self._session_factory() as db:
-            existing = await self._load_locked_or_plain(db, task_id, for_update=True)
-            if existing is None:
-                await db.rollback()
-                raise TaskNotFoundError("定时任务不存在")
-            if existing["lease_until"] and existing["lease_until"] > now:
-                await db.rollback()
-                raise TaskBusyError("任务正在运行，暂不能切换启用状态")
-            new_status = 1 if enabled else 0
-            if enabled:
-                try:
-                    next_run = next_cron_time(str(existing["cron_expr"] or ""), now)
-                except ValueError as exc:
-                    await db.rollback()
-                    raise TaskValidationError(
-                        redact_sensitive_text(str(exc))[:1000]
-                    ) from exc
-            else:
-                next_run = None
-            await db.execute(
-                text(
-                    """
-                    UPDATE scheduled_task
-                    SET status = :status,
-                        next_run_time = :next_run_time,
-                        updated_time = :now
-                    WHERE id = :id AND deleted = 0
-                    """
-                ),
-                {
-                    "id": task_id,
-                    "status": new_status,
-                    "next_run_time": next_run,
-                    "now": now,
-                },
-            )
-            row = await self._load_locked_or_plain(db, task_id)
-            await db.commit()
-        if row is None:
-            raise TaskConflictError("定时任务启用状态更新后无法读取")
-        return _record_from_row(row)
+    ) -> ScheduledTaskRecord: ...
 
     async def claim_manual(
         self,
@@ -638,6 +595,55 @@ class MySQLScheduledTaskStore:
             )
             await db.commit()
 
+    async def set_enabled(
+        self,
+        task_id: int,
+        *,
+        enabled: bool,
+    ) -> ScheduledTaskRecord:
+        now = datetime.now()
+        async with self._session_factory() as db:
+            existing = await self._load_locked_or_plain(db, task_id, for_update=True)
+            if existing is None:
+                await db.rollback()
+                raise TaskNotFoundError("定时任务不存在")
+            if existing["lease_until"] and existing["lease_until"] > now:
+                await db.rollback()
+                raise TaskBusyError("任务正在运行，暂不能切换启用状态")
+            new_status = 1 if enabled else 0
+            if enabled:
+                try:
+                    next_run = next_cron_time(str(existing["cron_expr"] or ""), now)
+                except ValueError as exc:
+                    await db.rollback()
+                    raise TaskValidationError(
+                        redact_sensitive_text(str(exc))[:1000]
+                    ) from exc
+            else:
+                next_run = None
+            await db.execute(
+                text(
+                    """
+                    UPDATE scheduled_task
+                    SET status = :status,
+                        next_run_time = :next_run_time,
+                        updated_time = :now
+                    WHERE id = :id AND deleted = 0
+                    """
+                ),
+                {
+                    "id": task_id,
+                    "status": new_status,
+                    "next_run_time": next_run,
+                    "now": now,
+                },
+            )
+            row = await self._load_locked_or_plain(db, task_id)
+            await db.commit()
+        if row is None:
+            raise TaskConflictError("定时任务启用状态更新后无法读取")
+        return _record_from_row(row)
+
     async def claim_manual(
         self,
         task_id: int,
@@ -824,7 +830,7 @@ class MySQLScheduledTaskStore:
             text(
                 f"SELECT {_TASK_COLUMNS} FROM scheduled_task "
                 f"WHERE id = :id AND deleted = 0 LIMIT 1{suffix}"
-            ),
+            ).columns(lease_until=DateTime()),
             {"id": task_id},
         )
         return result.mappings().first()

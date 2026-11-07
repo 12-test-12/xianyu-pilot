@@ -82,6 +82,19 @@ def remote_order(
     }
 
 
+def test_seller_order_permission_error_reaches_the_caller(monkeypatch):
+    from app.services import xianyu_api_service as api
+
+    monkeypatch.setattr(api, "_get_account_auth", lambda _: {"encrypted_cookie": "fixture"})
+    monkeypatch.setattr(api, "_post_mtop_with_token_retry", lambda *args: {
+        "success": False, "ret": ["PERMISSION_EXCEPTION::无权限访问"],
+    })
+    result = api.fetch_sold_orders_page(1)
+    assert result["success"] is False
+    assert result["errorCode"] == "ORDER_PERMISSION_DENIED"
+    assert "卖家工作台" in result["error"]
+
+
 def patch_page(monkeypatch, pages):
     """把 fetch_sold_orders_page 打桩成分页数据；pages 为 {page_number: [orders]}。"""
     calls = []

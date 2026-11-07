@@ -356,6 +356,7 @@ function buildSparkline(series) {
 const metrics = computed(() => {
   const s = stats.value
   const t = trend.value
+  const sales = orderSyncError.value && s.todaySalesAmount === 0 ? null : s.todaySalesAmount
   const orderSpark = t.orderCount?.length > 1 ? buildSparkline(t.orderCount) : null
   const successSpark = t.deliverySuccess?.length > 1 ? buildSparkline(t.deliverySuccess) : null
   const replySpark = t.aiReplyCount?.length > 1 ? buildSparkline(t.aiReplyCount) : null
@@ -366,7 +367,7 @@ const metrics = computed(() => {
     { key: 'pending', title: '待发货', value: metricVal(s.pendingDeliveryCount), display: metricDisplay(s.pendingDeliveryCount), sub: '排队中', icon: 'task', color: C.orange, spark: null },
     { key: 'reply', title: 'AI 回复', value: metricVal(s.autoReplyCount ?? s.aiReplyCount), display: metricDisplay(s.autoReplyCount ?? s.aiReplyCount), sub: '今日命中次数', icon: 'chat', color: C.purple, spark: t.aiReplyCount, sparkPoints: replySpark?.points, sparkFillPoints: replySpark?.fillPoints },
     { key: 'msg', title: '今日消息', value: metricVal(s.messageCount), display: metricDisplay(s.messageCount), sub: '今日消息总数', icon: 'message', color: C.cyan, spark: null },
-    { key: 'sales', title: `${periodLabel.value}销售额`, value: s.todaySalesAmount, display: `¥${formatAmount(s.todaySalesAmount)}`, sub: '已付款订单金额', icon: 'data', color: C.pink, spark: null },
+    { key: 'sales', title: `${periodLabel.value}销售额`, value: sales, display: sales == null ? '—' : `¥${formatAmount(sales)}`, sub: orderSyncError.value ? '仅统计已同步的付款订单' : '已付款订单金额', icon: 'data', color: C.pink, spark: null },
     { key: 'goods', title: '商品总数', value: s.goodsCount, display: metricDisplay(s.goodsCount), sub: `在售 ${metricDisplay(s.sellingGoodsCount)} · 已售 ${metricDisplay(s.totalSoldCount)}`, icon: 'product', color: C.slate, spark: null },
   ]
 })

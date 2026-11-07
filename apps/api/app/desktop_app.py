@@ -40,7 +40,7 @@ def create_desktop_app(config=None, *, web_dir=None, platform_runtime=None, inst
     if platform_runtime is None:
         from app.services.desktop_order_delivery import DesktopOrderDelivery
         runtime.desktop_delivery_monitor = DesktopOrderDelivery(config.sqlite_path, runtime.delivery_gate)
-        console_services = ConsoleServices(runtime.delivery_gate, runtime.desktop_delivery_monitor)
+        console_services = ConsoleServices(runtime.delivery_gate, runtime.desktop_delivery_monitor, config)
     else:
         console_services = None
     store = DesktopStore(config.sqlite_path)
