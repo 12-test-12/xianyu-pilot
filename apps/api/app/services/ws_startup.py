@@ -569,8 +569,8 @@ async def auto_start_all() -> None:
                 cookie_str = decrypt_cookie_if_needed(acct["cookie_str"] or "")
                 m_h5_tk = decrypt_cookie_if_needed(acct["m_h5_tk"] or "") or ""
 
-                if not cookie_str or not m_h5_tk:
-                    logger.warning("账号 %d 缺少 Cookie 或 Token，跳过", account_id)
+                if not cookie_str:
+                    logger.warning("账号 %d 缺少 Cookie，跳过", account_id)
                     continue
 
                 try:

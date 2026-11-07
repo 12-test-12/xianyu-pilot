@@ -141,7 +141,8 @@ def test_original_platform_images_load_but_external_active_requests_are_blocked(
     assert script.blocked and api.blocked
 
 
-def test_embedded_login_uses_isolated_profile_and_never_saves_before_manual_completion(console, monkeypatch):
+@pytest.mark.parametrize("needs_verification", [False, True])
+def test_embedded_login_finishes_after_official_confirmation(console, monkeypatch, needs_verification):
     from PySide6.QtNetwork import QNetworkCookie
     from app.portable.login_window import LoginWindow, EmbeddedWorker, QWebEngineView
     c, _ = console
@@ -157,13 +158,16 @@ def test_embedded_login_uses_isolated_profile_and_never_saves_before_manual_comp
             cookie.setDomain('.goofish.com')
             cookie.setPath('/')
             window.collect(cookie)
-        window.inspect('{"text":"请完成人脸验证"}')
-        window.complete()
-        assert not window.visiting_home
-        assert worker.snapshot()['cookies'] is None
+        if needs_verification:
+            window.inspect('{"text":"请完成人脸验证"}')
+            window.complete()
+            assert not window.visiting_home
+            assert worker.snapshot()['cookies'] is None
         window.inspect('{"text":"登录成功"}')
         assert worker.snapshot()['status'] != 'confirmed'
-        window.complete()
+        if needs_verification:
+            assert not window.visiting_home
+            window.complete()
         assert window.visiting_home
         window.home_loaded = True
         window.inspect('{"text":"闲鱼首页"}')

@@ -182,13 +182,11 @@ async def _load_ws_credentials(db: AsyncSession, account_id: int):
         m_h5_tk = _xianyu_token_from_cookie(cookie_str) or ""
     if not cookie_str:
         return None, "账号缺少 Cookie，请自行提供 Cookie 或扫码重新登录"
-    if not m_h5_tk:
-        return None, "Cookie 中缺少 _m_h5_tk，请自行提供 Cookie 或扫码重新登录"
     if int(row.get("cookie_status") or 0) != 1 or str(row.get("login_status_code") or "").upper() != "OK":
         return None, "账号 Cookie 尚未通过统一登录校验，请先在账号管理或连接管理页执行校验"
     return {
         "cookie_str": cookie_str,
-        "m_h5_tk": m_h5_tk,
+        "m_h5_tk": m_h5_tk or "",
         "unb": row.get("unb") or "",
         "cookie_status": int(row.get("cookie_status") or 0),
         "login_status_code": row.get("login_status_code"),
@@ -662,8 +660,7 @@ async def _save_scan_login_result(
                     status=1,
                 )
                 db.add(account)
-                await db.commit()
-                await db.refresh(account)
+                await db.flush()
                 logger.info(
                     "QR account persistence accountId=%d state=created",
                     account.id,
@@ -685,8 +682,7 @@ async def _save_scan_login_result(
             existing_auth = auth_rows[0]
             existing_auth.deleted = 0
             existing_auth.encrypted_cookie = encrypted_cookie
-            if encrypted_token:
-                existing_auth.encrypted_token = encrypted_token
+            existing_auth.encrypted_token = encrypted_token
             existing_auth.cookie_status = 1
             existing_auth.last_login_status_code = "OK"
             existing_auth.last_login_status_message = "账号登录状态正常"
@@ -730,6 +726,11 @@ async def _save_scan_login_result(
             ))
 
         await db.commit()
+        from ....services.ws_token import invalidate_cached_token
+
+        invalidate_cached_token(unb)
+        if client := ws_manager.get_client(int(account.id)):
+            client.update_credentials(cookie_text, m_h5_tk)
         # A confirmed QR session is a verified credential recovery. Resolve
         # the durable expiry-alert generation only after both credential
         # tables have committed successfully.

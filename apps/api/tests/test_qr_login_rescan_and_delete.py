@@ -3,7 +3,7 @@ from pathlib import Path
 import re
 import sqlite3
 import pytest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 
 from app.core.config import Settings
@@ -52,6 +52,9 @@ class _FakeWorker:
 def console(tmp_path, monkeypatch):
     cleanup_all()
     from app.core import paths
+    from app.services.ws_client import ws_manager
+
+    monkeypatch.setattr(ws_manager, "start_client", AsyncMock(return_value=True))
     monkeypatch.setattr(paths, "SOURCE_ROOT", tmp_path)
     web = tmp_path / "web"
     (web / "assets").mkdir(parents=True)
@@ -123,9 +126,18 @@ def test_expired_session_replays_worker_error_message(console):
     assert data["message"] == "登录或安全验证超时，请重新生成二维码。"
 
 
-def test_rescan_updates_existing_account_credentials_and_recovers_cookie(console):
+@pytest.mark.parametrize("new_token", ["new_m_h5_tk_val", ""])
+def test_rescan_updates_existing_account_credentials_and_recovers_cookie(console, monkeypatch, new_token):
     """Test rescan flow: updating an existing account's cookie when it became expired."""
     client, config, app = console
+    from app.api.v1.routes.misc import _load_ws_credentials
+    from app.core.database import use_database_runtime
+    from app.services.cookie_token_refresher import _update_cookie_status
+    from app.services.ws_client import XianyuWebSocketClient, ws_manager
+
+    old_cookie = "enc_old_cookie"
+    live_client = XianyuWebSocketClient(11, old_cookie, "old-token", "fixture-unb-11")
+    monkeypatch.setitem(ws_manager._clients, 11, live_client)
 
     # 1. Seed existing account in DB with expired cookie status
     with sqlite3.connect(config.sqlite_path) as db:
@@ -134,9 +146,9 @@ def test_rescan_updates_existing_account_credentials_and_recovers_cookie(console
             "VALUES(11, 'fixture-unb-11', '测试卖家', 0, 1)"
         )
         db.execute(
-            "INSERT INTO xianyu_account_auth(account_id, encrypted_cookie, cookie_status, "
+            "INSERT INTO xianyu_account_auth(account_id, encrypted_cookie, encrypted_token, cookie_status, "
             "last_login_status_code, last_login_status_message, deleted) "
-            "VALUES(11, 'enc_old_cookie', 2, 'SESSION_EXPIRED', 'Cookie已过期', 0)"
+            "VALUES(11, 'enc_old_cookie', 'old-token', 2, 'SESSION_EXPIRED', 'Cookie已过期', 0)"
         )
         db.execute(
             "INSERT INTO xianyu_account_runtime(account_id, cookie_status, "
@@ -155,9 +167,10 @@ def test_rescan_updates_existing_account_credentials_and_recovers_cookie(console
     session_data = _sessions[session_id]
     session_data["saved_cookies"] = {
         "unb": "fixture-unb-11",
-        "_m_h5_tk": "new_m_h5_tk_val",
         "cookie2": "new_cookie2_val",
     }
+    if new_token:
+        session_data["saved_cookies"]["_m_h5_tk"] = new_token
     session_data["terminal_result"] = {
         "status": "confirmed",
         "unb": "fixture-unb-11",
@@ -175,6 +188,24 @@ def test_rescan_updates_existing_account_credentials_and_recovers_cookie(console
     assert data["cookieStatus"] == 1
     assert data["loginStatusCode"] == "OK"
     assert "Cookie 已更新" in data["message"]
+    assert "cookie2=new_cookie2_val" in live_client.cookie_str
+    assert live_client.m_h5_tk == new_token
+
+    async def apply_failure(cookie):
+        with use_database_runtime(app.state.database):
+            return await _update_cookie_status(
+                11, 0, "COOKIE_EXPIRED", expected_cookie=cookie,
+            )
+
+    assert client.portal.call(apply_failure, old_cookie) is False
+
+    async def load_for_connection():
+        async with app.state.database.session() as db:
+            return await _load_ws_credentials(db, 11)
+
+    credentials, error = client.portal.call(load_for_connection)
+    assert error is None
+    assert credentials["m_h5_tk"] == new_token
 
     # 5. Verify database was updated
     with sqlite3.connect(config.sqlite_path) as db:
@@ -187,7 +218,7 @@ def test_rescan_updates_existing_account_credentials_and_recovers_cookie(console
         assert auth_row[2] == 0
         decrypted = decrypt_cookie_if_needed(auth_row[3])
         assert "unb=fixture-unb-11" in decrypted
-        assert "_m_h5_tk=new_m_h5_tk_val" in decrypted
+        assert ("_m_h5_tk=" in decrypted) is bool(new_token)
 
         runtime_row = db.execute(
             "SELECT cookie_status, last_login_status_code, deleted "
@@ -196,6 +227,47 @@ def test_rescan_updates_existing_account_credentials_and_recovers_cookie(console
         assert runtime_row[0] == 1
         assert runtime_row[1] == "OK"
         assert runtime_row[2] == 0
+
+    assert client.portal.call(apply_failure, credentials["cookie_str"]) is True
+
+
+def test_keepalive_updates_cookie_and_signing_token_for_reconnect(console, monkeypatch):
+    import httpx
+
+    from app.core.database import use_database_runtime
+    from app.services.cookie_token_refresher import check_cookie_login
+    from app.services.ws_client import XianyuWebSocketClient, ws_manager
+
+    client, config, app = console
+    old_cookie = "unb=11; cookie2=old; _m_h5_tk=old-token"
+    live_client = XianyuWebSocketClient(11, old_cookie, "old-token", "11")
+    monkeypatch.setitem(ws_manager._clients, 11, live_client)
+    with sqlite3.connect(config.sqlite_path) as db:
+        db.execute("INSERT INTO xianyu_account(id, external_uid, deleted) VALUES (11, '11', 0)")
+        db.execute(
+            "INSERT INTO xianyu_account_auth(account_id, encrypted_cookie, encrypted_token, deleted) "
+            "VALUES (11, ?, 'old-token', 0)", (old_cookie,),
+        )
+
+    response = httpx.Response(200, json={"hasLogin": True}, headers=[
+        ("Set-Cookie", "cookie2=renewed; Path=/"),
+        ("Set-Cookie", "_m_h5_tk=renewed-token; Path=/"),
+    ])
+    monkeypatch.setattr(httpx.AsyncClient, "post", AsyncMock(return_value=response))
+
+    async def verify():
+        with use_database_runtime(app.state.database):
+            return await check_cookie_login(11)
+
+    assert client.portal.call(verify).authenticated
+    assert live_client.cookie_str == "unb=11; cookie2=renewed; _m_h5_tk=renewed-token"
+    assert live_client.m_h5_tk == "renewed-token"
+    with sqlite3.connect(config.sqlite_path) as db:
+        cookie, token = db.execute(
+            "SELECT encrypted_cookie, encrypted_token FROM xianyu_account_auth WHERE account_id=11"
+        ).fetchone()
+    assert decrypt_cookie_if_needed(cookie) == live_client.cookie_str
+    assert decrypt_cookie_if_needed(token) == live_client.m_h5_tk
 
 
 def test_delete_account_soft_deletes_and_rescan_restores_cleanly(console):

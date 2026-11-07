@@ -924,6 +924,7 @@ async def notify_cookie_expired(account_id: int, cookie_status: int) -> None:
             event_display_name=EVENT_COOKIE_EXPIRED,
             title="⚠️ Cookie 失效告警",
             content=content,
+            template_context={"account": account_name},
         )
 
     outcome = await _EVENT_COORDINATOR.execute(

@@ -92,12 +92,13 @@ class LoginWindow(QDialog):
         self.checking = False
         self.visiting_home = False
         self.home_loaded = False
+        self.manual_completion_required = False
         self.popups = []
         self.setWindowTitle("闲鱼登录与安全验证")
         self.resize(720, 800)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         layout = QVBoxLayout(self)
-        self.hint = QLabel("请在官方页面扫码并亲自完成安全验证，再点击“完成验证，添加账号”。请勿关闭此窗口。")
+        self.hint = QLabel("请在官方页面扫码确认。若闲鱼提示安全验证，完成后点击“完成验证，添加账号”。")
         self.hint.setWordWrap(True)
         layout.addWidget(self.hint)
         # 每次新建内存 profile，无旧账号凭据，也不共享控制台权限。
@@ -136,6 +137,7 @@ class LoginWindow(QDialog):
         permission.deny()
 
     def open_popup(self):
+        self.manual_completion_required = True
         dialog = QDialog(self)
         dialog.setWindowTitle("闲鱼官方安全验证")
         dialog.resize(650, 760)
@@ -212,6 +214,7 @@ class LoginWindow(QDialog):
             image.save(buffer, "PNG")
             self.worker._set(status="new", qr_image="data:image/png;base64," + base64.b64encode(bytes(buffer.data())).decode("ascii"))
         if text_needs_verification(data.get("text", "")):
+            self.manual_completion_required = True
             self.worker._set(status="verification_required")
             return
         if self.worker.snapshot()["status"] == "verification_required":
@@ -223,6 +226,8 @@ class LoginWindow(QDialog):
             return
         if status == "scaned":
             self.worker._set(status="scaned")
+        if not self.visiting_home and not self.manual_completion_required and has_login_cookies(list(self.jar.values())):
+            self.complete()
         if self.home_loaded:
             cookies = list(self.jar.values())
             jar = login_cookie_jar(cookies)

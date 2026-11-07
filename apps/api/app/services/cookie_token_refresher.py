@@ -27,11 +27,12 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import text
+from sqlalchemy import func, select, text, update
 
 from ..core.cookie_crypto import decrypt_cookie_if_needed, encrypt_cookie_for_storage
 from ..core.database import async_session
 from ..core.background_tasks import spawn_background_task
+from ..models.entities import XianyuAccountAuth
 from .notify_dispatcher import (
     clear_cookie_expired_state,
     notify_cookie_expired,
@@ -218,51 +219,38 @@ async def _update_cookie_and_token_in_db(
     account_id: int,
     cookie_str: Optional[str] = None,
     m_h5_tk: Optional[str] = None,
-) -> None:
+    *,
+    expected_cookie: str,
+) -> bool:
     """将刷新后的 cookie / _m_h5_tk 写回数据库（同时更新时间戳）"""
     try:
         async with async_session() as db:
-            if cookie_str and m_h5_tk:
-                await db.execute(
-                    text(
-                        "UPDATE xianyu_account_auth SET encrypted_cookie = :cookie, "
-                        "encrypted_token = :tk, updated_time = NOW() "
-                        "WHERE account_id = :aid"
-                    ),
-                    {
-                        "cookie": encrypt_cookie_for_storage(cookie_str),
-                        "tk": encrypt_cookie_for_storage(m_h5_tk),
-                        "aid": account_id,
-                        
-                    },
-                )
-            elif cookie_str:
-                await db.execute(
-                    text(
-                        "UPDATE xianyu_account_auth SET encrypted_cookie = :cookie, updated_time = NOW() "
-                        "WHERE account_id = :aid"
-                    ),
-                    {
-                        "cookie": encrypt_cookie_for_storage(cookie_str),
-                        "aid": account_id,
-                        
-                    },
-                )
-            elif m_h5_tk:
-                await db.execute(
-                    text(
-                        "UPDATE xianyu_account_auth SET encrypted_token = :tk, updated_time = NOW() "
-                        "WHERE account_id = :aid"
-                    ),
-                    {
-                        "tk": encrypt_cookie_for_storage(m_h5_tk),
-                        "aid": account_id,
-                        
-                    },
-                )
+            values = {"updated_time": func.now()}
+            if cookie_str:
+                values["encrypted_cookie"] = encrypt_cookie_for_storage(cookie_str)
+            if m_h5_tk:
+                values["encrypted_token"] = encrypt_cookie_for_storage(m_h5_tk)
+            if not await _update_auth_if_current(db, account_id, expected_cookie, values):
+                return False
             await db.commit()
-    except Exception:
-        logger.warning("更新 DB 中的 cookie/token 失败 accountId=%d", account_id, exc_info=True)
+            return True
+    except Exception as exc:
+        logger.warning("更新 Cookie/Token 失败 accountId=%d errorType=%s", account_id, type(exc).__name__)
+        return False
+
+
+async def _update_auth_if_current(db, account_id: int, expected_cookie: str, values: dict) -> bool:
+    auth = XianyuAccountAuth
+    active = (auth.account_id == account_id, func.coalesce(auth.deleted, 0) == 0)
+    row = (await db.execute(
+        select(auth.id, auth.encrypted_cookie).where(*active).order_by(auth.id.desc()).limit(1)
+    )).first()
+    if row is None or decrypt_cookie_if_needed(row.encrypted_cookie) != expected_cookie:
+        return False
+    result = await db.execute(
+        update(auth).where(*active, auth.id == row.id, auth.encrypted_cookie == row.encrypted_cookie).values(**values)
+    )
+    return result.rowcount == 1
 
 
 async def _update_cookie_status(
@@ -270,30 +258,30 @@ async def _update_cookie_status(
     status: int,
     code: Optional[str] = None,
     message: Optional[str] = None,
+    *,
+    expected_cookie: str,
 ) -> bool:
     """同步更新 xianyu_account_auth 和 xianyu_account_runtime 两张表的状态"""
     try:
         async with async_session() as db:
-            for table in ("xianyu_account_auth", "xianyu_account_runtime"):
-                await db.execute(
-                    text(
-                        f"UPDATE {table} SET cookie_status = :st, "
-                        f"last_login_status_code = :code, last_login_status_message = :message, "
-                        f"last_login_check_time = NOW(), updated_time = NOW() "
-                        f"WHERE account_id = :aid AND COALESCE(deleted, 0) = 0"
-                    ),
-                    {
-                        "st": status,
-                        "code": code,
-                        "message": message,
-                        "aid": account_id,
-                        
-                    },
-                )
+            values = {
+                "cookie_status": status, "last_login_status_code": code,
+                "last_login_status_message": message, "last_login_check_time": func.now(),
+                "updated_time": func.now(),
+            }
+            if not await _update_auth_if_current(db, account_id, expected_cookie, values):
+                return False
+            await db.execute(
+                text("UPDATE xianyu_account_runtime SET cookie_status = :st, "
+                     "last_login_status_code = :code, last_login_status_message = :message, "
+                     "last_login_check_time = NOW(), updated_time = NOW() "
+                     "WHERE account_id = :aid AND COALESCE(deleted, 0) = 0"),
+                {"st": status, "code": code, "message": message, "aid": account_id},
+            )
             await db.commit()
         return True
-    except Exception:
-        logger.warning("更新 cookie_status 失败 accountId=%d", account_id, exc_info=True)
+    except Exception as exc:
+        logger.warning("更新 cookie_status 失败 accountId=%d errorType=%s", account_id, type(exc).__name__)
         return False
 
 
@@ -309,10 +297,9 @@ def _notify_ws_client_credentials_updated(
         client = ws_manager.get_client(account_id)
         if client is None:
             return
-        if cookie_str:
-            client.cookie_str = cookie_str
-        if m_h5_tk:
-            client.m_h5_tk = m_h5_tk
+        if ((cookie_str is not None and cookie_str != client.cookie_str)
+                or (m_h5_tk is not None and m_h5_tk != client.m_h5_tk)):
+            client.update_credentials(cookie_str, m_h5_tk)
         logger.info("已通知 WS 客户端更新凭据 accountId=%d", account_id)
     except Exception as exc:
         logger.debug(
@@ -348,11 +335,13 @@ async def _do_cookie_keepalive(state: AccountRefreshState) -> bool:
                 status_persisted = await _update_cookie_status(
                     state.account_id, 1,
                     "OK", "Cookie 保活成功",
+                    expected_cookie=result["cookie"],
                 )
                 if not status_persisted:
                     state.last_cookie_keepalive_ok = False
                     state.last_error = "平台登录已验证，但本地状态保存失败"
                     return False
+                _notify_ws_client_credentials_updated(state.account_id, result["cookie"], result["token"])
                 await clear_cookie_expired_state(state.account_id)
             except Exception:
                 logger.warning(
@@ -368,10 +357,12 @@ async def _do_cookie_keepalive(state: AccountRefreshState) -> bool:
             state.last_error = err
             err_str = str(err)
             if "CAPTCHA_NEEDED" in err_str or "FAIL_SYS_USER_VALIDATE" in err_str or "RGV587" in err_str:
-                await _update_cookie_status(
+                if not await _update_cookie_status(
                     state.account_id, 0,
                     "CAPTCHA_REQUIRED", "Cookie 保活触发安全验证，需要人工处理",
-                )
+                    expected_cookie=result["cookie"],
+                ):
+                    return False
                 try:
                     await notify_captcha_required(state.account_id, err_str)
                 except Exception:
@@ -397,10 +388,12 @@ async def _do_cookie_keepalive(state: AccountRefreshState) -> bool:
                         type(exc).__name__,
                     )
             elif "SESSION_EXPIRED" in err_str or "登入失败" in err_str:
-                await _update_cookie_status(
+                if not await _update_cookie_status(
                     state.account_id, 0,
                     "COOKIE_EXPIRED", "Cookie 会话已过期，请重新登录",
-                )
+                    expected_cookie=result["cookie"],
+                ):
+                    return False
                 try:
                     await notify_cookie_expired(state.account_id, 0)
                 except Exception:
@@ -519,7 +512,7 @@ async def _call_has_login(account_id: int) -> dict:
     # 4. 检测风控
     risk_keywords = ["RGV587_ERROR", "FAIL_SYS_RGV587_ERROR", "被挤爆啦", "FAIL_SYS_USER_VALIDATE"]
     if any(kw in body_text for kw in risk_keywords):
-        return {"success": False, "error": "CAPTCHA_NEEDED"}
+        return {"success": False, "error": "CAPTCHA_NEEDED", "cookie": cookie_str}
 
     if resp.status_code != 200:
         return {"success": False, "error": "UPSTREAM_UNAVAILABLE"}
@@ -551,14 +544,12 @@ async def _call_has_login(account_id: int) -> dict:
     except Exception:
         top_level_success = False
     session_failure_markers = ("SESSION_EXPIRED", "NOT_LOGIN", "LOGIN_REQUIRED", "登入失败", "登录失败")
-    if has_login_false or success_false or any(marker in body_text for marker in session_failure_markers):
-        return {"success": False, "error": "SESSION_EXPIRED"}
-    if not (has_login_true or top_level_success or login_result_success):
-        # 记录未识别的响应体，便于排查
-        body_preview = body_text[:500] if body_text else ""
+    if has_login_false or any(marker in body_text for marker in session_failure_markers):
+        return {"success": False, "error": "SESSION_EXPIRED", "cookie": cookie_str}
+    if success_false or not (has_login_true or top_level_success or login_result_success):
         logger.warning(
-            "hasLogin 返回未识别的响应 accountId=%d status=%d bodyPreview=%r",
-            account_id, resp.status_code, body_preview,
+            "hasLogin 返回未确认的响应 accountId=%d status=%d",
+            account_id, resp.status_code,
         )
         return {"success": False, "error": "UPSTREAM_UNCONFIRMED"}
 
@@ -584,27 +575,13 @@ async def _call_has_login(account_id: int) -> dict:
 
     # 7. 持久化新 Cookie（如果有变化）
     cookie_changed = new_cookie_str != cookie_str
+    new_token = merged.get("_m_h5_tk")
     if cookie_changed:
-        try:
-            encrypted = encrypt_cookie_for_storage(new_cookie_str)
-            async with async_session() as db:
-                await db.execute(
-                    text("""
-                        UPDATE xianyu_account_auth
-                        SET encrypted_cookie = :cookie,
-                            updated_time = NOW()
-                        WHERE account_id = :account_id
-                          AND COALESCE(deleted, 0) = 0
-                    """),
-                    {"cookie": encrypted, "account_id": account_id},
-                )
-                await db.commit()
-            logger.info("hasLogin 成功并更新 Cookie accountId=%d changedKeys=%s",
-                        account_id, [p.split("=")[0] for p in new_cookie_parts])
-        except Exception:
-            logger.warning("hasLogin 持久化新 Cookie 失败 accountId=%d", account_id, exc_info=True)
-
-    return {"success": True, "cookieUpdated": cookie_changed}
+        if not await _update_cookie_and_token_in_db(
+            account_id, new_cookie_str, new_token, expected_cookie=cookie_str,
+        ):
+            return {"success": False, "error": "LOCAL_STATE_UNAVAILABLE"}
+    return {"success": True, "cookie": new_cookie_str, "token": new_token}
 
 
 async def check_cookie_login(
@@ -647,8 +624,10 @@ async def check_cookie_login(
             1,
             "OK",
             "平台登录校验通过",
+            expected_cookie=result["cookie"],
         )
         if status_persisted:
+            _notify_ws_client_credentials_updated(account_id, result["cookie"], result["token"])
             try:
                 await clear_cookie_expired_state(account_id)
             except Exception as exc:
@@ -680,6 +659,7 @@ async def check_cookie_login(
             0,
             "CAPTCHA_REQUIRED",
             "平台要求完成安全验证",
+            expected_cookie=result["cookie"],
         )
         if not status_persisted:
             return CookieLoginCheck(
@@ -702,6 +682,7 @@ async def check_cookie_login(
             0,
             "SESSION_EXPIRED",
             "Cookie 会话已过期，请重新登录",
+            expected_cookie=result["cookie"],
         )
         if not status_persisted:
             return CookieLoginCheck(
@@ -733,11 +714,31 @@ async def check_cookie_login(
     )
 
 
-async def _do_mh5tk_refresh(state: AccountRefreshState, cookie_str: str) -> bool:
+async def _load_refresh_credentials(account_id: int) -> tuple[str, str]:
+    from .ws_token import extract_m_h5_tk_from_cookie
+
+    auth = XianyuAccountAuth
+    async with async_session() as db:
+        row = (await db.execute(
+            select(auth.encrypted_cookie, auth.encrypted_token)
+            .where(auth.account_id == account_id, auth.deleted == 0)
+            .order_by(auth.id.desc()).limit(1)
+        )).first()
+    if row is None:
+        return "", ""
+    cookie = decrypt_cookie_if_needed(row.encrypted_cookie) or ""
+    token = extract_m_h5_tk_from_cookie(cookie) or decrypt_cookie_if_needed(row.encrypted_token) or ""
+    return cookie, token
+
+
+async def _do_mh5tk_refresh(state: AccountRefreshState) -> bool:
     """_m_h5_tk 刷新：1.5-2.5 小时随机"""
     from .ws_token import refresh_m_h5_tk
 
     try:
+        cookie_str, _ = await _load_refresh_credentials(state.account_id)
+        if not cookie_str:
+            return False
         new_cookie, new_m_h5_tk = await asyncio.wait_for(
             asyncio.to_thread(refresh_m_h5_tk, cookie_str),
             timeout=SINGLE_REFRESH_TIMEOUT_SECONDS,
@@ -748,9 +749,11 @@ async def _do_mh5tk_refresh(state: AccountRefreshState, cookie_str: str) -> bool
                 state.account_id,
             )
             # 写回 DB
-            await _update_cookie_and_token_in_db(
+            if not await _update_cookie_and_token_in_db(
                 state.account_id, cookie_str=new_cookie, m_h5_tk=new_m_h5_tk,
-            )
+                expected_cookie=cookie_str,
+            ):
+                return False
             # 通知 WS 客户端
             _notify_ws_client_credentials_updated(state.account_id, new_cookie, new_m_h5_tk)
             state.last_mh5tk_refresh_ok = True
@@ -773,11 +776,14 @@ async def _do_mh5tk_refresh(state: AccountRefreshState, cookie_str: str) -> bool
         return False
 
 
-async def _do_ws_token_refresh(state: AccountRefreshState, cookie_str: str, m_h5_tk: str) -> bool:
+async def _do_ws_token_refresh(state: AccountRefreshState) -> bool:
     """websocket_token 刷新：10-14 小时随机"""
     from .ws_token import get_ws_token_with_refreshed_m_h5_tk
 
     try:
+        cookie_str, m_h5_tk = await _load_refresh_credentials(state.account_id)
+        if not cookie_str:
+            return False
         access_token, effective_m_h5_tk, error_type, refreshed_cookie = await asyncio.wait_for(
             asyncio.to_thread(get_ws_token_with_refreshed_m_h5_tk, cookie_str, m_h5_tk),
             timeout=SINGLE_REFRESH_TIMEOUT_SECONDS,
@@ -789,16 +795,20 @@ async def _do_ws_token_refresh(state: AccountRefreshState, cookie_str: str, m_h5
             )
             # 如果刷新过程中 cookie 也被更新了，写回 DB
             if refreshed_cookie and refreshed_cookie != cookie_str:
-                await _update_cookie_and_token_in_db(
+                if not await _update_cookie_and_token_in_db(
                     state.account_id, cookie_str=refreshed_cookie, m_h5_tk=effective_m_h5_tk,
-                )
+                    expected_cookie=cookie_str,
+                ):
+                    return False
                 _notify_ws_client_credentials_updated(
                     state.account_id, refreshed_cookie, effective_m_h5_tk,
                 )
             elif effective_m_h5_tk and effective_m_h5_tk != m_h5_tk:
-                await _update_cookie_and_token_in_db(
+                if not await _update_cookie_and_token_in_db(
                     state.account_id, m_h5_tk=effective_m_h5_tk,
-                )
+                    expected_cookie=cookie_str,
+                ):
+                    return False
                 _notify_ws_client_credentials_updated(state.account_id, None, effective_m_h5_tk)
             state.last_ws_token_refresh_ok = True
             state.last_error = None
@@ -812,10 +822,12 @@ async def _do_ws_token_refresh(state: AccountRefreshState, cookie_str: str, m_h5
             state.last_error = f"WS Token 刷新失败: {error_type}"
             # 滑块验证：标记账号需要人工处理
             if error_type == "captcha":
-                await _update_cookie_status(
+                if not await _update_cookie_status(
                     state.account_id, 0,
                     "CAPTCHA_REQUIRED", "WS Token 刷新触发安全验证，需要人工处理",
-                )
+                    expected_cookie=cookie_str,
+                ):
+                    return False
                 try:
                     await notify_captcha_required(
                         state.account_id,
@@ -824,10 +836,12 @@ async def _do_ws_token_refresh(state: AccountRefreshState, cookie_str: str, m_h5
                 except Exception:
                     pass
             elif error_type == "expired":
-                await _update_cookie_status(
+                if not await _update_cookie_status(
                     state.account_id, 0,
                     "COOKIE_EXPIRED", "Cookie 已过期，请重新登录",
-                )
+                    expected_cookie=cookie_str,
+                ):
+                    return False
                 try:
                     await notify_cookie_expired(state.account_id, 0)
                 except Exception:
@@ -898,47 +912,17 @@ async def _dispatcher_loop() -> None:
                     state.schedule_next_ws_token_refresh()
 
                 async with state.lock:
-                    # 读取最新的 cookie 和 token
-                    try:
-                        async with async_session() as db:
-                            row = (await db.execute(
-                                text(
-                                    "SELECT encrypted_cookie, encrypted_token FROM xianyu_account_auth "
-                                    "WHERE account_id = :aid AND deleted = 0"
-                                ),
-                                {"aid": state.account_id},
-                            )).mappings().first()
-                    except Exception:
-                        logger.warning("读取账号凭据失败 accountId=%d", state.account_id, exc_info=True)
-                        continue
-
-                    if not row:
-                        continue
-
-                    cookie_str = decrypt_cookie_if_needed(row["encrypted_cookie"])
-                    if not cookie_str:
-                        continue
-
-                    m_h5_tk = decrypt_cookie_if_needed(row["encrypted_token"]) if row["encrypted_token"] else None
-                    if not m_h5_tk:
-                        # 从 cookie 中提取
-                        for part in cookie_str.split(";"):
-                            part = part.strip()
-                            if part.startswith("_m_h5_tk="):
-                                m_h5_tk = part.split("=", 1)[1]
-                                break
-
                     # 1. Cookie 保活
                     if need_cookie:
                         await _do_cookie_keepalive(state)
 
                     # 2. _m_h5_tk 刷新
                     if need_mh5tk and _dispatcher_running:
-                        await _do_mh5tk_refresh(state, cookie_str)
+                        await _do_mh5tk_refresh(state)
 
                     # 3. WS Token 刷新
-                    if need_ws_token and _dispatcher_running and m_h5_tk:
-                        await _do_ws_token_refresh(state, cookie_str, m_h5_tk)
+                    if need_ws_token and _dispatcher_running:
+                        await _do_ws_token_refresh(state)
 
                 # 账号间隔 2-5 秒随机
                 delay = random.uniform(ACCOUNT_INTERVAL_MIN_SECONDS, ACCOUNT_INTERVAL_MAX_SECONDS)
@@ -1017,30 +1001,13 @@ async def force_refresh_account(account_id: int, refresh_type: str = "all") -> d
             return {"success": False, "errorCode": "STATE_LOAD_FAILED"}
 
     async with state.lock:
-        # 读取凭据
         try:
-            async with async_session() as db:
-                row = (await db.execute(
-                    text(
-                        "SELECT encrypted_cookie, encrypted_token FROM xianyu_account_auth "
-                        "WHERE account_id = :aid AND deleted = 0"
-                    ),
-                    {"aid": state.account_id},
-                )).mappings().first()
+            cookie_str, _ = await _load_refresh_credentials(account_id)
         except Exception:
             return {"success": False, "errorCode": "CREDENTIAL_LOAD_FAILED"}
 
-        if not row:
+        if not cookie_str:
             return {"success": False, "errorCode": "CREDENTIAL_MISSING"}
-
-        cookie_str = decrypt_cookie_if_needed(row["encrypted_cookie"])
-        m_h5_tk = decrypt_cookie_if_needed(row["encrypted_token"]) if row["encrypted_token"] else None
-        if not m_h5_tk and cookie_str:
-            for part in cookie_str.split(";"):
-                part = part.strip()
-                if part.startswith("_m_h5_tk="):
-                    m_h5_tk = part.split("=", 1)[1]
-                    break
 
         results = {}
         if refresh_type in ("all", "cookie"):
@@ -1048,13 +1015,13 @@ async def force_refresh_account(account_id: int, refresh_type: str = "all") -> d
             results["cookie"] = "ok" if ok else "failed"
             state.schedule_next_cookie_keepalive()
 
-        if refresh_type in ("all", "mh5tk") and cookie_str:
-            ok = await _do_mh5tk_refresh(state, cookie_str)
+        if refresh_type in ("all", "mh5tk"):
+            ok = await _do_mh5tk_refresh(state)
             results["mh5tk"] = "ok" if ok else "failed"
             state.schedule_next_mh5tk_refresh()
 
-        if refresh_type in ("all", "ws_token") and cookie_str and m_h5_tk:
-            ok = await _do_ws_token_refresh(state, cookie_str, m_h5_tk)
+        if refresh_type in ("all", "ws_token"):
+            ok = await _do_ws_token_refresh(state)
             results["ws_token"] = "ok" if ok else "failed"
             state.schedule_next_ws_token_refresh()
 

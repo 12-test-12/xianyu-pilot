@@ -1,6 +1,52 @@
+import asyncio
+from unittest.mock import AsyncMock
+
 import pytest
 
 from app.services import ws_token
+
+
+@pytest.mark.asyncio
+async def test_expired_ws_waits_for_rescan_then_uses_new_cookie(monkeypatch):
+    from app.services import cookie_token_refresher, notify_dispatcher, ws_client
+
+    client = ws_client.XianyuWebSocketClient(11, "old-cookie", "old-token", "user-11")
+    alert_sent = asyncio.Event()
+    connected = asyncio.Event()
+    attempts = []
+
+    def token_api(cookie, token):
+        attempts.append((cookie, token))
+        if cookie == "old-cookie":
+            return None, None, "expired", None
+        return "access-token", token, None, None
+
+    async def connect():
+        if await client._refresh_token():
+            connected.set()
+
+    save_status = AsyncMock(return_value=True)
+    notify = AsyncMock(side_effect=lambda *args: alert_sent.set())
+    monkeypatch.setattr(ws_client, "get_ws_token_with_refreshed_m_h5_tk", token_api)
+    monkeypatch.setattr(cookie_token_refresher, "_update_cookie_status", save_status)
+    monkeypatch.setattr(notify_dispatcher, "notify_cookie_expired", notify)
+    monkeypatch.setattr(ws_client.broadcaster, "broadcast", AsyncMock())
+    monkeypatch.setattr(client, "_connect", connect)
+    monkeypatch.setattr(ws_client, "RECONNECT_DELAY", 0.01)
+
+    await client.start()
+    try:
+        await asyncio.wait_for(alert_sent.wait(), timeout=2)
+        await asyncio.sleep(0.04)
+        assert attempts == [("old-cookie", "old-token")]
+        assert client.phase == "cookie_expired"
+        client.update_credentials("new-cookie", "new-token")
+        await asyncio.wait_for(connected.wait(), timeout=2)
+        assert attempts[-1] == ("new-cookie", "new-token")
+        assert save_status.await_args.kwargs["expected_cookie"] == "old-cookie"
+        notify.assert_awaited_once()
+    finally:
+        await client.stop()
 
 
 @pytest.mark.parametrize(("response", "status", "refreshes"), [

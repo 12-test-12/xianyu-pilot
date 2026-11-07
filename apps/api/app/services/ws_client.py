@@ -27,7 +27,6 @@ from .ws_token import (
     invalidate_cached_token,
 )
 from ..core.background_tasks import spawn_background_task
-from ..core.cookie_crypto import encrypt_cookie_for_storage
 from .ws_protocol import (
     _normalize_goofish_target,
     build_reg_message,
@@ -284,6 +283,7 @@ class XianyuWebSocketClient:
         self._sid: Optional[str] = None  # 注册后获取的 sid
         self._access_token: Optional[str] = None
         self._tasks: list[asyncio.Task] = []
+        self._credentials_changed = asyncio.Event()
 
         # 发送消息的 Future 映射 (uuid -> asyncio.Future)
         self._send_futures: dict[str, asyncio.Future] = {}
@@ -321,6 +321,13 @@ class XianyuWebSocketClient:
             return generate_device_id(self.unb)
         logger.error("device_id: unb 为空，无法生成 did accountId=%d", self.account_id)
         return ""
+
+    def update_credentials(self, cookie_str: str | None, m_h5_tk: str | None) -> None:
+        if cookie_str is not None:
+            self.cookie_str = cookie_str
+        if m_h5_tk is not None:
+            self.m_h5_tk = m_h5_tk
+        self._credentials_changed.set()
 
     async def start(self):
         """启动 WebSocket 连接。"""
@@ -653,6 +660,7 @@ class XianyuWebSocketClient:
     async def _connect_loop(self):
         """连接循环（自动重连）。"""
         while self._running:
+            self._credentials_changed.clear()
             try:
                 await self._connect()
             except asyncio.CancelledError:
@@ -667,8 +675,14 @@ class XianyuWebSocketClient:
                 )
 
             if self._running:
-                logger.info("WS 将在 %d 秒后重连 accountId=%d", RECONNECT_DELAY, self.account_id)
-                await asyncio.sleep(RECONNECT_DELAY)
+                if self.phase == "cookie_expired":
+                    await self._credentials_changed.wait()
+                else:
+                    delay = RECONNECT_DELAY * 2 if self.phase == "token_failed" else RECONNECT_DELAY
+                    try:
+                        await asyncio.wait_for(self._credentials_changed.wait(), timeout=delay)
+                    except asyncio.TimeoutError:
+                        pass
 
     async def _send_and_wait(self, msg: dict[str, Any], timeout: float = MESSAGE_TIMEOUT) -> dict[str, Any]:
         if not self._connected or not self._ws:
@@ -730,103 +744,32 @@ class XianyuWebSocketClient:
         )
         return response.get("body") or {}
 
-    def _ensure_cookie_has_mh5tk(self):
-        """确保 self.cookie_str 中包含 _m_h5_tk 且与 self.m_h5_tk 一致。
-
-        关键：WebSocket 升级时会发送 Cookie 头，服务端会检查 cookie 中的 _m_h5_tk
-        是否与 accessToken 匹配。如果 cookie 中不含 _m_h5_tk 或值不匹配，
-        服务端会静默丢弃连接后的所有消息。
-
-        注意：self.m_h5_tk 此时已是最新值（_refresh_token 已更新），
-        accessToken 是使用 self.m_h5_tk 生成的。因此 cookie 中必须包含
-        完全相同的 _m_h5_tk 值，不能使用 cookie 中旧的/不同的值。
-        """
+    def _cookie_for_connection(self) -> str:
+        # The handshake cookie must match the signing token without changing the stored snapshot.
         import re
 
-        cookie_m_h5_tk = extract_m_h5_tk_from_cookie(self.cookie_str)
-
-        logger.info(
-            "_ensure_cookie_has_mh5tk: accountId=%d cookie_credential=%s token_credential=%s match=%s",
-            self.account_id,
-            bool(cookie_m_h5_tk),
-            bool(self.m_h5_tk),
-            bool(cookie_m_h5_tk and self.m_h5_tk and cookie_m_h5_tk == self.m_h5_tk),
-        )
-
-        if cookie_m_h5_tk and self.m_h5_tk and cookie_m_h5_tk != self.m_h5_tk:
-            # cookie 中的 _m_h5_tk 与生成 accessToken 所用的不一致！
-            # 必须修复 cookie，否则服务端会因 _m_h5_tk 不匹配而静默丢弃连接
-            logger.warning(
-                "_ensure_cookie_has_mh5tk: accountId=%d, cookie 中的 _m_h5_tk 与 "
-                "生成 accessToken 所用的不同, 正在修复 cookie",
-                self.account_id,
-            )
-            self.cookie_str = re.sub(
-                r'_m_h5_tk=[^;]+',
-                f'_m_h5_tk={self.m_h5_tk}',
-                self.cookie_str
-            )
-            logger.info(
-                "_ensure_cookie_has_mh5_tk: accountId=%d, 已修复 cookie credential",
-                self.account_id,
-            )
-
-        if not cookie_m_h5_tk and self.m_h5_tk:
-            # cookie 中不含 _m_h5_tk，需要追加进去
-            logger.warning(
-                "_ensure_cookie_has_mh5tk: accountId=%d, cookie 中缺少 _m_h5_tk, "
-                "将生成 accessToken 所用的值追加到 cookie",
-                self.account_id,
-            )
-            if self.cookie_str:
-                self.cookie_str = f"_m_h5_tk={self.m_h5_tk}; {self.cookie_str}"
-            else:
-                self.cookie_str = f"_m_h5_tk={self.m_h5_tk}"
-            logger.info(
-                "_ensure_cookie_has_mh5tk: accountId=%d, 已追加 credential 到 cookie",
-                self.account_id,
-            )
+        cookie_token = extract_m_h5_tk_from_cookie(self.cookie_str)
+        if not self.m_h5_tk or cookie_token == self.m_h5_tk:
+            return self.cookie_str
+        if cookie_token:
+            return re.sub(r'_m_h5_tk=[^;]+', lambda _: f'_m_h5_tk={self.m_h5_tk}', self.cookie_str)
+        return f"_m_h5_tk={self.m_h5_tk}; {self.cookie_str}"
 
     async def _connect(self):
         """建立 WebSocket 连接并初始化。"""
         # Step 1: 获取 accessToken
         self.phase = "refresh_token"
         if not await self._refresh_token():
-            self.last_error = "获取 WebSocket Token 失败，Cookie/_m_h5_tk 可能已过期或触发滑块验证"
-            self.phase = "token_failed"
-            logger.error("获取 WebSocket Token 失败 accountId=%d", self.account_id)
-            await asyncio.sleep(RECONNECT_DELAY)
+            if self.phase != "cookie_expired":
+                self.last_error = "获取 WebSocket Token 失败，正在等待重连"
+                self.phase = "token_failed"
+                logger.warning("获取 WebSocket Token 失败 accountId=%d", self.account_id)
             return
-
-        # === 关键：确保 cookie 中的 _m_h5_tk 与 accessToken 匹配 ===
-        # 必须在 _refresh_token 之后（此时 self.m_h5_tk 已是最新的有效值）
-        self._ensure_cookie_has_mh5tk()
-
-        cookie_m_h5_tk = extract_m_h5_tk_from_cookie(self.cookie_str)
-
-        logger.info(
-            "获取 accessToken 成功 accountId=%d credential_present=%s credential_match=%s",
-            self.account_id,
-            bool(self._access_token),
-            bool(self.m_h5_tk and cookie_m_h5_tk and cookie_m_h5_tk == self.m_h5_tk),
-        )
-        if self.m_h5_tk and cookie_m_h5_tk:
-            logger.info(
-                "cookie _m_h5_tk 一致性检查: accountId=%d, 匹配=%s",
-                self.account_id,
-                "是" if cookie_m_h5_tk == self.m_h5_tk else "否",
-            )
-        elif not cookie_m_h5_tk:
-            logger.error(
-                "cookie _m_h5_tk 一致性检查: accountId=%d, cookie 中仍然缺少 _m_h5_tk! "
-                "WebSocket 连接很可能被服务端静默丢弃",
-                self.account_id,
-            )
 
         # Step 2: 建立 WSS 连接（不添加 ?token= 参数，token 只在 /reg 消息中传递）
         ws_url = WS_URL
         additional_headers = {
-            "Cookie": self.cookie_str,
+            "Cookie": self._cookie_for_connection(),
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -914,202 +857,54 @@ class XianyuWebSocketClient:
             except Exception:
                 pass
 
-    async def _update_token_in_db(self, new_m_h5_tk: str):
-        """将刷新后的 _m_h5_tk 写回数据库。"""
-        try:
-            from ..core.database import async_session
-            from sqlalchemy import text
-            async with async_session() as db:
-                await db.execute(
-                    text(
-                        "UPDATE xianyu_account_auth SET encrypted_token = :tk, updated_time = NOW() "
-                        "WHERE account_id = :aid"
-                    ),
-                    {"tk": encrypt_cookie_for_storage(new_m_h5_tk), "aid": self.account_id},
-                )
-                await db.commit()
-            logger.info(
-                "已更新 DB 中的 _m_h5_tk: accountId=%d credential_present=%s",
-                self.account_id,
-                bool(new_m_h5_tk),
-            )
-        except Exception as exc:
-            logger.warning(
-                "更新 DB 中的 _m_h5_tk 失败（不影响连接）errorType=%s",
-                type(exc).__name__,
-            )
-
-    async def _update_cookie_in_db(self, new_cookie_str: str):
-        """将刷新后的 cookie 字符串写回数据库。"""
-        try:
-            from ..core.database import async_session
-            from sqlalchemy import text
-            async with async_session() as db:
-                await db.execute(
-                    text(
-                        "UPDATE xianyu_account_auth SET encrypted_cookie = :cookie, updated_time = NOW() "
-                        "WHERE account_id = :aid"
-                    ),
-                    {"cookie": encrypt_cookie_for_storage(new_cookie_str), "aid": self.account_id},
-                )
-                await db.commit()
-            logger.info(
-                "已更新 DB 中的 cookie: accountId=%d credential_present=%s",
-                self.account_id,
-                bool(new_cookie_str),
-            )
-        except Exception as exc:
-            logger.warning(
-                "更新 DB 中的 cookie 失败（不影响连接）errorType=%s",
-                type(exc).__name__,
-            )
-
-    async def _update_cookie_status(self, status: int, code: str | None = None, message: str | None = None):
-        """更新 cookie_status（如遇到滑块验证时标记为失效）。"""
-        try:
-            from ..core.database import async_session
-            from sqlalchemy import text
-            async with async_session() as db:
-                await db.execute(
-                    text(
-                        "UPDATE xianyu_account_auth SET cookie_status = :st, "
-                        "last_login_status_code = :code, last_login_status_message = :message, "
-                        "last_login_check_time = NOW(), updated_time = NOW() "
-                        "WHERE account_id = :aid"
-                    ),
-                    {
-                        "st": status,
-                        "code": code,
-                        "message": message,
-                        "aid": self.account_id,
-                        },
-                )
-                await db.execute(
-                    text(
-                        "UPDATE xianyu_account_runtime SET cookie_status = :st, "
-                        "last_login_status_code = :code, last_login_status_message = :message, "
-                        "last_login_check_time = NOW(), updated_time = NOW() "
-                        "WHERE account_id = :aid"
-                    ),
-                    {
-                        "st": status,
-                        "code": code,
-                        "message": message,
-                        "aid": self.account_id,
-                        },
-                )
-                await db.commit()
-            logger.info(
-                "已更新 cookie_status=%d: accountId=%d", status, self.account_id
-            )
-            # SSE 广播 cookie 状态变更，前端实时更新
-            try:
-                await broadcaster.broadcast("cookie_status_changed", {
-                    "accountId": self.account_id,
-                    "cookieStatus": status,
-                })
-                logger.info(
-                    "SSE 已广播 cookie_status_changed: accountId=%d, status=%d",
-                    self.account_id, status
-                )
-            except Exception as sse_err:
-                logger.warning(
-                    "SSE 广播 cookie_status 失败 errorType=%s",
-                    type(sse_err).__name__,
-                )
-            # Cookie 失效时推送飞书机器人通知（失败不影响主流程）
-            if status == 0:
-                try:
-                    from .notify_dispatcher import notify_cookie_expired
-                    await notify_cookie_expired(self.account_id, status)
-                except Exception as exc:
-                    logger.debug(
-                        "Cookie 失效飞书通知异常，忽略 errorType=%s",
-                        type(exc).__name__,
-                    )
-            elif status == 1:
-                try:
-                    from .notify_dispatcher import clear_cookie_expired_state
-                    await clear_cookie_expired_state(self.account_id)
-                except Exception as exc:
-                    logger.debug(
-                        "Cookie 恢复通知状态清理异常，忽略 errorType=%s",
-                        type(exc).__name__,
-                    )
-        except Exception as exc:
-            logger.warning(
-                "更新 cookie_status 失败 errorType=%s",
-                type(exc).__name__,
-            )
-
     async def _refresh_token(self) -> bool:
-        """获取/刷新 accessToken。如果 DB 中的 _m_h5_tk 过期，自动从 cookie 提取并更新 DB。
-        如果 cookie 中的 _m_h5_tk 也已过期，尝试调用 refresh_m_h5_tk 刷新令牌。
-        仅在平台明确返回会话过期时标记失效。
-        """
+        from .cookie_token_refresher import _update_cookie_and_token_in_db, _update_cookie_status
+        from .notify_dispatcher import notify_captcha_required, notify_cookie_expired
+
         credentials = (self.cookie_str, self.m_h5_tk)
         access_token, effective_m_h5_tk, error_type, refreshed_cookie = await asyncio.to_thread(
             get_ws_token_with_refreshed_m_h5_tk, *credentials
         )
-        if credentials != (self.cookie_str, self.m_h5_tk):
+        if credentials != (self.cookie_str, self.m_h5_tk) or self._credentials_changed.is_set():
             return False
         if access_token:
+            new_cookie = refreshed_cookie if refreshed_cookie != self.cookie_str else None
+            new_token = effective_m_h5_tk if effective_m_h5_tk != self.m_h5_tk else None
+            if new_cookie or new_token:
+                saved = await _update_cookie_and_token_in_db(
+                    self.account_id, new_cookie, new_token, expected_cookie=credentials[0],
+                )
+                if not saved or credentials != (self.cookie_str, self.m_h5_tk) or self._credentials_changed.is_set():
+                    return False
+                self.cookie_str = new_cookie or self.cookie_str
+                self.m_h5_tk = new_token or self.m_h5_tk
             self._access_token = access_token
-            # 如果用了刷新后的 token，更新 DB 中的 token 和 cookie
-            if effective_m_h5_tk and effective_m_h5_tk != self.m_h5_tk:
-                self.m_h5_tk = effective_m_h5_tk
-                await self._update_token_in_db(effective_m_h5_tk)
-                logger.info(
-                    "WS Token 获取: accountId=%d 使用刷新后的 credential，已更新 DB",
-                    self.account_id,
-                )
-            else:
-                logger.info(
-                    "WS Token 获取: accountId=%d 使用现有 credential",
-                    self.account_id,
-                )
-            # 如果 cookie 被刷新了（含新的 _m_h5_tk），更新 DB 中的 cookie
-            if refreshed_cookie and refreshed_cookie != self.cookie_str:
-                self.cookie_str = refreshed_cookie
-                await self._update_cookie_in_db(refreshed_cookie)
             return True
 
-        # 滑块验证：不立即标记 cookie_status=0
-        # 滑块验证可能是暂时的（如请求头缺失导致的风控误判），_connect_loop 会在
-        # RECONNECT_DELAY 秒后自动重试。仅当 Cookie 真正过期（error_type=expired）
-        # 时才标记失效，避免扫码后立即看到"Cookie 已失效"的误报。
         if error_type == "captcha":
-            logger.warning(
-                "WS Token 获取遇到滑块验证，暂不标记 cookie_status=0，等待重连重试: accountId=%d",
-                self.account_id
-            )
-            # 清除 Token 缓存，下次重连重新获取
-            if self.unb:
-                invalidate_cached_token(self.unb)
+            invalidate_cached_token(self.unb)
             try:
-                from .notify_dispatcher import notify_captcha_required
                 await notify_captcha_required(self.account_id, "WS Token 获取触发滑块验证")
             except Exception as exc:
-                logger.debug(
-                    "人机验证通知异常，忽略 errorType=%s",
-                    type(exc).__name__,
-                )
-            # 自动触发滑块求解（失败不影响主流程，状态由求解器内部决定）
-            await self._auto_solve_captcha_after_failure(scene="captcha")
+                logger.debug("人机验证通知异常 errorType=%s", type(exc).__name__)
+            if not self._credentials_changed.is_set():
+                await self._auto_solve_captcha_after_failure(scene="captcha")
         elif error_type == "expired":
-            logger.warning(
-                "WS Token 获取失败（Cookie 已过期）: accountId=%d",
-                self.account_id
+            message = "Cookie 已过期，请重新登录闲鱼账号"
+            saved = await _update_cookie_status(
+                self.account_id, 0, "COOKIE_EXPIRED", message, expected_cookie=credentials[0],
             )
-            # 清除 Token 缓存，Cookie 已过期缓存也无效
-            if self.unb:
-                invalidate_cached_token(self.unb)
-            await self._update_cookie_status(0, "COOKIE_EXPIRED", "Cookie 已过期，请重新登录闲鱼账号")
-            # 自动触发滑块求解：Session 过期场景下闲鱼可能要求重新过滑块，
-            # 求解器内部会通过 Token API 二次验证判断 Cookie 是否真的可用，
-            # 若 Token API 仍返回 expired 则保持 cookie_status=0 让用户重新登录
-            await self._auto_solve_captcha_after_failure(scene="expired")
-
+            if not saved or credentials != (self.cookie_str, self.m_h5_tk) or self._credentials_changed.is_set():
+                return False
+            invalidate_cached_token(self.unb)
+            self.phase = "cookie_expired"
+            self.last_error = message
+            try:
+                await broadcaster.broadcast("cookie_status_changed", {"accountId": self.account_id, "cookieStatus": 0})
+                if not self._credentials_changed.is_set():
+                    await notify_cookie_expired(self.account_id, 0)
+            except Exception as exc:
+                logger.debug("Cookie 失效通知异常 errorType=%s", type(exc).__name__)
         return False
 
     async def _auto_solve_captcha_after_failure(self, scene: str = "captcha") -> None:
@@ -1795,12 +1590,12 @@ class WebSocketManager:
 
             from ..core.cookie_crypto import decrypt_cookie_if_needed
             cookie_str = decrypt_cookie_if_needed(row["encrypted_cookie"])
-            m_h5_tk = decrypt_cookie_if_needed(row["encrypted_token"]) if row["encrypted_token"] else None
+            m_h5_tk = decrypt_cookie_if_needed(row["encrypted_token"]) or ""
             unb = str(row["unb"] or "")
 
-            if not cookie_str or not m_h5_tk:
+            if not cookie_str:
                 logger.warning(
-                    "restart_account: Cookie 或 _m_h5_tk 为空，无法重启 accountId=%d",
+                    "restart_account: Cookie 为空，无法重启 accountId=%d",
                     account_id,
                 )
                 return False
