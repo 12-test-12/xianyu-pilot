@@ -26,6 +26,7 @@ class ConsoleServices:
         self.delivery_task=None
         self.scheduler_task=None
         self.delivery_stop=asyncio.Event()
+        self.scheduler_stop=asyncio.Event()
         self.startup=None
         self.stoppers=[]
 
@@ -71,12 +72,19 @@ class ConsoleServices:
         from app.services.scheduled_task_runtime import get_scheduled_task_runtime
 
         runtime = get_scheduled_task_runtime()
-        while True:
+        while not self.scheduler_stop.is_set():
             try:
                 await runtime.run_due_once(limit=self.config.scheduler_batch_size)
             except Exception:
                 logger.exception("Desktop scheduled task polling failed")
-            await asyncio.sleep(self.config.scheduler_poll_interval_seconds)
+            try:
+                if not self.scheduler_stop.is_set():
+                    await asyncio.wait_for(
+                        self.scheduler_stop.wait(),
+                        timeout=self.config.scheduler_poll_interval_seconds,
+                    )
+            except asyncio.TimeoutError:
+                pass
 
     async def stop(self):
         from app.services.ws_startup import stop_all
@@ -85,9 +93,13 @@ class ConsoleServices:
         self.delivery_monitor._stopping=True
         self.delivery_stop.set()
         self.delivery_monitor.wake_probe.set()
+        self.scheduler_stop.set()
         if self.scheduler_task is not None:
-            self.scheduler_task.cancel()
-            await asyncio.gather(self.scheduler_task, return_exceptions=True)
+            try:
+                await asyncio.wait_for(asyncio.shield(self.scheduler_task), timeout=3.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                self.scheduler_task.cancel()
+                await asyncio.gather(self.scheduler_task, return_exceptions=True)
         if self.startup is not None:
             self.startup.cancel()
             await asyncio.gather(self.startup,return_exceptions=True)

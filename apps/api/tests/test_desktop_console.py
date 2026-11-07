@@ -111,6 +111,34 @@ def test_scheduled_task_enable_runs_automatically_and_disable_preserves_result(c
     assert disabled["lastResult"] == task["lastResult"]
 
 
+@pytest.mark.asyncio
+async def test_console_services_stops_scheduler_gracefully():
+    from app.desktop_console import ConsoleServices
+
+    gate = type("Gate", (), {"blocked": False, "reasons": []})()
+    delivery = type("Delivery", (), {"_stopping": False, "wake_probe": asyncio.Event(), "interval": 10})()
+    config = type("Config", (), {"scheduler_batch_size": 10, "scheduler_poll_interval_seconds": 60})()
+    services = ConsoleServices(gate, delivery, config)
+    completed = False
+
+    async def fake_run_due_once(*args, **kwargs):
+        nonlocal completed
+        await asyncio.sleep(0.05)
+        completed = True
+        return {"processed": 1}
+
+    fake_runtime = type("Runtime", (), {"run_due_once": fake_run_due_once})()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("app.services.scheduled_task_runtime.get_scheduled_task_runtime", lambda: fake_runtime)
+        services.scheduler_task = asyncio.create_task(services.poll_scheduled_tasks())
+        await asyncio.sleep(0.01)
+        await services.stop()
+
+    assert completed is True
+    assert services.scheduler_task.done()
+    assert not services.scheduler_task.cancelled()
+
+
 def test_original_index_assets_session_and_boundary(console):
     client,config,app=console
     page=client.get('/')

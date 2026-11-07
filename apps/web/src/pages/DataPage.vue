@@ -356,12 +356,14 @@ function buildSparkline(series) {
 const metrics = computed(() => {
   const s = stats.value
   const t = trend.value
+  const rawOrders = s.todayOrderCount ?? s.orderCount
+  const orders = orderSyncError.value && rawOrders === 0 ? null : rawOrders
   const sales = orderSyncError.value && s.todaySalesAmount === 0 ? null : s.todaySalesAmount
   const orderSpark = t.orderCount?.length > 1 ? buildSparkline(t.orderCount) : null
   const successSpark = t.deliverySuccess?.length > 1 ? buildSparkline(t.deliverySuccess) : null
   const replySpark = t.aiReplyCount?.length > 1 ? buildSparkline(t.aiReplyCount) : null
   return [
-    { key: 'orders', title: `${periodLabel.value}订单`, value: metricVal(s.todayOrderCount ?? s.orderCount), display: metricDisplay(s.todayOrderCount ?? s.orderCount), sub: '按下单日期统计', icon: 'product', color: C.primary, spark: t.orderCount, sparkPoints: orderSpark?.points, sparkFillPoints: orderSpark?.fillPoints },
+    { key: 'orders', title: `${periodLabel.value}订单`, value: metricVal(orders), display: metricDisplay(orders), sub: orderSyncError.value ? '仅统计已同步的订单' : '按下单日期统计', icon: 'product', color: C.primary, spark: t.orderCount, sparkPoints: orderSpark?.points, sparkFillPoints: orderSpark?.fillPoints },
     { key: 'success', title: '发货成功', value: metricVal(s.deliverySuccessCount), display: metricDisplay(s.deliverySuccessCount), sub: `成功率 ${successRate.value}%`, icon: 'record', color: C.green, spark: t.deliverySuccess, sparkPoints: successSpark?.points, sparkFillPoints: successSpark?.fillPoints },
     { key: 'fail', title: '发货失败', value: metricVal(s.deliveryFailCount), display: metricDisplay(s.deliveryFailCount), sub: '需处理', icon: 'task', color: C.red, spark: t.deliveryFail, sparkPoints: buildSparkline(t.deliveryFail)?.points, sparkFillPoints: buildSparkline(t.deliveryFail)?.fillPoints },
     { key: 'pending', title: '待发货', value: metricVal(s.pendingDeliveryCount), display: metricDisplay(s.pendingDeliveryCount), sub: '排队中', icon: 'task', color: C.orange, spark: null },
