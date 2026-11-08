@@ -61,10 +61,15 @@ class ConsoleServices:
     async def poll_delivery(self):
         while not self.delivery_stop.is_set():
             self.delivery_monitor.wake_probe.clear()
-            await self.delivery_monitor.probe_connected_accounts(configured_only=True)
+            wake = self.delivery_monitor.wake_probe
+            try:
+                await self.delivery_monitor.probe_connected_accounts(configured_only=True)
+            except Exception:
+                logger.exception("Desktop delivery scan failed; will retry")
+                wake = self.delivery_stop
             try:
                 if not self.delivery_stop.is_set():
-                    await asyncio.wait_for(self.delivery_monitor.wake_probe.wait(), self.delivery_monitor.interval)
+                    await asyncio.wait_for(wake.wait(), self.delivery_monitor.interval)
             except asyncio.TimeoutError:
                 pass
 

@@ -51,14 +51,14 @@
             v-for="action in headerActions"
             :key="action.text"
             :type="action.type"
-            :disabled="action.disabled || pendingRequests > 0 || headerActionLocks.has(action.event)"
+            :disabled="action.disabled || (!action.to && pendingRequests > 0) || headerActionLocks.has(action.event)"
             @click="onHeaderAction(action)"
           >
 {{ action.text }}
 </AppButton>
         </div>
       </PageHeader>
-      <div class="page-viewport">
+      <PageViewport :route="active">
         <component
           :is="pageComponent"
           :key="pageTransitionKey"
@@ -69,7 +69,7 @@
           @navigate="navigate"
           @prefetch="prefetchRoute"
         />
-      </div>
+      </PageViewport>
     </main>
   </div>
   <AppStatusCenter
@@ -90,6 +90,7 @@ import { asyncPage, prefetchPage } from './components/asyncPage.js'
 import Sidebar from './components/Sidebar.vue'
 import Topbar from './components/Topbar.vue'
 import PageHeader from './components/PageHeader.vue'
+import PageViewport from './components/PageViewport.vue'
 import AppButton from './components/AppButton.vue'
 import ConfirmModal from './components/ConfirmModal.vue'
 import DraftGuardModal from './components/DraftGuardModal.vue'
@@ -185,7 +186,7 @@ const isMobile = ref(false)
 const mobileNavOpen = ref(false)
 const mobileDesktopOverride = ref(readMobileDesktopOverride())
 let noticeTimer = null
-const pendingRequestIds = new Set()
+const pendingRequestIds = new Map()
 const requestBusyIndicator = createBusyIndicator(value => { requestBusyVisible.value = value })
 const navTransitioning = ref(false)
 let navProgressTimer = null
@@ -201,14 +202,15 @@ function showNotice(text, type = 'info', retry = null, source = null) {
 }
 
 function syncRequestBusyState() {
-  pendingRequests.value = pendingRequestIds.size
+  pendingRequests.value = [...pendingRequestIds.values()]
+    .filter(route => !route || route === active.value).length
   requestBusyIndicator.update(pendingRequests.value > 0)
 }
 
 function onRequestStart(event) {
   if (!shouldTrackGlobalBusy(event.detail)) return
   const requestId = event.detail?.requestId
-  if (requestId) pendingRequestIds.add(requestId)
+  if (requestId) pendingRequestIds.set(requestId, event.detail.sourceRoute?.split('/')[0])
   syncRequestBusyState()
 }
 
@@ -398,6 +400,7 @@ async function onHash() {
 }
 
 watch(active, clearRequestNoticeForRoute)
+watch(active, syncRequestBusyState)
 watch(active, () => window.scrollTo({ top: 0, left: 0, behavior: 'instant' }), { flush: 'post' })
 
 async function loadCurrentUser() {

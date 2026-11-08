@@ -89,7 +89,7 @@ class OfficialDeliveryMonitor:
             ids=[r[0] for r in conn.execute("""SELECT r.id FROM delivery_record r JOIN xianyu_trade_order o ON o.id=r.order_id
                 WHERE o.account_id=? AND r.receipt_mode='platform' AND r.workflow_state!='completed' ORDER BY r.id""",(account_id,))]
         for delivery_id in ids:
-            await self._reconcile_record(delivery_id)
+            await self._reconcile_record(delivery_id, audit_waiting=False)
         # Even an empty recovery queue must verify the account's official API
         # session before the tray can report a healthy green state.
         await self.pages(account_id)
@@ -153,8 +153,7 @@ class OfficialDeliveryMonitor:
                         await asyncio.to_thread(self.store.monitor_state,account_id,"blocked","configuration_or_identity_mismatch")
                 else:
                     if not await asyncio.to_thread(self.rules.has_keyword,account_id,notice.item_id,notice.text):
-                        with self.store.connection(write=True) as conn:
-                            conn.execute("UPDATE delivery_inbox SET state='ignored' WHERE id=?",(row["id"],))
+                        await asyncio.to_thread(self.store.finish_notice, row["id"], "ignored")
                         continue
                     orders=await self.pages(account_id)
                     candidates=[order for order in orders if order.status==WAITING and not order.refunding and order.buyer_id==notice.buyer_id
@@ -168,8 +167,7 @@ class OfficialDeliveryMonitor:
                         except InventoryError:
                             outcome="blocked"
                             await asyncio.to_thread(self.store.monitor_state,account_id,"blocked","configuration_or_identity_mismatch")
-                with self.store.connection(write=True) as conn:
-                    conn.execute("UPDATE delivery_inbox SET state=? WHERE id=?",(outcome,row["id"]))
+                await asyncio.to_thread(self.store.finish_notice, row["id"], outcome)
 
     async def consider(self,account_id,order_id,notice=None):
         if self.gate.blocked or account_id in self._resume_required:
@@ -235,8 +233,7 @@ class OfficialDeliveryMonitor:
             if (official.account_id!=order["account_id"] or official.order_id!=order["external_order_id"] or
                 official.buyer_id!=frozen["buyerId"] or official.item_id!=record["platform_item_id"] or
                 official.sku_id!=frozen["skuId"] or official.quantity!=frozen["quantity"] or amount!=frozen["amount"]):
-                with self.store.connection(write=True) as conn:
-                    self.store._review(conn,delivery_id,"official_order_identity_changed")
+                await asyncio.to_thread(self.store.review_delivery, delivery_id, "official_order_identity_changed")
                 return
             await asyncio.to_thread(self.store.ingest_order,official,goods_id)
             self.observe_continuity(order["account_id"])
@@ -246,8 +243,7 @@ class OfficialDeliveryMonitor:
                 if official.status in SHIPPED and not official.refunding:
                     await asyncio.to_thread(self.store.reconcile_fulfillment,delivery_id)
                 else:
-                    with self.store.connection(write=True) as conn:
-                        self.store._review(conn,delivery_id,"official_status_no_longer_waiting")
+                    await asyncio.to_thread(self.store.review_delivery, delivery_id, "official_status_no_longer_waiting")
                 return
             if not self.sender.is_ready(order["account_id"]) and any(s["state"]!="confirmed" for s in self.store.detail(delivery_id)["segments"]):
                 self.request_reconciliation(order["account_id"],"im_disconnected")
@@ -327,7 +323,14 @@ class OfficialDeliveryMonitor:
                 JOIN xianyu_trade_order o ON o.id=r.order_id WHERE o.account_id=? AND r.receipt_mode='platform'
                 AND r.workflow_state='needs_review'""",(account_id,)).fetchall()
         for record in records:
-            await self._reconcile_record(record["id"])
+            if self._stopping or self.gate.blocked:
+                return
+            try:
+                await self._reconcile_record(record["id"], audit_waiting=False)
+            except PlatformOrderError as exc:
+                await self.record_verification_failure(account_id, exc, "review_order_not_verified")
+            except InventoryError:
+                await asyncio.to_thread(self.store.monitor_state, account_id, "attention", "review_order_not_verified")
 
     async def reconcile_record(self,delivery_id,*,retry_confirmation=False,request_key=""):
         with self.store.connection() as conn:
@@ -337,7 +340,7 @@ class OfficialDeliveryMonitor:
             await asyncio.to_thread(self.store.recover_interrupted,account_id)
             return await self._reconcile_record(delivery_id,retry_confirmation,request_key)
 
-    async def _reconcile_record(self,delivery_id,retry_confirmation=False,request_key=""):
+    async def _reconcile_record(self,delivery_id,retry_confirmation=False,request_key="",*,audit_waiting=True):
         if retry_confirmation and (self._stopping or self.gate.blocked):
             raise InventoryError("自动发货已暂停，禁止平台履约操作",409)
         with self.store.connection() as conn:
@@ -353,15 +356,14 @@ class OfficialDeliveryMonitor:
             or official.seller_id!=owner[0] or official.buyer_id!=frozen["buyerId"] or official.item_id!=record["platform_item_id"]
             or official.sku_id!=frozen["skuId"] or official.quantity!=frozen["quantity"]
             or f"{official.amount_cent//100}.{official.amount_cent%100:02d}"!=frozen["amount"]):
-            with self.store.connection(write=True) as conn:
-                self.store._review(conn,delivery_id,"reconciliation_identity_mismatch")
+            await asyncio.to_thread(self.store.review_delivery, delivery_id, "reconciliation_identity_mismatch")
             raise InventoryError("官方订单身份与冻结记录不一致，保留库存待核查",409)
         await asyncio.to_thread(self.store.ingest_order,official,frozen["goodsId"])
         if official.status in SHIPPED and not official.refunding:
             await asyncio.to_thread(self.store.reconcile_fulfillment,delivery_id)
         elif official.status==WAITING and not official.refunding:
-            with self.store.connection(write=True) as conn:
-                self.store.audit(conn,delivery_id,"official_waiting_checked")
+            if audit_waiting:
+                await asyncio.to_thread(self.store.audit_waiting_order, delivery_id)
             if retry_confirmation:
                 if not continuous:
                     raise InventoryError("检测到休眠或时钟间断，保留绑定，请完成恢复核验后重试",409)
@@ -382,8 +384,7 @@ class OfficialDeliveryMonitor:
                             result=StepResult("unknown")
                         await asyncio.to_thread(self.store.finish,work,result)
         else:
-            with self.store.connection(write=True) as conn:
-                self.store._review(conn,delivery_id,"official_state_blocks_delivery")
+            await asyncio.to_thread(self.store.review_delivery, delivery_id, "official_state_blocks_delivery")
             if retry_confirmation:
                 raise InventoryError("官方订单不是待发货状态，禁止补发阶段 B",409)
         return self.store.detail(delivery_id)

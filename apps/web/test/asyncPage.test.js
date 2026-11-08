@@ -56,3 +56,15 @@ test('prefetch failure or deadline hands control back to the component error UI'
   t.mock.timers.tick(30000)
   await pending
 })
+
+test('failed background prefetch does not poison a later navigation', async () => {
+  const pageModule = { name: 'RecoveredPage' }
+  let attempts = 0
+  const page = asyncPage(async () => {
+    if (++attempts === 1) throw new Error('temporarily unavailable')
+    return pageModule
+  })
+  await prefetchPage(page)
+  assert.equal(await page.prefetch(), pageModule)
+  assert.equal(attempts, 2)
+})

@@ -90,3 +90,15 @@ class OfficialDeliveryStore(DesktopDeliveryStore):
         with self.connection(write=True) as conn:
             conn.execute("INSERT INTO delivery_monitor_state VALUES(?,?,?,?) ON CONFLICT(account_id) DO UPDATE SET state=excluded.state,reason=excluded.reason,updated_at=excluded.updated_at",
                 (account_id,state,reason,time.time()))
+
+    def finish_notice(self, notice_id, outcome):
+        with self.connection(write=True) as conn:
+            conn.execute("UPDATE delivery_inbox SET state=? WHERE id=?", (outcome, notice_id))
+
+    def review_delivery(self, delivery_id, reason):
+        with self.connection(write=True) as conn:
+            self._review(conn, delivery_id, reason)
+
+    def audit_waiting_order(self, delivery_id):
+        with self.connection(write=True) as conn:
+            self.audit(conn, delivery_id, "official_waiting_checked")

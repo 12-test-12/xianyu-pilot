@@ -561,6 +561,30 @@ async def test_failed_platform_probe_keeps_pending_keyword_durable(configured):
     assert len(sender.confirmed)==1
 
 
+@pytest.mark.asyncio
+async def test_unverifiable_old_delivery_does_not_block_new_order(configured):
+    store, rules, source, sender, monitor = configured
+    sender.results = [StepResult("unknown")]
+    old = await monitor.consider(1, "official-1")
+    assert store.detail(old)["workflowState"] == "needs_review"
+    source.orders = {"new-order": fact(order_id="new-order")}
+    lookup = source.get_order
+
+    async def get_order(account_id, order_id):
+        if order_id == "official-1":
+            raise PlatformOrderError("sold_order_not_verified")
+        return await lookup(account_id, order_id)
+
+    source.get_order = get_order
+    await monitor.poll_once(1)
+    assert store.detail(old)["workflowState"] == "needs_review"
+    assert [order.order_id for _, order, _ in sender.sent].count("official-1") == 1
+    assert len(sender.confirmed) == 1
+    assert rows(store, "SELECT workflow_state FROM delivery_record ORDER BY id") == [
+        {"workflow_state": "needs_review"}, {"workflow_state": "completed"},
+    ]
+
+
 def test_legacy_json_does_not_turn_string_false_into_enabled(configured):
     store,rules,source,sender,monitor=configured
     with pytest.raises(InventoryError,match="开关"):

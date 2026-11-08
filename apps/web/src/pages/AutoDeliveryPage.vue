@@ -34,14 +34,14 @@
         <CardPanel title="筛选条件">
           <div class="filter-section">
             <label class="filter-label">闲鱼账号</label>
-            <select v-model="query.accountId" class="input" style="width:100%" @change="loadGoods">
+            <select v-model="query.accountId" class="input" style="width:100%" @change="applyFilter">
               <option value="">全部账号</option>
               <option v-for="account in accounts" :key="account.id" :value="account.id">{{ accountName(account) }}</option>
             </select>
           </div>
           <div class="filter-section">
             <label class="filter-label">搜索商品</label>
-            <input v-model="query.keyword" class="input" placeholder="标题 / ID" style="width:100%" @keyup.enter="loadGoods" />
+            <input v-model="query.keyword" class="input" placeholder="标题 / ID" style="width:100%" @keyup.enter="applyFilter" />
           </div>
           <div class="filter-section">
             <label class="filter-label">发货形式</label>
@@ -76,15 +76,17 @@
           <AppButton type="primary" style="width:100%;margin-bottom:8px" :disabled="!goodsAvailable || filteredConfigUnknownCount > 0" @click="showBatchDialog = true">批量设置</AppButton>
           <AppButton style="width:100%;margin-bottom:8px" @click="goSourceLibrary">打开货源库</AppButton>
           <AppButton type="danger" style="width:100%;margin-bottom:8px" :disabled="!goodsAvailable || filteredConfigUnknownCount > 0" @click="batchDelete">批量删除配置</AppButton>
-          <AppButton style="width:100%;margin-bottom:8px" @click="scanPendingOrders">扫描待发货订单</AppButton>
-          <AppButton style="width:100%" :loading="recoverLoading" @click="recoverPendingDeliveries">立即补发未发货订单</AppButton>
+          <AppButton v-if="!desktopHost" style="width:100%;margin-bottom:8px" @click="scanPendingOrders">扫描待发货订单</AppButton>
+          <AppButton style="width:100%" :loading="recoverLoading" @click="recoverPendingDeliveries">
+            {{ desktopHost ? '立即核验待发货订单' : '立即补发未发货订单' }}
+          </AppButton>
         </CardPanel>
       </div>
 
       <div class="main-content">
         <div class="timing-notice">
           <span class="timing-notice-icon">i</span>
-          <span v-if="desktopHost">收到付款通知后会核验订单。账号在线时也会定期检查近期订单，可点击“立即补发未发货订单”手动检查。</span>
+          <span v-if="desktopHost">先给商品或规格绑定文本货源或卡密，再启用发货。账号在线时，软件会核验待发货订单和买家会话。选了关键词触发或开启发货声明时，还需等待买家回复。</span>
           <span v-else><b>付款后发货</b>会由系统定时扫描自动执行；<b>确认收货后赠送</b>和<b>好评后赠送</b>可在发货记录页手动触发，也可接入后续事件自动化。漏发的订单每 10 分钟自动补发一次，也可点击"立即补发未发货订单"手动触发。</span>
         </div>
 
@@ -96,8 +98,12 @@
           <div v-if="filteredConfigUnknownCount > 0" class="global-notice error">
             {{ filteredConfigUnknownCount }} 个商品的发货配置暂不可用；为避免覆盖未知配置，批量操作已禁用。
           </div>
-          <EmptyState v-if="!goodsAvailable" icon="⚠️" title="商品与发货配置暂不可用" description="当前无法确认商品是否已配置自动发货。">
-            <template #actions><AppButton @click="loadGoods">重新加载</AppButton></template>
+          <div v-if="!goodsAvailable && allGoods.length" class="global-notice warn">
+            {{ goodsLoading ? '正在刷新，暂时显示上次加载的商品。' : '刷新失败，当前显示上次加载的商品。' }}
+            <button class="link" :disabled="goodsLoading" @click="loadGoods">重新加载</button>
+          </div>
+          <EmptyState v-if="!goodsAvailable && !allGoods.length" icon="⚠️" :title="goodsLoading ? '正在加载商品与发货配置' : '商品与发货配置暂不可用'" description="当前无法确认商品是否已配置自动发货。">
+            <template #actions><AppButton :loading="goodsLoading" @click="loadGoods">重新加载</AppButton></template>
           </EmptyState>
           <BaseTable v-else :columns="columns" :rows="tableRows">
             <template #goodsInfo="{ row }">
@@ -120,26 +126,26 @@
               <span class="subtle">{{ accountName(row._account) || '-' }}</span>
             </template>
             <template #payDelivery="{ row }">
-                <button type="button" class="delivery-status" :class="statusClass(row._config?.payDelivery, row._configUnavailable)" @click="openConfig(row, 'payDelivery')">
+                <button type="button" class="delivery-status" :class="statusClass(row._config?.payDelivery, row._configUnavailable)" :disabled="!goodsAvailable" @click="openConfig(row, 'payDelivery')">
                 <span class="status-dot" :class="statusDotClass(row._config?.payDelivery)"></span>
                 {{ statusLabel(row._config?.payDelivery, row._configUnavailable) }}
               </button>
             </template>
             <template #confirmDelivery="{ row }">
-              <button type="button" class="delivery-status" :class="statusClass(row._config?.confirmDelivery, row._configUnavailable)" @click="openConfig(row, 'confirmDelivery')">
+              <button type="button" class="delivery-status" :class="statusClass(row._config?.confirmDelivery, row._configUnavailable)" :disabled="!goodsAvailable" @click="openConfig(row, 'confirmDelivery')">
                 <span class="status-dot" :class="statusDotClass(row._config?.confirmDelivery)"></span>
                 {{ statusLabel(row._config?.confirmDelivery, row._configUnavailable) }}
               </button>
             </template>
             <template #reviewDelivery="{ row }">
-              <button type="button" class="delivery-status" :class="statusClass(row._config?.reviewDelivery, row._configUnavailable)" @click="openConfig(row, 'reviewDelivery')">
+              <button type="button" class="delivery-status" :class="statusClass(row._config?.reviewDelivery, row._configUnavailable)" :disabled="!goodsAvailable" @click="openConfig(row, 'reviewDelivery')">
                 <span class="status-dot" :class="statusDotClass(row._config?.reviewDelivery)"></span>
                 {{ statusLabel(row._config?.reviewDelivery, row._configUnavailable) }}
               </button>
             </template>
             <template #op="{ row }">
-              <button class="link" :disabled="row._configUnavailable" @click="openConfig(row, null)">配置</button>
-              <button class="link danger-text" :disabled="row._configUnavailable" @click="removeConfig(row)">禁用</button>
+              <button class="link" :disabled="!goodsAvailable || row._configUnavailable" @click="openConfig(row, null)">配置</button>
+              <button class="link danger-text" :disabled="!goodsAvailable || row._configUnavailable" @click="removeConfig(row)">禁用</button>
             </template>
             <template #empty>
               <EmptyState icon="📦" title="暂无商品" description="请先同步商品，或调整当前筛选条件。">
@@ -505,6 +511,7 @@ import {
 import { accountName } from '../utils/format.js'
 import { recordsOf } from '../utils/apiData.js'
 import { importDeliveryCards } from '../utils/deliveryCardImport.js'
+import { createRequestGate } from '../utils/requestLifecycle.js'
 
 const emit = defineEmits(['navigate'])
 const props = defineProps({ focusGoodsId: [Number, String] })
@@ -526,6 +533,8 @@ const sourcesError = ref('')
 const dependenciesError = ref('')
 const statsAvailable = ref(false)
 const goodsAvailable = ref(false)
+const goodsLoading = ref(false)
+const goodsLoadGate = createRequestGate()
 const sourcesAvailable = ref(null)
 const accountsAvailable = ref(null)
 const cardGroupsAvailable = ref(null)
@@ -759,6 +768,7 @@ const monitorNotice = computed(() => {
     configuration_or_identity_mismatch: '未找到匹配的商品规格发货规则，请核对配置。',
     sold_order_sku_missing: '闲鱼未返回订单规格，暂未发货。请在闲鱼核对规格。',
     conversation_unverified: '暂时无法确认这笔订单对应的买家会话，请同步消息后再扫描。',
+    review_order_not_verified: '有历史订单暂时无法核验，原发货记录和卡密绑定已保留。',
     delivery_result_unknown: '发货结果待确认，请先在闲鱼核对聊天和订单，避免重复发送。',
     delivery_step_not_sent: '有发货步骤未发送，请查看记录后处理。',
     manual_confirmation_required: '发货内容已发送，请在闲鱼确认发货。'
@@ -828,7 +838,6 @@ async function loadAll() {
     accounts.value = recordsOf(accountResult.value.data)
     accountsAvailable.value = true
   } else {
-    accounts.value = []
     accountsAvailable.value = false
     depErrors.push('账号筛选暂不可用')
   }
@@ -847,6 +856,8 @@ async function loadAll() {
 }
 
 async function loadGoods() {
+  const generation = goodsLoadGate.begin()
+  goodsLoading.value = true
   goodsAvailable.value = false
   try {
     current.value = 1
@@ -860,6 +871,7 @@ async function loadGoods() {
     let invalidConfigs = 0
     do {
       const res = await getGoods({ current: page, size: fetchSize })
+      if (!goodsLoadGate.isCurrent(generation)) return
       const list = recordsOf(res.data)
       const totalCount = Number(res.data?.total ?? list.length)
       expectedPages = Math.max(1, Math.ceil(totalCount / fetchSize))
@@ -873,6 +885,7 @@ async function loadGoods() {
       } catch {
         configFailures += list.length
       }
+      if (!goodsLoadGate.isCurrent(generation)) return
       for (const goods of list) {
         const hasConfigResult = configMap.has(String(goods.id))
         if (!hasConfigResult && configMap.size) configFailures += 1
@@ -919,9 +932,9 @@ async function loadGoods() {
     if (configFailures) appendError(`${configFailures} 个商品的发货配置暂不可用。`)
     if (invalidConfigs) appendError(`${invalidConfigs} 个商品的发货配置字段异常（enabled 或 mode 非法），已标记为不可用。`)
   } catch (e) {
-    allGoods.value = []
-    goodsAvailable.value = false
-    appendError(e.message || '商品加载失败')
+    if (goodsLoadGate.isCurrent(generation)) appendError(e.message || '商品加载失败')
+  } finally {
+    if (goodsLoadGate.isCurrent(generation)) goodsLoading.value = false
   }
 }
 
@@ -1457,6 +1470,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  goodsLoadGate.dispose()
   window.removeEventListener('xya-header-action', onHeaderAction)
 })
 </script>

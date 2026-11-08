@@ -11,6 +11,26 @@ from app.portable.network_monitor import NetworkMonitor
 from app.services.delivery_gate import DeliveryGate
 
 
+@pytest.mark.asyncio
+async def test_delivery_scanner_recovers_after_one_failed_round():
+    from app.desktop_console import ConsoleServices
+
+    attempts = []
+    monitor = SimpleNamespace(wake_probe=asyncio.Event(), interval=0.01)
+    service = ConsoleServices(DeliveryGate(), monitor, None)
+
+    async def probe(*, configured_only):
+        assert configured_only
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise OSError("temporary database failure")
+        service.delivery_stop.set()
+
+    monitor.probe_connected_accounts = probe
+    await asyncio.wait_for(service.poll_delivery(), timeout=1)
+    assert len(attempts) == 2
+
+
 def test_slow_network_probe_never_blocks_poll_or_queues_duplicate_work():
     started, release = threading.Event(), threading.Event()
     calls = []

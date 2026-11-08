@@ -96,6 +96,22 @@ def test_window_icon_persistent_cache_and_stable_loading_background(console):
     assert c.stack.currentWidget() is c.view
 
 
+def test_renderer_failure_reloads_once_and_keeps_the_backend_alive(console, monkeypatch):
+    from PySide6.QtTest import QTest
+
+    c, _ = console
+    reloads = []
+    monkeypatch.setattr(c, 'reload_console', lambda: reloads.append(True))
+    c.on_load(True)
+    c.on_renderer_terminated('crashed', 1)
+    c.on_renderer_terminated('crashed', 1)
+    assert c.stack.currentWidget() is c.startup_label
+    assert 'F5' in c.startup_label.text()
+    QTest.qWait(750)
+    assert reloads == [True]
+    assert c.backend.stops == 0
+
+
 def test_pause_toggle_and_resume_do_not_clear_network_pause(console):
     c,root=console
     c.toggle_delivery()

@@ -43,7 +43,10 @@ export const asyncPage = loader => {
   let modulePromise = null
   const load = () => {
     if (!modulePromise) {
-      modulePromise = Promise.resolve().then(loader)
+      modulePromise = Promise.resolve().then(loader).catch(error => {
+        modulePromise = null
+        throw error
+      })
     }
     return modulePromise
   }
@@ -56,7 +59,6 @@ export const asyncPage = loader => {
     timeout: 30000,
     onError(_error, retry, fail, attempts) {
       if (navigator.onLine !== false && attempts < 2) {
-        modulePromise = null // 重试前清除可能失败的缓存 promise
         retry()
       } else {
         fail()

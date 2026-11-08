@@ -132,6 +132,7 @@ class DesktopConsole:
         self.exiting=False
         self.first_hide=True
         self.loaded=False
+        self.last_renderer_reload=None
         self.connected=None
         self.network_monitor=NetworkMonitor()
         self.last_state=None
@@ -171,6 +172,7 @@ class DesktopConsole:
         self.view.setPage(self.page)
         self.page.loadingChanged.connect(self.on_loading_changed)
         self.view.loadFinished.connect(self.on_load)
+        self.page.renderProcessTerminated.connect(self.on_renderer_terminated)
         self.stack=QStackedWidget(self.window)
         self.startup_label=QLabel("正在启动闲鱼助手…",self.stack)
         self.startup_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -183,6 +185,9 @@ class DesktopConsole:
         self.status_action.setEnabled(False)
         self.menu.addAction(self.status_action)
         self.menu.addAction("打开控制台",self.show)
+        reload_action=self.menu.addAction("重新加载控制台",self.reload_console)
+        reload_action.setShortcuts(["F5","Ctrl+R"])
+        self.window.addAction(reload_action)
         self.menu.addAction("隐藏控制台",self.hide_to_tray)
         self.toggle=self.menu.addAction("暂停发货",self.toggle_delivery)
         self.menu.addSeparator()
@@ -203,8 +208,29 @@ class DesktopConsole:
             self.loaded=True
             self.stack.setCurrentWidget(self.view)
         elif not self.exiting:
-            self.startup_label.setText("本机控制台加载失败，请检查 data/logs/desktop.log")
-            self.window.statusBar().showMessage("本机控制台加载失败，请检查 data/logs/desktop.log")
+            self.loaded=False
+            self.startup_label.setText("本机控制台加载失败，按 F5 重新加载")
+            self.stack.setCurrentWidget(self.startup_label)
+
+    def reload_console(self):
+        if not self.exiting and self.backend.ready:
+            self.startup_label.setText("正在重新加载控制台…")
+            self.stack.setCurrentWidget(self.startup_label)
+            self.loaded=False
+            if local_url(self.view.url(),self.backend.config.desktop_port):
+                self.view.reload()
+            else:
+                self.view.setUrl(QUrl(f"http://127.0.0.1:{self.backend.config.desktop_port}/"))
+
+    def on_renderer_terminated(self,status,exit_code):
+        if self.exiting:
+            return
+        logging.getLogger(__name__).warning("Console renderer terminated: status=%s code=%s",status,exit_code)
+        self.on_load(False)
+        now=time.monotonic()
+        if self.last_renderer_reload is None or now-self.last_renderer_reload>=60:
+            self.last_renderer_reload=now
+            QTimer.singleShot(500,self.window,self.reload_console)
 
     def on_loading_changed(self,info):
         if info.status()==QWebEngineLoadingInfo.LoadStatus.LoadFailedStatus:
