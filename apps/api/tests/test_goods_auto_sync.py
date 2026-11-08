@@ -242,3 +242,83 @@ def test_goods_list_carries_sync_state_and_last_sync_time(console, sync_calls):
     _seed_running_task(config, status="running")
     response = client.get("/api/goods")
     assert response.json()["data"]["syncState"] == "syncing"
+
+
+def test_stale_sync_preserves_successful_fish_shop_edit(console, monkeypatch):
+    from app.api.v1.routes import fish_shop
+    from app.core.database import use_database_runtime
+    from app.services import xianyu_goods_sync as sync
+
+    client, config, app = console
+    _seed_account(config)
+    with sqlite3.connect(config.sqlite_path) as db:
+        db.execute("UPDATE xianyu_account SET fish_shop_user = 1 WHERE id = ?", (ACCOUNT_ID,))
+        db.executemany(
+            "INSERT INTO xianyu_goods"
+            " (id, account_id, external_goods_id, title, stock, quantity, deleted, auto_relist_enabled, has_snapshot)"
+            " VALUES (?, ?, ?, '旧标题', 5, 5, 0, 0, 0)",
+            [(1, ACCOUNT_ID, "101"), (2, ACCOUNT_ID, "102")],
+        )
+
+    images = ["https://example.com/new-cover.jpg", "https://example.com/new-detail.jpg"]
+    category = dict(catId="91000001", catName="测试叶子分类", channelCatId="92000001", tbCatId="93000001")
+
+    def edit_remote(cookie, api, version, item, *, is_edit):
+        assert is_edit and item["itemId"] == "101"
+        assert item["itemSkuList"][0]["skuId"] == "301"
+        assert item["itemSkuList"][0]["inventoryId"] == "401"
+        return {"data": {"itemId": "101"}}
+
+    monkeypatch.setattr(sync.XianyuItemPublisher, "upload_images_to_xianyu", lambda *_: images)
+    monkeypatch.setattr(sync.XianyuItemPublisher, "resolve_category_for_publish", lambda *_: category)
+    monkeypatch.setattr(fish_shop, "call_fish_shop_api", edit_remote)
+    edit = client.post("/api/fish-shop/edit", json={
+        "xianyuAccountId": ACCOUNT_ID, "itemId": "101", "title": "新标题", "description": "新描述",
+        "imageUrls": ["https://example.com/input.jpg"], "shippingMode": "none",
+        "location": dict(prov="北京市", city="北京市", area="东城区", divisionId="110101", gps="116.4,39.9", poiName="东城区"),
+        "itemProperties": [{"propertyName": "颜色", "propertyValues": [{"propertyValue": "红色"}]}],
+        "itemSkuList": [{"price": "12.50", "quantity": 0, "skuId": "301", "inventoryId": "401",
+                         "propertyList": [{"propertyText": "颜色", "valueText": "红色"}]}],
+    }).json()
+    assert edit["code"] == 200, edit
+
+    def assert_edited_fields():
+        item = client.get("/api/goods/1").json()["data"]
+        assert item["title"] == "新标题"
+        assert item["description"] == item["detailInfo"] == "新描述"
+        assert item["imageUrls"] == images
+        assert item["coverPic"] == images[0]
+        assert item["soldPrice"] == "12.50"
+        assert item["stock"] == 0
+        return item
+
+    assert_edited_fields()
+    stale = {"id": "101", "title": "旧标题", "price": "5.00", "quantity": 5, "desc": "旧描述",
+             "coverPic": "https://example.com/old.jpg", "viewCount": 8}
+    other = {"id": "102", "title": "正常同步"}
+    cards = [stale, other]
+    monkeypatch.setattr(sync, "_refresh_m_h5_tk", lambda cookie: cookie)
+    monkeypatch.setattr(sync, "fetch_goods_list", lambda _: cards)
+    monkeypatch.setattr(sync, "fetch_item_detail", lambda *_: {"itemDO": {"desc": "旧详情", "quantity": 5, "viewCount": 9}})
+
+    async def sync_goods(sync_id, detail=False):
+        with use_database_runtime(app.state.database):
+            await sync.sync_goods_for_account(ACCOUNT_ID, "fixture", sync_id, None, async_fetch_detail=False)
+            if detail:
+                await sync._async_fetch_details("fixture", [stale], ACCOUNT_ID, sync_id)
+
+    client.portal.call(sync_goods, "stale-after-edit", True)
+    assert assert_edited_fields()["viewCount"] == 9
+    assert client.get("/api/goods/2").json()["data"]["title"] == "正常同步"
+
+    cards[:] = [other]
+    client.portal.call(sync_goods, "missing-after-edit")
+    assert_edited_fields()
+
+    with sqlite3.connect(config.sqlite_path) as db:
+        db.execute("UPDATE xianyu_goods_edit_snapshot SET created_time = datetime('now', '-2 minutes')")
+    cards[:] = [{"id": "101", "title": "平台上的后续修改"}, other]
+    client.portal.call(sync_goods, "fresh-after-edit")
+    item = client.get("/api/goods/1").json()["data"]
+    assert item["title"] == "平台上的后续修改"
+    assert item["stock"] == 0

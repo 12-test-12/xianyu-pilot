@@ -775,8 +775,6 @@ async function submit() {
     if (res && typeof res === 'object' && [0, 200].includes(Number(res.code))) {
       success.value = '编辑成功！商品列表将在 1 秒后刷新...'
       clearNavigationGuard()
-      // 标记商品待同步
-      localStorage.setItem('xianyu_pending_sync', 'true')
       setTimeout(() => emit('navigate', 'products'), 1000)
     } else {
       error.value = friendlyError({ message: res?.msg || '编辑失败' }, '编辑失败，请稍后重试')

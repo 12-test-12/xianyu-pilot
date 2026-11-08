@@ -587,6 +587,9 @@ async def edit_fish_shop_item(
         )
         price_yuan = Decimal(min_price_cent) / Decimal(100)
         goods.title = title
+        goods.description = goods.detail_info = internal_obj["itemTextDTO"]["desc"]
+        goods.image_urls = xianyu_image_urls
+        goods.cover_pic = goods.image_url = xianyu_image_urls[0]
         goods.price = str(price_yuan.quantize(Decimal("0.01")))
         goods.sold_price = str(price_yuan.quantize(Decimal("0.01")))
         goods.stock = total_qty
@@ -790,7 +793,7 @@ async def get_fish_shop_detail(
                 "itemId": str(item_id),
                 "title": goods.title or "",
                 "description": goods.detail_info or goods.description or "",
-                "imageUrls": (goods.image_url or "").split(",") if goods.image_url else [],
+                "imageUrls": goods.image_urls or (goods.image_url.split(",") if goods.image_url else []),
                 "price": goods.price or "",
                 "stock": goods.stock or "",
                 "itemProperties": item_properties,

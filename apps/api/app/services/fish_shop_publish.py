@@ -465,11 +465,16 @@ def build_internal_item_object(item_data: dict, xianyu_image_urls: List[str],
             qty = int(sku.get("quantity", 0))
         except (ValueError, TypeError):
             qty = 0
-        item_sku_list.append({
+        item_sku = {
             "priceInCent": str(price_cent),
             "quantity": str(qty),
             "propertyList": clean_property_list,
-        })
+        }
+        if is_edit:
+            for key in ("skuId", "inventoryId"):
+                if sku.get(key):
+                    item_sku[key] = str(sku[key])
+        item_sku_list.append(item_sku)
 
     # 顶层 quantity 与 itemPriceDTO 取自 SKU 汇总
     total_quantity = sum(int(s.get("quantity", 0)) for s in item_sku_list)

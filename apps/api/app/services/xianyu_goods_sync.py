@@ -1129,6 +1129,38 @@ def fetch_item_detail(
         return {}
 
 
+def _recent_goods_edit(db, fetch_started_at: float):
+    from sqlalchemy import exists, func, literal_column
+    from ..models.entities import XianyuGoods, XianyuGoodsEditSnapshot
+
+    # shortcut: allow 60 seconds for the platform read APIs to catch up, use a platform revision if one becomes available
+    # Round up by one second for databases that store timestamps without fractions.
+    seconds = 60 + int(time.monotonic() - fetch_started_at) + 1
+    if db.get_bind().dialect.name == "sqlite":
+        cutoff = func.datetime("now", f"-{seconds} seconds")
+    else:
+        cutoff = func.timestampadd(literal_column("SECOND"), -seconds, func.now())
+    return exists().where(
+        XianyuGoodsEditSnapshot.account_id == XianyuGoods.account_id,
+        XianyuGoodsEditSnapshot.external_goods_id == XianyuGoods.external_goods_id,
+        XianyuGoodsEditSnapshot.source == "edit",
+        XianyuGoodsEditSnapshot.deleted == 0,
+        XianyuGoodsEditSnapshot.created_time >= cutoff,
+    )
+
+
+async def _update_synced_goods(db, goods_id: int, values: dict, fetch_started_at: float):
+    from sqlalchemy import update
+    from ..models.entities import XianyuGoods
+
+    stmt = update(XianyuGoods).where(XianyuGoods.id == goods_id).execution_options(synchronize_session=False)
+    # Check at write time so a sync already in flight cannot roll back a committed edit.
+    result = await db.execute(stmt.where(~_recent_goods_edit(db, fetch_started_at)).values(**values))
+    if result.rowcount == 0:
+        safe_fields = ("exposure_count", "view_count", "want_count", "status", "updated_time")
+        await db.execute(stmt.values(**{key: values[key] for key in safe_fields if key in values}))
+
+
 async def sync_goods_for_account(
     account_id: int,
     cookie_str: str,
@@ -1163,6 +1195,7 @@ async def sync_goods_for_account(
                     _repair_and(
                         _repair_model.account_id == account_id,
                         _repair_model.deleted == 0,
+                        _repair_model.has_snapshot == 0,
                         _repair_or(
                             _repair_model.quantity <= 0,
                             _repair_model.quantity.is_(None),
@@ -1203,6 +1236,7 @@ async def sync_goods_for_account(
         cookie_str = await asyncio.to_thread(_refresh_m_h5_tk, cookie_str)
 
         # Step 1: 直接按最小模型分页获取商品列表
+        list_fetch_started_at = time.monotonic()
         all_items = await asyncio.to_thread(fetch_goods_list, cookie_str)
         total_count = len(all_items)
         logger.info("商品列表获取完成: %d 件", total_count)
@@ -1261,25 +1295,20 @@ async def sync_goods_for_account(
                         # 闲鱼列表 API 不返回库存：当远程库存为 0 时保留本地 stock，
                         # 避免把"发布时填写的库存"或"详情同步填入的真实库存"清零。
                         update_values = _build_goods_update_values(existing, goods_dict, partial=True)
-                        if "quantity" in update_values and int(update_values["quantity"]) <= 0:
+                        if not goods_dict["quantity"]:
                             update_values.pop("quantity", None)
-                        if "stock" in update_values and int(update_values["stock"]) <= 0:
                             update_values.pop("stock", None)
                         # 列表 API 不返回库存：若本地库存仍为 0 或缺失（详情同步尚未完成或失败），
                         # 设为 999（闲鱼常见库存值）兜底，避免 AI 客服误报"没库存"。
                         # 详情同步成功后会覆盖为真实值；若本地已有真实库存（>0）则保留。
                         local_qty = int(getattr(existing, "quantity", 0) or 0)
                         local_st = int(getattr(existing, "stock", 0) or 0)
-                        if local_qty <= 0 and "quantity" not in update_values:
-                            update_values["quantity"] = 999
-                        if local_st <= 0 and "stock" not in update_values:
-                            update_values["stock"] = 999
-                        stmt = (
-                            update(XianyuGoods)
-                            .where(XianyuGoods.id == existing.id)
-                            .values(**update_values)
-                        )
-                        await db.execute(stmt)
+                        if not existing.has_snapshot:
+                            if local_qty <= 0 and "quantity" not in update_values:
+                                update_values["quantity"] = 999
+                            if local_st <= 0 and "stock" not in update_values:
+                                update_values["stock"] = 999
+                        await _update_synced_goods(db, existing.id, update_values, list_fetch_started_at)
                         updated_count += 1
                     else:
                         # 新增
@@ -1313,15 +1342,16 @@ async def sync_goods_for_account(
                         if local_g.external_goods_id not in synced_ids:
                             stmt = (
                                 update(XianyuGoods)
-                                .where(XianyuGoods.id == local_g.id)
+                                .where(XianyuGoods.id == local_g.id, ~_recent_goods_edit(db, list_fetch_started_at))
+                                .execution_options(synchronize_session=False)
                                 .values(
                                     deleted=1,
                                     status=0 if local_g.status != 2 else 2,
                                     updated_time=datetime.now(),
                                 )
                             )
-                            await db.execute(stmt)
-                            off_shelf_count += 1
+                            result = await db.execute(stmt)
+                            off_shelf_count += result.rowcount
 
                 await db.commit()
 
@@ -1412,7 +1442,7 @@ async def _async_fetch_details(
     import asyncio
     from ..core.database import async_session
     from ..models.entities import XianyuGoods
-    from sqlalchemy import select, update, and_
+    from sqlalchemy import select, and_
 
     logger.info("详情同步任务启动: account_id=%d, sync_id=%s, items_count=%d", account_id, sync_id, len(items))
 
@@ -1439,6 +1469,7 @@ async def _async_fetch_details(
 
             try:
                 # 用 asyncio.to_thread 包装同步 HTTP 调用，避免阻塞事件循环
+                detail_fetch_started_at = time.monotonic()
                 detail_data = await asyncio.to_thread(fetch_item_detail, cookie_str, item_id)
                 if not detail_data:
                     logger.warning("详情同步: itemId=%s 返回空数据 (index=%d/%d)", item_id, i + 1, len(items))
@@ -1524,7 +1555,10 @@ async def _async_fetch_details(
                                 pass
 
                 # 有描述、库存或统计字段任一可更新时才写库
-                if desc or remote_quantity > 0 or remote_exposure_count > 0 or remote_view_count > 0 or remote_want_count > 0:
+                if (
+                    desc or remote_quantity > 0 or item_info.get("quantity") in (0, "0")
+                    or remote_exposure_count > 0 or remote_view_count > 0 or remote_want_count > 0
+                ):
                     async with async_session() as db:
                         goods_result = await db.execute(
                             select(XianyuGoods).where(
@@ -1549,12 +1583,9 @@ async def _async_fetch_details(
                             }
                             _merge_detail_info(detail_goods_dict, detail_data)
                             update_values = _build_goods_update_values(existing, detail_goods_dict, partial=True)
-                            stmt = (
-                                update(XianyuGoods)
-                                .where(XianyuGoods.id == existing.id)
-                                .values(**update_values)
-                            )
-                            await db.execute(stmt)
+                            if existing.has_snapshot and detail_goods_dict.get("quantity") == 0:
+                                update_values.update(quantity=0, stock=0)
+                            await _update_synced_goods(db, existing.id, update_values, detail_fetch_started_at)
                             await db.commit()
 
                     detail_count += 1
