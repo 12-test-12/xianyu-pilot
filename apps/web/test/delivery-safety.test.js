@@ -1,6 +1,15 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mayRetryConfirmation, safetyRequest } from '../src/utils/deliverySafety.js'
+import { mayRetryConfirmation, resolveVariantMode, safetyRequest } from '../src/utils/deliverySafety.js'
+
+test('resolveVariantMode extracts mode safely and tolerates null or missing plan', () => {
+  assert.equal(resolveVariantMode({ plan: { cardGroupId: 12 } }), 'card')
+  assert.equal(resolveVariantMode({ plan: { cardGroupId: null } }), 'text')
+  assert.equal(resolveVariantMode({ plan: {} }), 'text')
+  assert.equal(resolveVariantMode({}), 'text')
+  assert.equal(resolveVariantMode(null), 'text')
+  assert.equal(resolveVariantMode(undefined), 'text')
+})
 
 test('B action requires all A receipts, live runtime and B-only permission', () => {
   const record = { receiptMode: 'platform', contentState: 'DELIVERED', canRetryConfirmation: true, confirmationState: 'unknown' }

@@ -13,6 +13,10 @@ export function mayRetryConfirmation(record, session) {
     !['confirmed', 'sending'].includes(record?.confirmationState))
 }
 
+export function resolveVariantMode(variant) {
+  return variant?.plan?.cardGroupId ? 'card' : 'text'
+}
+
 export async function safetyRequest(path, options = {}) {
   const response = await fetch(path, { cache: 'no-store', ...options })
   const body = await response.json()

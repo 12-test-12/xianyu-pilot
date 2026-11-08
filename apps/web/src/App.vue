@@ -210,7 +210,7 @@ function syncRequestBusyState() {
 function onRequestStart(event) {
   if (!shouldTrackGlobalBusy(event.detail)) return
   const requestId = event.detail?.requestId
-  if (requestId) pendingRequestIds.set(requestId, event.detail.sourceRoute?.split('/')[0])
+  if (requestId) pendingRequestIds.set(requestId, event.detail?.sourceRoute?.split('/')[0])
   syncRequestBusyState()
 }
 

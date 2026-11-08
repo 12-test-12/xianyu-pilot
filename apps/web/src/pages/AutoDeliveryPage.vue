@@ -92,7 +92,7 @@
 
         <CardPanel>
           <div class="toolbar" style="margin-bottom:12px">
-            <span class="table-info">共 <b>{{ goodsAvailable ? filteredGoods.length : '—' }}</b> 个商品</span>
+            <span class="table-info">共 <b>{{ (goodsAvailable || allGoods.length) ? filteredGoods.length : '—' }}</b> 个商品</span>
             <span style="margin-left:12px" class="subtle">点击状态列可快速进入对应时机配置。</span>
           </div>
           <div v-if="filteredConfigUnknownCount > 0" class="global-notice error">
@@ -512,6 +512,7 @@ import { accountName } from '../utils/format.js'
 import { recordsOf } from '../utils/apiData.js'
 import { importDeliveryCards } from '../utils/deliveryCardImport.js'
 import { createRequestGate } from '../utils/requestLifecycle.js'
+import { resolveVariantMode } from '../utils/deliverySafety.js'
 
 const emit = defineEmits(['navigate'])
 const props = defineProps({ focusGoodsId: [Number, String] })
@@ -636,7 +637,7 @@ const filteredGoods = computed(() => {
 
     const cfg = goods._config || {}
     const timings = cfg.variants?.map(variant => ({
-      mode: variant.plan.cardGroupId ? 'card' : 'text'
+      mode: resolveVariantMode(variant)
     })) || [cfg.payDelivery, cfg.confirmDelivery, cfg.reviewDelivery].filter(Boolean)
     const hasText = timings.some(item => item.mode === 'text')
     const hasCard = timings.some(item => item.mode === 'card')
@@ -894,8 +895,8 @@ async function loadGoods() {
         if (desktopHost && configData?.variants?.length) {
           const chosen = configData.variants.find(variant => variant.enabled) || configData.variants[0]
           configData = { ...configData, payDelivery: {
-            enabled: chosen.enabled,
-            mode: chosen.plan.cardGroupId ? 'card' : 'text'
+            enabled: chosen?.enabled,
+            mode: resolveVariantMode(chosen)
           } }
         }
         if (configData && typeof configData === 'object') {
