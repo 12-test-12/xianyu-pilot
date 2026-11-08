@@ -244,7 +244,8 @@ def test_goods_list_carries_sync_state_and_last_sync_time(console, sync_calls):
     assert response.json()["data"]["syncState"] == "syncing"
 
 
-def test_stale_sync_preserves_successful_fish_shop_edit(console, monkeypatch):
+@pytest.mark.parametrize("platform_updated", [True, False])
+def test_fish_shop_edit_only_saves_platform_confirmed_changes(console, monkeypatch, platform_updated):
     from app.api.v1.routes import fish_shop
     from app.core.database import use_database_runtime
     from app.services import xianyu_goods_sync as sync
@@ -262,16 +263,29 @@ def test_stale_sync_preserves_successful_fish_shop_edit(console, monkeypatch):
 
     images = ["https://example.com/new-cover.jpg", "https://example.com/new-detail.jpg"]
     category = dict(catId="91000001", catName="测试叶子分类", channelCatId="92000001", tbCatId="93000001")
+    submissions = []
+    readbacks = []
 
     def edit_remote(cookie, api, version, item, *, is_edit):
         assert is_edit and item["itemId"] == "101"
         assert item["itemSkuList"][0]["skuId"] == "301"
         assert item["itemSkuList"][0]["inventoryId"] == "401"
+        submissions.append(item)
         return {"data": {"itemId": "101"}}
+
+    def read_remote(cookie, item_id):
+        assert item_id == "101"
+        readbacks.append(item_id)
+        item = submissions[0]
+        if not platform_updated:
+            item = {**item, "itemTextDTO": {"title": "旧标题", "desc": "旧描述"},
+                    "itemSkuList": [{**item["itemSkuList"][0], "quantity": 5}]}
+        return {"data": item}
 
     monkeypatch.setattr(sync.XianyuItemPublisher, "upload_images_to_xianyu", lambda *_: images)
     monkeypatch.setattr(sync.XianyuItemPublisher, "resolve_category_for_publish", lambda *_: category)
     monkeypatch.setattr(fish_shop, "call_fish_shop_api", edit_remote)
+    monkeypatch.setattr(fish_shop, "call_fish_shop_edit_detail", read_remote)
     edit = client.post("/api/fish-shop/edit", json={
         "xianyuAccountId": ACCOUNT_ID, "itemId": "101", "title": "新标题", "description": "新描述",
         "imageUrls": ["https://example.com/input.jpg"], "shippingMode": "none",
@@ -280,7 +294,19 @@ def test_stale_sync_preserves_successful_fish_shop_edit(console, monkeypatch):
         "itemSkuList": [{"price": "12.50", "quantity": 0, "skuId": "301", "inventoryId": "401",
                          "propertyList": [{"propertyText": "颜色", "valueText": "红色"}]}],
     }).json()
+    assert len(submissions) == 1
+    if not platform_updated:
+        assert edit["code"] == 409, edit
+        assert "标题、描述、规格、价格或库存" in edit["msg"]
+        assert readbacks == ["101", "101"]
+        item = client.get("/api/goods/1").json()["data"]
+        assert item["title"] == "旧标题"
+        assert item["stock"] == 5
+        with sqlite3.connect(config.sqlite_path) as db:
+            assert db.execute("SELECT COUNT(*) FROM xianyu_goods_edit_snapshot").fetchone()[0] == 0
+        return
     assert edit["code"] == 200, edit
+    assert readbacks == ["101"]
 
     def assert_edited_fields():
         item = client.get("/api/goods/1").json()["data"]
@@ -366,7 +392,7 @@ def test_fish_shop_detail_normalizes_image_urls_fallback(console, monkeypatch):
     _seed_account(config)
 
     # 模拟远程 editdetail 失败触发本地降级
-    monkeypatch.setattr(fish_shop, "call_fish_shop_api", lambda *args, **kwargs: None)
+    monkeypatch.setattr(fish_shop, "fetch_fish_shop_edit_detail", lambda *args, **kwargs: None)
 
     with sqlite3.connect(config.sqlite_path) as db:
         db.execute("UPDATE xianyu_account SET fish_shop_user = 1 WHERE id = ?", (ACCOUNT_ID,))

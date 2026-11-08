@@ -12,7 +12,7 @@ export const publishFishShopItem = data => request.post('/fish-shop/publish', da
  * 必须携带 itemId，且商品必须归属当前账号。
  * @param {Object} data - { xianyuAccountId, itemId, title, description, imageUrls, itemProperties, itemSkuList, ... }
  */
-export const editFishShopItem = data => request.post('/fish-shop/edit', data)
+export const editFishShopItem = data => request.post('/fish-shop/edit', data, { timeout: 180000 })
 
 /**
  * 获取鱼小铺商品完整详情，用于编辑回显。

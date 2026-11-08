@@ -1,4 +1,6 @@
+import json
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import requests
@@ -9,6 +11,31 @@ from app.services.publish_category import PublishCategoryError
 
 CATEGORY = dict(catId="91000001", catName="测试叶子分类", channelCatId="92000001", tbCatId="93000001")
 OTHER = {**CATEGORY, "catId": "91000999", "channelCatId": "92000999"}
+
+
+def test_fish_shop_edit_and_readback_use_web_contract(monkeypatch):
+    calls = []
+    monkeypatch.setattr(fish_shop_publish, "_refresh_m_h5_tk", lambda cookie: cookie)
+    monkeypatch.setattr(fish_shop_publish, "extract_token_from_cookie", lambda _: "fixture")
+
+    def post(url, *, headers, data, timeout):
+        endpoint = urlsplit(url)
+        query = parse_qs(endpoint.query)
+        assert headers["Origin"] == "https://www.goofish.com"
+        assert query["type"] == ["originaljson"]
+        assert query["sign"] == [fish_shop_publish.build_sign("fixture", query["t"][0], data["data"])]
+        calls.append((endpoint.path, json.loads(data["data"])))
+        return SimpleNamespace(status_code=200, raise_for_status=lambda: None,
+                               json=lambda: {"ret": ["SUCCESS::调用成功"], "data": {"itemId": "101"}})
+
+    monkeypatch.setattr(requests, "post", post)
+    item = {"itemId": "101", "itemTextDTO": {"title": "新标题"}, "itemSkuList": [{"quantity": "0"}]}
+    fish_shop_publish.call_fish_shop_api("fixture", fish_shop_publish.FISH_SHOP_EDIT_API, "1.0", item, is_edit=True)
+    fish_shop_publish.call_fish_shop_edit_detail("fixture", "101")
+    assert calls == [
+        ("/h5/mtop.idle.pc.idleitem.edit/1.0/", item),
+        ("/h5/mtop.idle.pc.idleitem.editDetail/1.0/", {"itemId": "101"}),
+    ]
 
 
 def test_explicit_fish_shop_category_refusal_carries_the_rejected_category(monkeypatch):

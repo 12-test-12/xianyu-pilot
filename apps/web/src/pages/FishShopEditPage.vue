@@ -766,14 +766,14 @@ async function submit() {
       itemSkuList: cleanedSkuList,
       shippingMode: shippingMode.value,
       supportSelfPick: shippingMode.value !== 'none' && form.supportSelfPick,
-      postFee: 0,
+      postFee: shippingMode.value === 'fixed' ? Number(detail.value.postPriceInCent || 0) / 100 : 0,
       location: locationData,
       category: detail.value.category ? { catName: detail.value.category } : null,
       categoryInfo: detail.value.categoryInfo,
     })
 
     if (res && typeof res === 'object' && [0, 200].includes(Number(res.code))) {
-      success.value = '编辑成功！商品列表将在 1 秒后刷新...'
+      success.value = '已在闲鱼确认编辑成功，正在返回商品列表…'
       clearNavigationGuard()
       setTimeout(() => emit('navigate', 'products'), 1000)
     } else {

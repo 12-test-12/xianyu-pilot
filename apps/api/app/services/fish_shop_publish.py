@@ -1,16 +1,16 @@
 """
 鱼小铺多规格商品发布与编辑服务。
 
-接口（与现有 mtop.idle.pc.idleitem.publish 不同，使用 backend 段）：
+接口：
 - 发布：POST https://h5api.m.goofish.com/h5/mtop.idle.pc.backend.idleitem.publish/1.0/
-- 编辑：POST https://h5api.m.goofish.com/h5/mtop.idle.pc.backend.idleitem.edit/1.0/
-- 编辑详情：POST https://h5api.m.goofish.com/h5/mtop.idle.pc.backend.idleitem.editdetail/1.0/
+- 编辑：POST https://h5api.m.goofish.com/h5/mtop.idle.pc.idleitem.edit/1.0/
+- 编辑详情：POST https://h5api.m.goofish.com/h5/mtop.idle.pc.idleitem.editDetail/1.0/
 
 仅用于鱼小铺账号 + 多规格商品，普通账号或未开启多规格的鱼小铺账号继续走原有 XianyuItemOperator.publish。
 
 核心约束：
-1. 发布/编辑双层 JSON 序列化：内部对象 → JSON 字符串 → 包到 {inputJson: "..."} → 再序列化 → 最终 data 字符串
-2. 编辑详情单层 JSON 序列化：data = '{"itemId":"<item_id>"}'，不包裹 inputJson
+1. 鱼小铺发布使用 inputJson 包装，网页编辑直接序列化商品对象
+2. 编辑详情直接序列化 {"itemId":"<item_id>"}
 3. 签名使用最终 data 字符串
 4. 提交时 data = 最终 data 字符串（与签名字符串完全相同）
 5. 不复用抓包中的固定 t/sign/uniqueCode/itemId
@@ -25,6 +25,7 @@ import logging
 import time
 import uuid
 from typing import Any, Iterable, List, Optional
+from urllib.parse import urlsplit
 
 from .publish_category import normalize_publish_category, PublishCategoryError, CATEGORY_REFRESH_CODES
 
@@ -39,16 +40,14 @@ from .xianyu_goods_sync import (
 
 logger = logging.getLogger(__name__)
 
-# 鱼小铺多规格发布/编辑 API（注意带 backend 段，与现有 publish API 不同）
+# 鱼小铺发布使用卖家工作台接口，编辑使用闲鱼网页的多规格提交接口。
 FISH_SHOP_PUBLISH_API = "mtop.idle.pc.backend.idleitem.publish"
 FISH_SHOP_PUBLISH_VERSION = "1.0"
-FISH_SHOP_EDIT_API = "mtop.idle.pc.backend.idleitem.edit"
+FISH_SHOP_EDIT_API = "mtop.idle.pc.idleitem.edit"
 FISH_SHOP_EDIT_VERSION = "1.0"
 
 # 闲鱼商品编辑详情 API（用于编辑回显完整数据）
-# 注意：API 名为 editdetail，不是 detail。
-# 该接口 data 字段为单层 JSON {"itemId":"..."}，不是发布/编辑的双层 inputJson 结构。
-FISH_SHOP_EDIT_DETAIL_API = "mtop.idle.pc.backend.idleitem.editdetail"
+FISH_SHOP_EDIT_DETAIL_API = "mtop.idle.pc.idleitem.editDetail"
 FISH_SHOP_EDIT_DETAIL_VERSION = "1.0"
 
 # 兼容旧引用（保留旧常量名，但指向正确 API）
@@ -59,7 +58,7 @@ MAX_PROPERTY_TYPES = 2  # 一个商品最多 2 个规格类型
 
 
 # ============================================================
-# 商品编辑详情接口（mtop.idle.pc.backend.idleitem.editdetail）
+# 商品编辑详情接口（mtop.idle.pc.idleitem.editDetail）
 # ============================================================
 #
 # 本接口用于获取鱼小铺商品的完整编辑回显数据：
@@ -353,7 +352,7 @@ def build_internal_item_object(item_data: dict, xianyu_image_urls: List[str],
     item_text_dto = {
         "title": title,
         "desc": desc,
-        "titleDescSeparate": False,
+        "titleDescSeparate": is_edit and title != desc,
     }
 
     # ---- 类目 ----
@@ -510,7 +509,13 @@ def build_internal_item_object(item_data: dict, xianyu_image_urls: List[str],
         internal_obj["itemLabelExtList"] = item_label_ext_list
 
     if property_image_list:
-        internal_obj["propertyImageList"] = property_image_list
+        internal_obj["propertyImageList"] = [
+            {
+                "property": {"propertyText": image["propertyText"], "valueText": image["valueText"]},
+                "url": image["propertyValueImg"],
+            }
+            for image in property_image_list
+        ] if is_edit else property_image_list
 
     # 编辑时携带 itemId；发布时不携带
     if is_edit:
@@ -543,7 +548,7 @@ def build_sign(token: str, t_ms: str, data_str: str) -> str:
     return hashlib.md5(raw.encode()).hexdigest()
 
 
-def build_request_url(api_name: str, version: str, t_ms: str, sign: str) -> str:
+def build_request_url(api_name: str, version: str, t_ms: str, sign: str, *, seller_workbench: bool = True) -> str:
     """构建闲鱼 MTOP 请求 URL（鱼小铺 seller 参数）。"""
     from urllib.parse import urlencode
     params = {
@@ -552,7 +557,7 @@ def build_request_url(api_name: str, version: str, t_ms: str, sign: str) -> str:
         "t": t_ms,
         "sign": sign,
         "v": version,
-        "type": "json",
+        "type": "json" if seller_workbench else "originaljson",
         "dataType": "json",
         "accountSite": "xianyu",
         "timeout": "20000",
@@ -565,25 +570,31 @@ def build_request_url(api_name: str, version: str, t_ms: str, sign: str) -> str:
     return f"{H5_API_BASE}/{api_name}/{version}/?{query}"
 
 
-def get_fish_shop_headers(cookie_str: str) -> dict:
+def get_fish_shop_headers(cookie_str: str, *, seller_workbench: bool = True) -> dict:
     """构建鱼小铺请求头（不打印 cookie）。"""
-    return {
+    origin = "https://seller.goofish.com" if seller_workbench else "https://www.goofish.com"
+    headers = {
         "Accept": "application/json",
         "Content-Type": "application/x-www-form-urlencoded",
         "Cookie": cookie_str,
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Origin": "https://seller.goofish.com",
-        "Referer": "https://seller.goofish.com/",
-        "idle_site_biz_code": "COMMONPRO",
-        "idle_user_group_member_id": "",
+        "Origin": origin,
+        "Referer": origin + "/",
     }
+    if seller_workbench:
+        headers.update(idle_site_biz_code="COMMONPRO", idle_user_group_member_id="")
+    return headers
+
+
+class FishShopEditRejected(RuntimeError):
+    """闲鱼明确拒绝了编辑请求。"""
 
 
 def call_fish_shop_api(cookie_str: str, api_name: str, version: str,
                         internal_obj: dict, *, is_edit: bool = False) -> dict:
     """
     调用鱼小铺多规格发布/编辑 API。
-    严格双层序列化：签名与提交使用同一最终 data 字符串。
+    签名与提交使用同一最终 data 字符串。
 
     返回解析后的 JSON 响应。
 
@@ -600,16 +611,17 @@ def call_fish_shop_api(cookie_str: str, api_name: str, version: str,
     if not token:
         raise RuntimeError("Cookie 中缺少 _m_h5_tk，无法签名")
 
-    # Step 1: 双层序列化
-    final_data = double_layer_serialize(internal_obj)
+    # 网页编辑接口直接接收商品对象，卖家工作台发布接口接收 inputJson。
+    final_data = (json.dumps(internal_obj, ensure_ascii=False, separators=(",", ":"))
+                  if is_edit else double_layer_serialize(internal_obj))
 
     # Step 2: 生成时间戳与签名（用最终 data 字符串）
     t_ms = str(int(time.time() * 1000))
     sign = build_sign(token, t_ms, final_data)
 
     # Step 3: 构建请求
-    url = build_request_url(api_name, version, t_ms, sign)
-    headers = get_fish_shop_headers(cookie_str)
+    url = build_request_url(api_name, version, t_ms, sign, seller_workbench=not is_edit)
+    headers = get_fish_shop_headers(cookie_str, seller_workbench=not is_edit)
 
     # Step 4: 提交（data 字段使用与签名完全相同的 final_data）
     resp = requests.post(
@@ -623,8 +635,8 @@ def call_fish_shop_api(cookie_str: str, api_name: str, version: str,
 
     # Step 5: 成功判断（不能只判断 HTTP 200）
     ret = result.get("ret", [])
-    ret_msg = ret[0] if isinstance(ret, list) and ret else str(ret)
-    if not any("SUCCESS" in str(r) for r in ret):
+    ret_msg = str(ret[0]) if isinstance(ret, list) and ret else str(ret)
+    if ret_msg.partition("::")[0] != "SUCCESS":
         # 脱敏日志：只记录 API 名、ret、traceId，不记录 cookie/sign/data
         logger.warning(
             "fish_shop_api_failed api=%s is_edit=%s ret=%s traceId=%s",
@@ -634,17 +646,24 @@ def call_fish_shop_api(cookie_str: str, api_name: str, version: str,
         code = str(ret_msg).partition("::")[0].split("[", 1)[0].strip()
         if code in CATEGORY_REFRESH_CODES:
             raise PublishCategoryError(friendly, rejected_category=internal_obj.get("itemCatDTO"))
+        if is_edit and code.startswith("FAIL_BIZ_"):
+            raise FishShopEditRejected(friendly.replace("商品发布", "商品编辑", 1))
         raise RuntimeError(friendly or f"鱼小铺接口调用失败：{ret_msg}")
 
     data_body = result.get("data", {})
     if isinstance(data_body, dict):
-        # 检查 data.data 为 False 的情况
-        if data_body.get("data") is False:
-            msg = data_body.get("msg", "未知错误")
+        business_result = _extract_edit_detail_data(result) if is_edit else data_body
+        if data_body.get("data") is False or (is_edit and any(
+            body.get("success") is False or body.get("data") is False
+            for body in (data_body, business_result)
+        )):
+            msg = business_result.get("message") or business_result.get("msg") or data_body.get("msg") or "未知错误"
             logger.warning(
                 "fish_shop_api_rejected api=%s is_edit=%s msg=%s traceId=%s",
                 api_name, is_edit, msg, result.get("traceId", ""),
             )
+            if is_edit:
+                raise FishShopEditRejected(f"闲鱼拒绝商品编辑：{msg}")
             raise RuntimeError(f"鱼小铺平台拒绝请求：{msg}")
 
     return result
@@ -708,13 +727,7 @@ def extract_response_item_id(result: dict) -> str:
 
 def extract_response_skus(result: dict) -> List[dict]:
     """从响应中提取 itemSkuList。"""
-    data = result.get("data", {})
-    if isinstance(data, dict):
-        inner = data.get("data", {})
-        if isinstance(inner, dict):
-            return inner.get("itemSkuList", []) or []
-        return data.get("itemSkuList", []) or []
-    return []
+    return _extract_edit_detail_data(result).get("itemSkuList") or []
 
 
 def _build_edit_detail_data(item_id: str) -> str:
@@ -733,12 +746,12 @@ def _build_edit_detail_data(item_id: str) -> str:
 
 def _build_edit_detail_request_url(t_ms: str, sign: str) -> str:
     """构建 editdetail 请求 URL。"""
-    return build_request_url(FISH_SHOP_EDIT_DETAIL_API, FISH_SHOP_EDIT_DETAIL_VERSION, t_ms, sign)
+    return build_request_url(FISH_SHOP_EDIT_DETAIL_API, FISH_SHOP_EDIT_DETAIL_VERSION, t_ms, sign, seller_workbench=False)
 
 
 def call_fish_shop_edit_detail(cookie_str: str, item_id: str) -> dict:
     """
-    调用 mtop.idle.pc.backend.idleitem.editdetail 接口获取完整商品编辑详情。
+    调用闲鱼网页的 editDetail 接口获取完整商品编辑详情。
 
     单层 JSON 序列化：data = '{"itemId":"<item_id>"}'
     签名使用此 data 字符串，提交时使用同一字符串。
@@ -771,7 +784,7 @@ def call_fish_shop_edit_detail(cookie_str: str, item_id: str) -> dict:
 
     # Step 3: 构建请求
     url = _build_edit_detail_request_url(t_ms, sign)
-    headers = get_fish_shop_headers(cookie_str)
+    headers = get_fish_shop_headers(cookie_str, seller_workbench=False)
 
     # Step 4: 提交
     resp = requests.post(
@@ -793,8 +806,8 @@ def call_fish_shop_edit_detail(cookie_str: str, item_id: str) -> dict:
 
     # Step 5: 业务成功判断（不能只判断 HTTP 200）
     ret = result.get("ret", [])
-    ret_msg = ret[0] if isinstance(ret, list) and ret else str(ret)
-    if not any("SUCCESS" in str(r) for r in ret):
+    ret_msg = str(ret[0]) if isinstance(ret, list) and ret else str(ret)
+    if ret_msg.partition("::")[0] != "SUCCESS":
         logger.warning(
             "fish_shop_edit_detail_failed api=%s item_id=%s ret=%s traceId=%s",
             FISH_SHOP_EDIT_DETAIL_API, str(item_id)[:32], ret_msg, result.get("traceId", ""),
@@ -1227,6 +1240,45 @@ def parse_edit_detail_response(result: dict) -> dict:
         "propertyImageList": property_image_list,
         "isMultiSpec": is_multi_spec,
     }
+
+
+def fish_shop_edit_mismatches(submitted: dict, readback: dict) -> list[str]:
+    """比较本次提交与平台重新读取的商品内容，不使用本地缓存。"""
+    expected = parse_edit_detail_response({"data": submitted})
+    actual = parse_edit_detail_response(readback)
+
+    def images(urls):
+        return [(url.netloc, url.path) for url in map(urlsplit, urls)]
+
+    def sku_values(skus):
+        return {
+            build_property_key(sku.get("propertyList") or []): (
+                str(sku.get("priceInCent")), str(sku.get("quantity")),
+            )
+            for sku in skus
+        }
+
+    shipping_fields = ["supportFreight"]
+    if expected["supportFreight"]:
+        shipping_fields.extend(("canFreeShipping", "onlyTakeSelf"))
+        if not expected["canFreeShipping"]:
+            shipping_fields.append("postPriceInCent")
+    checks = {
+        "标题": expected["title"] == actual["title"],
+        "描述": expected["description"] == actual["description"],
+        "商品图片": (images(expected["imageUrls"]) == images(actual["imageUrls"])
+                      and images([expected["majorImageUrl"]]) == images([actual["majorImageUrl"]])),
+        "发布地区": expected["divisionId"] == actual["divisionId"],
+        "发货设置": all(expected[key] == actual[key] for key in shipping_fields),
+        "规格、价格或库存": sku_values(submitted["itemSkuList"]) == sku_values(extract_response_skus(readback)),
+    }
+    if expected["propertyImageList"]:
+        def property_images(detail):
+            return {build_property_key([image]): images([image["propertyValueImg"]])[0]
+                    for image in detail["propertyImageList"]}
+
+        checks["规格图片"] = property_images(expected) == property_images(actual)
+    return [field for field, matches in checks.items() if not matches]
 
 
 def invalidate_edit_detail_cache(account_id: int, item_id: str) -> None:
