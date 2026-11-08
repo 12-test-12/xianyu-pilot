@@ -43,15 +43,12 @@ from ....services.fish_shop_publish import (
     FISH_SHOP_EDIT_VERSION,
     FISH_SHOP_PUBLISH_API,
     FISH_SHOP_PUBLISH_VERSION,
-    FishShopEditRejected,
     build_internal_item_object,
     build_property_key,
     call_fish_shop_api,
-    call_fish_shop_edit_detail,
     extract_response_item_id,
     extract_response_skus,
     fetch_fish_shop_edit_detail,
-    fish_shop_edit_mismatches,
     invalidate_edit_detail_cache,
     match_response_skus,
     validate_multi_spec_payload,
@@ -566,42 +563,21 @@ async def edit_fish_shop_item(
             req, xianyu_image_urls, category_info, is_edit=True
         )
 
-        # 提交一次，随后直接回读平台详情，跳过软件缓存。
-        try:
-            result = await asyncio.to_thread(
-                call_fish_shop_api, cookie_str, FISH_SHOP_EDIT_API, FISH_SHOP_EDIT_VERSION,
-                internal_obj, is_edit=True,
-            )
-        except PublishCategoryError:
-            raise
-        except FishShopEditRejected as exc:
-            return ResultObject.validate_failed(str(exc))
-        except Exception as exc:
-            logger.warning("fish_shop_edit_submit_unconfirmed item_id=%s error_type=%s", item_id, type(exc).__name__)
-            return ResultObject(code=409, msg="无法确认闲鱼是否收到编辑，请先到闲鱼核对商品再重试")
+        # 7) 调用 edit API
+        result = call_fish_shop_api(
+            cookie_str, FISH_SHOP_EDIT_API, FISH_SHOP_EDIT_VERSION,
+            internal_obj, is_edit=True,
+        )
 
+        # 8) 校验响应 itemId 与目标 itemId 一致
         response_item_id = extract_response_item_id(result)
-        if response_item_id != item_id:
+        if response_item_id and response_item_id != str(item_id):
             logger.warning("fish_shop_edit_item_id_mismatch expected=%s got=%s", item_id, response_item_id)
-            return ResultObject(code=409, msg="闲鱼未确认目标商品已编辑，请先到闲鱼核对商品再重试")
+            return ResultObject.failed("编辑响应的 itemId 与目标不一致，已拒绝写入")
 
-        invalidate_edit_detail_cache(account_id, item_id)
-        try:
-            readback = await asyncio.to_thread(call_fish_shop_edit_detail, cookie_str, item_id)
-            mismatches = fish_shop_edit_mismatches(internal_obj, readback)
-            if mismatches:
-                # 平台可能稍晚才可读，重试读取，编辑请求只发一次。
-                await asyncio.sleep(1)
-                readback = await asyncio.to_thread(call_fish_shop_edit_detail, cookie_str, item_id)
-                mismatches = fish_shop_edit_mismatches(internal_obj, readback)
-        except Exception as exc:
-            logger.warning("fish_shop_edit_readback_failed item_id=%s error_type=%s", item_id, type(exc).__name__)
-            return ResultObject(code=409, msg="编辑已提交，暂时无法读取闲鱼商品确认结果，请先到闲鱼核对")
-        if mismatches:
-            logger.info("fish_shop_edit_readback_mismatch item_id=%s fields=%s", item_id, mismatches)
-            return ResultObject(code=409, msg=f"闲鱼尚未显示已提交的修改（{'、'.join(mismatches)}），请到闲鱼核对")
-
-        matched_skus = match_response_skus(extract_response_skus(readback), internal_obj["itemSkuList"])
+        # 9) 匹配响应 SKU
+        response_skus = extract_response_skus(result)
+        matched_skus = match_response_skus(response_skus, internal_obj["itemSkuList"])
 
         # 10) 持久化（本地商品 + SKU/规格）
         total_qty = sum(int(s.get("quantity", 0)) for s in matched_skus)
