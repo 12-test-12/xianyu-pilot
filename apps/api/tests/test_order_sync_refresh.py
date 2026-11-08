@@ -153,13 +153,20 @@ async def test_dashboard_counts_sales_on_payment_date(runtime, db_path):
     from app.api.v1.routes.dashboard import get_dashboard_summary
 
     seed_account(db_path)
-    order = remote_order()
-    order["commonData"].update(createTime="2026-01-01 12:00:00", payTime="2026-01-02 01:00:00")
-    unpaid = remote_order(order_id="unpaid", status_text="待付款")
+    order = remote_order(status_text="UNKNOWN")
+    order["commonData"]["createTime"] = "2026-01-01 12:00:00"
+    unpaid = remote_order(order_id="unpaid", status_text="WAIT_BUYER_PAY")
     unpaid["commonData"]["createTime"] = "2026-01-02 03:00:00"
+    refunding = remote_order(order_id="refunding", status_text="TRADE_FINISHED")
+    refunding["commonData"].update(paySuccessTime="2026-01-02 03:00:00", inRefund="true")
     with use_database_runtime(runtime):
         assert (await order_sync.upsert_remote_order(1, order))["success"]
+        order["commonData"].update(
+            orderStatus="WAIT_BUYER_CONFIRM_GOODS", paySuccessTime="2026-01-02 01:00:00", inRefund="false"
+        )
+        assert (await order_sync.upsert_remote_order(1, order))["action"] == "updated"
         assert (await order_sync.upsert_remote_order(1, unpaid))["success"]
+        assert (await order_sync.upsert_remote_order(1, refunding))["success"]
         async with runtime.session() as db:
             result = await get_dashboard_summary(date(2026, 1, 2), 1, 1, db, {})
         await runtime.dispose()

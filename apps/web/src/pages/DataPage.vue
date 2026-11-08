@@ -15,8 +15,9 @@
         </div>
         <div class="hero-controls">
           <div class="control-item">
-            <label>账号</label>
+            <label for="data-account">账号</label>
             <select
+              id="data-account"
               v-model="accountId"
               class="hero-select"
               :disabled="accountsLoading || syncingOrders"
@@ -369,7 +370,7 @@ const metrics = computed(() => {
     { key: 'pending', title: '待发货', value: metricVal(s.pendingDeliveryCount), display: metricDisplay(s.pendingDeliveryCount), sub: '排队中', icon: 'task', color: C.orange, spark: null },
     { key: 'reply', title: 'AI 回复', value: metricVal(s.autoReplyCount ?? s.aiReplyCount), display: metricDisplay(s.autoReplyCount ?? s.aiReplyCount), sub: '今日命中次数', icon: 'chat', color: C.purple, spark: t.aiReplyCount, sparkPoints: replySpark?.points, sparkFillPoints: replySpark?.fillPoints },
     { key: 'msg', title: '今日消息', value: metricVal(s.messageCount), display: metricDisplay(s.messageCount), sub: '今日消息总数', icon: 'message', color: C.cyan, spark: null },
-    { key: 'sales', title: `${periodLabel.value}销售额`, value: sales, display: sales == null ? '—' : `¥${formatAmount(sales)}`, sub: orderSyncError.value ? '仅统计已同步的付款订单' : '已付款订单金额', icon: 'data', color: C.pink, spark: null },
+    { key: 'sales', title: `${periodLabel.value}销售额`, value: sales, display: sales == null ? '—' : `¥${formatAmount(sales)}`, sub: orderSyncError.value ? '仅统计已同步的付款订单' : '按付款日期统计', icon: 'data', color: C.pink, spark: null },
     { key: 'goods', title: '商品总数', value: s.goodsCount, display: metricDisplay(s.goodsCount), sub: `在售 ${metricDisplay(s.sellingGoodsCount)} · 已售 ${metricDisplay(s.totalSoldCount)}`, icon: 'product', color: C.slate, spark: null },
   ]
 })
@@ -586,7 +587,8 @@ function renderTrendChart() {
       axisLine: { show: false }, axisTick: { show: false },
     },
     dataZoom: [
-      { type: 'inside', start: 0, end: 100, zoomOnMouseWheel: false },
+      // ECharts still intercepts the page wheel with zoomOnMouseWheel disabled.
+      { type: 'inside', start: 0, end: 100, zoomLock: true },
       {
         type: 'slider',
         height: 22,
@@ -1066,6 +1068,18 @@ onBeforeUnmount(() => {
 .hero-select option {
   background: #162d6b;
   color: #fff;
+}
+@supports (appearance: base-select) and selector(::picker(select)) {
+  /* Keep the account popup inside Qt WebEngine's rendered page. */
+  :global(.desktop-host #data-account),
+  :global(.desktop-host #data-account::picker(select)) {
+    appearance: base-select;
+  }
+  :global(.desktop-host #data-account::picker(select)) {
+    background: #162d6b;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+  }
 }
 .hero-select:hover, .hero-input:hover {
   border-color: rgba(255,255,255,0.25);

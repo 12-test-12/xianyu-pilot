@@ -47,6 +47,11 @@ async function launchBrowser() {
       else if (endpoint === '/system/currentUser') data = { username: 'UI Test' };
       else if (endpoint === '/sse/ticket') data = { ticket: 'test-ticket' };
       else if (endpoint === '/xianyu/accounts') data = { records: [{ id: 12, nickname: 'Test account' }], total: 1 };
+      else if (endpoint === '/dashboard/summary') data = { todaySalesAmount: 0.01 };
+      else if (endpoint === '/dashboard/sales-trend') data = {
+        dates: ['2026-11-02', '2026-11-03', '2026-11-04'],
+        orderCount: [0, 1, 0], deliverySuccess: [0, 1, 0], deliveryFail: [0, 0, 0],
+      };
       else if (endpoint === '/goods' && new URL(route.request().url()).searchParams.get('keyword') === '123456') {
         data = { records: [{ id: 24, externalGoodsId: '123456', category: '91000001' }], total: 1 };
       }
@@ -171,6 +176,24 @@ async function launchBrowser() {
     await page.getByRole('button', { name: '使用此类目' }).click();
     assert.match(await page.getByText('已选分类：', { exact: false }).first().innerText(), /91000001/);
     checks.push('A synced item supplies a platform category ID outside the recommended categories');
+
+    await page.goto(`${base}/?desktop=1#/data`);
+    await page.getByText('¥0.01', { exact: true }).waitFor();
+    const chart = page.locator('.trend-box canvas').first();
+    await chart.waitFor();
+    const plot = await chart.boundingBox();
+    await page.mouse.move(plot.x + plot.width / 2, plot.y + plot.height / 2);
+    await page.mouse.wheel(0, 320);
+    await page.waitForFunction(() => window.scrollY > 0, null, { timeout: 2000 });
+    checks.push('Dashboard scrolls with the pointer over the trend chart');
+
+    const account = page.locator('.hero-select');
+    for (const value of ['12', 'all', '12', 'all']) {
+      await account.click();
+      await account.locator(`option[value="${value}"]`).click();
+      assert.equal(await account.inputValue(), value);
+    }
+    checks.push('Desktop account picker reopens and applies repeated selections');
 
     await page.goto(`${base}/#/accounts`);
     await page.locator('.page-viewport .wide-right').waitFor();

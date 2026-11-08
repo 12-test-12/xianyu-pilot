@@ -26,11 +26,17 @@ logger = logging.getLogger(__name__)
 # 0待付款 1已付款 2待发货 3已发货 4已完成 5已关闭 6待核验/退款处理中
 _ORDER_STATUS_MAP = {
     "待付款": 0,
+    "WAIT_BUYER_PAY": 0,
     "已付款": 1,
     "待发货": 2,
+    "WAIT_SELLER_SEND_GOODS": 2,
     "已发货": 3,
+    "待收货": 3,
+    "WAIT_BUYER_CONFIRM_GOODS": 3,
     "交易成功": 4,
+    "TRADE_FINISHED": 4,
     "交易关闭": 5,
+    "TRADE_CLOSED": 5,
     "退款中": 6,
     "退款成功": 5,
     "已退款": 5,
@@ -226,7 +232,8 @@ def _parse_remote_order_item(item: dict[str, Any]) -> Optional[dict[str, Any]]:
         item={**item_info, **item},
     )
 
-    in_refund = bool(common.get("inRefund"))
+    refund_flag = common.get("inRefund")
+    in_refund = bool(refund_flag) and _text(refund_flag).lower() not in ("false", "0")
     order_status = _map_order_status(common.get("orderStatus"), in_refund)
 
     return {
@@ -236,7 +243,9 @@ def _parse_remote_order_item(item: dict[str, Any]) -> Optional[dict[str, Any]]:
         "buyer_name": _text(buyer_info.get("userNick") or buyer_info.get("name")),
         "buyer_id": _text(buyer_info.get("buyerId")),
         "create_time": _parse_order_time(common.get("createTime")),
-        "pay_time": _parse_order_time(common.get("payTime") or common.get("paymentTime")),
+        "pay_time": _parse_order_time(
+            common.get("payTime") or common.get("paymentTime") or common.get("paySuccessTime")
+        ),
         "ship_time": _parse_order_time(
             common.get("deliveryTime") or common.get("consignTime") or common.get("shipTime")
         ),
