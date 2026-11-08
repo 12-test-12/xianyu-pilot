@@ -147,6 +147,33 @@ def test_order_amount_distinguishes_unit_cents_zero_and_unknown():
     assert order_sync._parse_order_amount("Infinity", unit_price="5", quantity=0) is None
 
 
+def test_order_status_mapping_and_time_parsing():
+    from datetime import datetime
+
+    # Status mapping
+    assert order_sync._map_order_status("TRADE_CLOSED_BY_TAOBAO") == 5
+    assert order_sync._map_order_status("trade_finished") == 4
+    assert order_sync._map_order_status("TRADE_SUCCESS") == 4
+    assert order_sync._map_order_status("PAID") == 1
+    assert order_sync._map_order_status(2) == 2
+    assert order_sync._map_order_status("2") == 2
+    assert order_sync._map_order_status("WAIT_BUYER_CONFIRM_GOODS", in_refund=True) == 6
+    assert order_sync._map_order_status("UNKNOWN_STATUS") == 6
+
+    # Order time parsing
+    dt = datetime(2026, 1, 2, 3, 4, 5)
+    assert order_sync._parse_order_time(dt) == dt
+    assert order_sync._parse_order_time("2026-01-02 03:04:05") == dt
+    assert order_sync._parse_order_time("2026-01-02T03:04:05") == dt
+    assert order_sync._parse_order_time("2026-01-02T03:04:05Z") == dt
+    # Millisecond timestamp
+    ms = int(dt.timestamp() * 1000)
+    assert order_sync._parse_order_time(ms) == dt
+    assert order_sync._parse_order_time(str(ms)) == dt
+    assert order_sync._parse_order_time(None) is None
+    assert order_sync._parse_order_time("") is None
+
+
 @pytest.mark.asyncio
 async def test_dashboard_counts_sales_on_payment_date(runtime, db_path):
     from datetime import date
@@ -158,7 +185,11 @@ async def test_dashboard_counts_sales_on_payment_date(runtime, db_path):
     unpaid = remote_order(order_id="unpaid", status_text="WAIT_BUYER_PAY")
     unpaid["commonData"]["createTime"] = "2026-01-02 03:00:00"
     refunding = remote_order(order_id="refunding", status_text="TRADE_FINISHED")
-    refunding["commonData"].update(paySuccessTime="2026-01-02 03:00:00", inRefund="true")
+    refunding["commonData"].update(
+        createTime="2026-01-01 12:00:00",
+        paySuccessTime="2026-01-02 03:00:00",
+        inRefund="true",
+    )
     with use_database_runtime(runtime):
         assert (await order_sync.upsert_remote_order(1, order))["success"]
         order["commonData"].update(

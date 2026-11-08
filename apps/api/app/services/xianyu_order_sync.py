@@ -27,7 +27,9 @@ logger = logging.getLogger(__name__)
 _ORDER_STATUS_MAP = {
     "待付款": 0,
     "WAIT_BUYER_PAY": 0,
+    "TRADE_NO_CREATE_PAY": 0,
     "已付款": 1,
+    "PAID": 1,
     "待发货": 2,
     "WAIT_SELLER_SEND_GOODS": 2,
     "已发货": 3,
@@ -35,12 +37,23 @@ _ORDER_STATUS_MAP = {
     "WAIT_BUYER_CONFIRM_GOODS": 3,
     "交易成功": 4,
     "TRADE_FINISHED": 4,
+    "TRADE_SUCCESS": 4,
     "交易关闭": 5,
     "TRADE_CLOSED": 5,
+    "TRADE_CLOSED_BY_TAOBAO": 5,
+    "交易取消": 5,
     "退款中": 6,
     "退款成功": 5,
     "已退款": 5,
+    "退款完成": 5,
     "退款关闭": 5,
+    "0": 0,
+    "1": 1,
+    "2": 2,
+    "3": 3,
+    "4": 4,
+    "5": 5,
+    "6": 6,
 }
 
 
@@ -66,16 +79,48 @@ def _map_order_status(raw_status: Any, in_refund: bool = False) -> int:
     """将闲鱼返回的订单状态文本映射为内部状态码。"""
     if in_refund:
         return 6
+    if isinstance(raw_status, int) and 0 <= raw_status <= 6:
+        return raw_status
     status_text = _text(raw_status)
-    return _ORDER_STATUS_MAP.get(status_text, 6)
+    if status_text in _ORDER_STATUS_MAP:
+        return _ORDER_STATUS_MAP[status_text]
+    return _ORDER_STATUS_MAP.get(status_text.upper(), 6)
 
 
 def _parse_order_time(value: Any) -> Optional[datetime.datetime]:
-    """解析闲鱼订单时间字段，支持 'YYYY-MM-DD HH:MM:SS' 和 'YYYY-MM-DD'。"""
+    """解析闲鱼订单时间字段，支持时间戳、ISO 格式以及 'YYYY-MM-DD HH:MM:SS'。"""
+    if value is None:
+        return None
+    if isinstance(value, datetime.datetime):
+        return value
+    if isinstance(value, (int, float)):
+        try:
+            ts = float(value)
+            if ts > 1e11:  # 毫秒时间戳
+                ts /= 1000.0
+            return datetime.datetime.fromtimestamp(ts)
+        except (ValueError, OSError, OverflowError):
+            return None
     text_val = _text(value)
     if not text_val:
         return None
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+    if text_val.isdigit():
+        try:
+            ts = float(text_val)
+            if ts > 1e11:
+                ts /= 1000.0
+            return datetime.datetime.fromtimestamp(ts)
+        except (ValueError, OSError, OverflowError):
+            pass
+    try:
+        clean = text_val.replace("Z", "+00:00")
+        dt = datetime.datetime.fromisoformat(clean)
+        if dt.tzinfo is not None:
+            dt = dt.replace(tzinfo=None)
+        return dt
+    except (ValueError, TypeError):
+        pass
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%Y/%m/%d %H:%M:%S"):
         try:
             return datetime.datetime.strptime(text_val, fmt)
         except ValueError:
@@ -232,9 +277,10 @@ def _parse_remote_order_item(item: dict[str, Any]) -> Optional[dict[str, Any]]:
         item={**item_info, **item},
     )
 
-    refund_flag = common.get("inRefund")
+    refund_flag = common.get("inRefund") if common.get("inRefund") is not None else item.get("inRefund")
     in_refund = bool(refund_flag) and _text(refund_flag).lower() not in ("false", "0")
-    order_status = _map_order_status(common.get("orderStatus"), in_refund)
+    raw_status = common.get("orderStatus") if common.get("orderStatus") is not None else item.get("orderStatus")
+    order_status = _map_order_status(raw_status, in_refund)
 
     return {
         "external_order_id": external_order_id,
