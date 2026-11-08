@@ -1150,6 +1150,8 @@ def _recent_goods_edit(db, fetch_started_at: float):
 
 
 async def _update_synced_goods(db, goods_id: int, values: dict, fetch_started_at: float):
+    if not values:
+        return
     from sqlalchemy import update
     from ..models.entities import XianyuGoods
 
@@ -1158,7 +1160,9 @@ async def _update_synced_goods(db, goods_id: int, values: dict, fetch_started_at
     result = await db.execute(stmt.where(~_recent_goods_edit(db, fetch_started_at)).values(**values))
     if result.rowcount == 0:
         safe_fields = ("exposure_count", "view_count", "want_count", "status", "updated_time")
-        await db.execute(stmt.values(**{key: values[key] for key in safe_fields if key in values}))
+        safe_values = {key: values[key] for key in safe_fields if key in values}
+        if safe_values:
+            await db.execute(stmt.values(**safe_values))
 
 
 async def sync_goods_for_account(
@@ -1303,7 +1307,7 @@ async def sync_goods_for_account(
                         # 详情同步成功后会覆盖为真实值；若本地已有真实库存（>0）则保留。
                         local_qty = int(getattr(existing, "quantity", 0) or 0)
                         local_st = int(getattr(existing, "stock", 0) or 0)
-                        if not existing.has_snapshot:
+                        if not getattr(existing, "has_snapshot", 0):
                             if local_qty <= 0 and "quantity" not in update_values:
                                 update_values["quantity"] = 999
                             if local_st <= 0 and "stock" not in update_values:
@@ -1583,7 +1587,7 @@ async def _async_fetch_details(
                             }
                             _merge_detail_info(detail_goods_dict, detail_data)
                             update_values = _build_goods_update_values(existing, detail_goods_dict, partial=True)
-                            if existing.has_snapshot and detail_goods_dict.get("quantity") == 0:
+                            if getattr(existing, "has_snapshot", 0) and detail_goods_dict.get("quantity") == 0:
                                 update_values.update(quantity=0, stock=0)
                             await _update_synced_goods(db, existing.id, update_values, detail_fetch_started_at)
                             await db.commit()

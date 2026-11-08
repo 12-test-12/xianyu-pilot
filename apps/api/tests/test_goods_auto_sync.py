@@ -322,3 +322,81 @@ def test_stale_sync_preserves_successful_fish_shop_edit(console, monkeypatch):
     item = client.get("/api/goods/1").json()["data"]
     assert item["title"] == "平台上的后续修改"
     assert item["stock"] == 0
+
+
+def test_update_synced_goods_handles_empty_and_unsafe_updates_gracefully(console):
+    import time
+    from app.core.database import use_database_runtime, async_session
+    from app.models.entities import XianyuGoods, XianyuGoodsEditSnapshot
+    from app.services import xianyu_goods_sync as sync
+
+    client, config, app = console
+    _seed_account(config)
+    with sqlite3.connect(config.sqlite_path) as db:
+        db.execute(
+            "INSERT INTO xianyu_goods (id, account_id, external_goods_id, title, stock, quantity, deleted, auto_relist_enabled, has_snapshot)"
+            " VALUES (99, ?, '999', '本地编辑标题', 1, 1, 0, 0, 1)",
+            (ACCOUNT_ID,),
+        )
+        db.execute(
+            "INSERT INTO xianyu_goods_edit_snapshot (id, account_id, external_goods_id, source, account_type, snapshot_json, deleted, created_time)"
+            " VALUES (99, ?, '999', 'edit', 'fish_shop', '{}', 0, datetime('now'))",
+            (ACCOUNT_ID,),
+        )
+
+    async def execute_updates():
+        with use_database_runtime(app.state.database):
+            async with async_session() as db:
+                # 1. 传空 values：直接返回，不抛异常
+                await sync._update_synced_goods(db, 99, {}, time.monotonic())
+                # 2. 传无 safe_fields 的字典（仅 title）：因近期有编辑快照，跳过非安全字段，不产生空 UPDATE 语句
+                await sync._update_synced_goods(db, 99, {"title": "尝试覆盖的旧标题"}, time.monotonic())
+                await db.commit()
+
+    client.portal.call(execute_updates)
+
+    item = client.get("/api/goods/99").json()["data"]
+    assert item["title"] == "本地编辑标题"
+
+
+def test_fish_shop_detail_normalizes_image_urls_fallback(console, monkeypatch):
+    from app.api.v1.routes import fish_shop
+
+    client, config, app = console
+    _seed_account(config)
+
+    # 模拟远程 editdetail 失败触发本地降级
+    monkeypatch.setattr(fish_shop, "call_fish_shop_api", lambda *args, **kwargs: None)
+
+    with sqlite3.connect(config.sqlite_path) as db:
+        db.execute("UPDATE xianyu_account SET fish_shop_user = 1 WHERE id = ?", (ACCOUNT_ID,))
+        # 1. image_urls 存储 JSON 列表
+        db.execute(
+            "INSERT INTO xianyu_goods (id, account_id, external_goods_id, title, image_urls, stock, quantity, deleted, auto_relist_enabled, has_snapshot)"
+            " VALUES (101, ?, 'ext-101', '商品101', '[\"https://example.com/p1.jpg\", \"https://example.com/p2.jpg\"]', 1, 1, 0, 0, 0)",
+            (ACCOUNT_ID,),
+        )
+        # 2. image_urls 为空，image_url 存逗号分隔并带空白的字符串
+        db.execute(
+            "INSERT INTO xianyu_goods (id, account_id, external_goods_id, title, image_url, stock, quantity, deleted, auto_relist_enabled, has_snapshot)"
+            " VALUES (102, ?, 'ext-102', '商品102', 'https://example.com/c1.jpg,  https://example.com/c2.jpg ', 1, 1, 0, 0, 0)",
+            (ACCOUNT_ID,),
+        )
+        # 3. 仅有 cover_pic 兜底
+        db.execute(
+            "INSERT INTO xianyu_goods (id, account_id, external_goods_id, title, cover_pic, stock, quantity, deleted, auto_relist_enabled, has_snapshot)"
+            " VALUES (103, ?, 'ext-103', '商品103', 'https://example.com/cover.jpg', 1, 1, 0, 0, 0)",
+            (ACCOUNT_ID,),
+        )
+
+    res101 = client.post("/api/fish-shop/detail", json={"xianyuAccountId": ACCOUNT_ID, "itemId": "ext-101"}).json()
+    assert res101["code"] == 200
+    assert res101["data"]["imageUrls"] == ["https://example.com/p1.jpg", "https://example.com/p2.jpg"]
+
+    res102 = client.post("/api/fish-shop/detail", json={"xianyuAccountId": ACCOUNT_ID, "itemId": "ext-102"}).json()
+    assert res102["code"] == 200
+    assert res102["data"]["imageUrls"] == ["https://example.com/c1.jpg", "https://example.com/c2.jpg"]
+
+    res103 = client.post("/api/fish-shop/detail", json={"xianyuAccountId": ACCOUNT_ID, "itemId": "ext-103"}).json()
+    assert res103["code"] == 200
+    assert res103["data"]["imageUrls"] == ["https://example.com/cover.jpg"]

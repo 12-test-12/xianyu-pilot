@@ -634,6 +634,41 @@ async def edit_fish_shop_item(
         return ResultObject.failed(f"鱼小铺多规格编辑失败，请稍后重试: {type(exc).__name__}")
 
 
+def _normalize_goods_images(
+    raw_urls: Any,
+    fallback_url: Optional[str] = None,
+    fallback_cover: Optional[str] = None,
+) -> list[str]:
+    images: list[str] = []
+    if isinstance(raw_urls, list):
+        for item in raw_urls:
+            if item and str(item).strip():
+                images.append(str(item).strip())
+    elif isinstance(raw_urls, str) and raw_urls.strip():
+        s = raw_urls.strip()
+        if s.startswith("[") and s.endswith("]"):
+            try:
+                parsed = json.loads(s)
+                if isinstance(parsed, list):
+                    for item in parsed:
+                        if item and str(item).strip():
+                            images.append(str(item).strip())
+            except Exception:
+                pass
+        if not images:
+            for part in s.split(","):
+                if part.strip():
+                    images.append(part.strip())
+    if not images:
+        for candidate in (fallback_url, fallback_cover):
+            if candidate:
+                for part in str(candidate).split(","):
+                    clean = part.strip()
+                    if clean and clean not in images:
+                        images.append(clean)
+    return images
+
+
 # ============================================================
 # 路由：详情（用于编辑回显）
 # ============================================================
@@ -793,7 +828,7 @@ async def get_fish_shop_detail(
                 "itemId": str(item_id),
                 "title": goods.title or "",
                 "description": goods.detail_info or goods.description or "",
-                "imageUrls": goods.image_urls or (goods.image_url.split(",") if goods.image_url else []),
+                "imageUrls": _normalize_goods_images(goods.image_urls, goods.image_url, goods.cover_pic),
                 "price": goods.price or "",
                 "stock": goods.stock or "",
                 "itemProperties": item_properties,
