@@ -313,7 +313,7 @@
               <div class="form-row">
                 <label>{{ desktopHost ? '从货源库复制正文（可选）' : '从货源库模板引用（可选）' }}</label>
                 <div class="toolbar" style="justify-content:flex-start">
-                  <select v-model="configForm.sourceId" class="input" style="max-width:320px" :disabled="sourcesAvailable === false">
+                  <select v-model="configForm.sourceId" class="input" style="max-width:320px" :disabled="sourcesAvailable === false" @change="onSourceChange">
                     <option value="">不使用模板（使用上方直接手写内容）</option>
                     <option v-for="source in textSources" :key="source.id" :value="source.id">{{ source.title }}</option>
                   </select>
@@ -689,7 +689,8 @@ const tableRows = computed(() => {
   }))
 })
 
-watch(() => configForm.sourceId, value => {
+function onSourceChange() {
+  const value = configForm.sourceId
   const source = textSources.value.find(item => String(item.id) === String(value))
   if (source) {
     configForm.sourceTitle = source.title
@@ -700,7 +701,7 @@ watch(() => configForm.sourceId, value => {
   } else {
     configForm.sourceTitle = ''
   }
-})
+}
 
 function goPage(page) {
   current.value = page
@@ -767,7 +768,7 @@ const monitorNotice = computed(() => {
     sold_order_facts_incomplete: '闲鱼返回的订单信息不完整，暂未发货。请在闲鱼核对订单。',
     sold_order_verification_failed: '暂时无法读取闲鱼已售订单，请检查账号连接后再扫描。',
     configuration_or_identity_mismatch: '未找到匹配的商品规格发货规则，请核对配置。',
-    sold_order_sku_missing: '闲鱼未返回订单规格，暂未发货。请在闲鱼核对规格。',
+    sold_order_sku_missing: '订单规格无法唯一匹配商品 SKU，暂未发货。请同步商品规格并核对发货配置。',
     conversation_unverified: '暂时无法确认这笔订单对应的买家会话，请同步消息后再扫描。',
     review_order_not_verified: '有历史订单暂时无法核验，原发货记录和卡密绑定已保留。',
     delivery_result_unknown: '发货结果待确认，请先在闲鱼核对聊天和订单，避免重复发送。',
@@ -1054,6 +1055,7 @@ function fillDesktopSku() {
   const cardIndex = cards.length ? plan.parts.indexOf(cards[0]) : -1
   fillConfigForm({
     enabled: variant.enabled,
+    sourceId: plan.sourceId,
     mode: cards.length ? 'card' : 'text',
     cardGroupId: plan.cardGroupId,
     cardTemplate: cards[0]?.content,
@@ -1263,8 +1265,8 @@ async function saveConfig() {
       enabled: configForm.enabled,
       mode: configForm.mode,
       ...(desktopHost ? { skuId: desktopSku.value, expectedVersion: desktopConfig.value.version } : {}),
-      sourceId: !desktopHost && configForm.mode === 'text' && configForm.sourceId ? Number(configForm.sourceId) : null,
-      sourceTitle: !desktopHost && configForm.mode === 'text' ? configForm.sourceTitle : '',
+      sourceId: configForm.mode === 'text' && configForm.sourceId ? Number(configForm.sourceId) : null,
+      sourceTitle: configForm.mode === 'text' ? configForm.sourceTitle : '',
       cardGroupId: configForm.mode === 'card' ? cardGroupId : null,
       cardTemplate: configForm.cardTemplate,
       header: configForm.header,

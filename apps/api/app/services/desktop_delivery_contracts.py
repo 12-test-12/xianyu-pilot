@@ -40,6 +40,7 @@ class DeliveryPart(LocalContract):
 class DeliveryPlan(LocalContract):
     version: int = Field(default=1, ge=1)
     rule_id: int | None = Field(default=None, gt=0, le=2**63-1)
+    source_id: int | None = Field(default=None, gt=0, le=2**63-1)
     sku_id: str = Field(default="", max_length=100)
     card_group_id: int | None = Field(default=None, gt=0, le=2**63-1)
     confirm_shipment: bool = True

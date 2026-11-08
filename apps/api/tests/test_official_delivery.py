@@ -592,7 +592,8 @@ def test_legacy_json_does_not_turn_string_false_into_enabled(configured):
 
 
 @pytest.mark.asyncio
-async def test_desktop_payment_outbox_retries_verification_and_sends_exact_sku_once(configured, monkeypatch):
+@pytest.mark.parametrize("merchant_strings", [False, True])
+async def test_desktop_payment_outbox_retries_verification_and_sends_exact_sku_once(configured, monkeypatch, merchant_strings):
     from app.core import paths
     from app.core.database import DatabaseRuntime, use_database_runtime
     from app.services import desktop_order_delivery, ws_startup
@@ -602,8 +603,14 @@ async def test_desktop_payment_outbox_retries_verification_and_sends_exact_sku_o
     with store.connection(write=True) as conn:
         conn.execute("""
             INSERT INTO xianyu_conversation(account_id,external_buyer_id,goods_id,s_id)
-            VALUES(1,'buyer-1','item-1','session-1@goofish')
-        """)
+            VALUES(1,'buyer-1',?,'session-1@goofish')
+        """, ("other-item" if merchant_strings else "item-1",))
+        if merchant_strings:
+            conn.execute("""
+                INSERT INTO xianyu_chat_message(account_id,s_id,msg_content,content_type,message_time,direction,
+                    sender_user_id,receiver_user_id,xy_goods_id,deleted)
+                VALUES(1,'session-1@goofish','message',1,1,'IN','buyer-1','seller-1','item-1',0)
+            """)
     rules.save_goods(1, GoodsDeliveryConfig(variants=tuple(
         RuleVariant(sku_id=sku, enabled=True, plan=DeliveryPlan(sku_id=sku,
             confirm_shipment=True, parts=(DeliveryPart(kind="text", content=sku),)))
@@ -614,6 +621,13 @@ async def test_desktop_payment_outbox_retries_verification_and_sends_exact_sku_o
         "buyerInfoVO": {"buyerId": "buyer-1"},
         "priceVO": {"buyNum": 1, "realPayPrice": "20.00", "totalPrice": "25.00"},
     }
+    if merchant_strings:
+        row["commonData"].pop("skuId")
+        row["priceVO"]["buyNum"] = "1"
+        row["itemVO"] = {"itemInfoLines": [{"key": "规格", "value": "9.9"}]}
+        with store.connection(write=True) as conn:
+            conn.execute("INSERT INTO xianyu_goods_sku(account_id,goods_id,sku_id,property_key,property_list_json) VALUES(1,1,'sku-B','price=9.9',?)",
+                         (json.dumps([{"propertyText": "价格", "valueText": "9.9"}]),))
     sent = []
     confirmed = []
     notified = []
@@ -664,7 +678,19 @@ async def test_desktop_payment_outbox_retries_verification_and_sends_exact_sku_o
         assert not notified
         assert rows(store, "SELECT reason FROM delivery_monitor_state") == [{"reason": "sold_order_facts_incomplete"}]
         assert rows(store, "SELECT state FROM delivery_inbox") == [{"state": "pending"}]
-        row["commonData"]["inRefund"] = False
+        row["commonData"]["inRefund"] = "false" if merchant_strings else False
+        if merchant_strings:
+            with store.connection(write=True) as conn:
+                conn.execute("""
+                    INSERT INTO xianyu_chat_message(account_id,s_id,msg_content,content_type,message_time,direction,
+                        sender_user_id,receiver_user_id,xy_goods_id,deleted)
+                    VALUES(1,'another-session','message',1,2,'IN','buyer-1','seller-1','item-1',0)
+                """)
+            await monitor.probe_connected_accounts()
+            assert not sent
+            assert rows(store, "SELECT reason FROM delivery_monitor_state") == [{"reason": "conversation_unverified"}]
+            with store.connection(write=True) as conn:
+                conn.execute("UPDATE xianyu_chat_message SET deleted=1 WHERE s_id='another-session'")
         await monitor.probe_connected_accounts()
         await ws_startup._run_delivery_after_message_saved(1, message)
         await monitor.probe_connected_accounts()
@@ -674,6 +700,43 @@ async def test_desktop_payment_outbox_retries_verification_and_sends_exact_sku_o
     assert confirmed == ["official-1"]
     assert notified == [(1, "?orderId=official-1")]
     assert rows(store, "SELECT total_amount FROM xianyu_trade_order") == [{"total_amount": "20.00"}]
+
+
+@pytest.mark.parametrize("refund", [None, "", "unknown", "0", "False", 0, 1, [], {}])
+def test_merchant_unknown_refund_state_stays_blocked(refund):
+    from app.services.desktop_order_delivery import parse_sold_order
+    row = {"commonData": {"orderId": "order", "itemId": "item", "orderStatus": "待发货", "inRefund": refund},
+           "buyerInfoVO": {"buyerId": "buyer"}, "priceVO": {"buyNum": "1", "totalPrice": "9.90"}}
+    with pytest.raises(PlatformOrderError, match="sold_order_facts_incomplete"):
+        parse_sold_order(1, "seller", row)
+    row["commonData"]["inRefund"] = "true"
+    assert parse_sold_order(1, "seller", row).refunding is True
+
+
+def test_merchant_sku_requires_complete_unique_specification(store):
+    from app.services.desktop_order_delivery import DesktopSoldOrderSource
+    source = DesktopSoldOrderSource(store)
+    row = {"commonData": {"orderId": "order", "itemId": "item-1", "orderStatus": "待发货", "inRefund": "false"},
+           "buyerInfoVO": {"buyerId": "buyer"}, "priceVO": {"buyNum": "1", "totalPrice": "9.90"},
+           "itemVO": {"itemInfoLines": [{"key": "规格", "value": "9.9"}]}}
+    with pytest.raises(PlatformOrderError, match="sold_order_sku_missing"):
+        source.parse(1, "seller", row)
+    with store.connection(write=True) as conn:
+        conn.execute("INSERT INTO xianyu_goods_sku(account_id,goods_id,sku_id,property_key,property_list_json) VALUES(1,1,'sku-A','price=9.9',?)",
+                     (json.dumps([{"propertyText": "价格", "valueText": "9.9"}]),))
+    assert source.parse(1, "seller", row).sku_id == "sku-A"
+    row["itemVO"]["itemInfoLines"] = []
+    with pytest.raises(PlatformOrderError, match="sold_order_sku_missing"):
+        source.parse(1, "seller", row)
+    row["itemVO"]["itemInfoLines"] = [{"key": "规格", "value": "19.9"}]
+    with pytest.raises(PlatformOrderError, match="sold_order_sku_missing"):
+        source.parse(1, "seller", row)
+    row["itemVO"]["itemInfoLines"] = [{"key": "规格", "value": "9.9"}]
+    with store.connection(write=True) as conn:
+        conn.execute("INSERT INTO xianyu_goods_sku(account_id,goods_id,sku_id,property_key,property_list_json) VALUES(1,1,'sku-B','alias=9.9',?)",
+                     (json.dumps([{"propertyText": "价格", "valueText": "9.9"}]),))
+    with pytest.raises(PlatformOrderError, match="sold_order_sku_missing"):
+        source.parse(1, "seller", row)
 
 
 @pytest.mark.asyncio

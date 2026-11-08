@@ -112,6 +112,27 @@ def test_renderer_failure_reloads_once_and_keeps_the_backend_alive(console, monk
     assert c.backend.stops == 0
 
 
+def test_failed_initial_load_stays_on_fallback_without_timer_retries(console, monkeypatch):
+    from app.portable.qt_host import QDesktopServices
+
+    c, _ = console
+    c.backend.error = None
+    c.backend.poll = lambda: {"state": "offline"}
+    monkeypatch.setattr(c.network_monitor, 'poll', lambda: None)
+    requested = []
+    monkeypatch.setattr(c.view, 'setUrl', lambda url: requested.append(url.toString()))
+    c.tick()
+    c.on_load(False)
+    c.tick()
+    c.tick()
+    assert requested == ['http://127.0.0.1:19177/']
+    assert c.stack.currentWidget() is c.startup_label
+    opened = []
+    monkeypatch.setattr(QDesktopServices, 'openUrl', lambda url: opened.append(url.toString()))
+    c.startup_label.linkActivated.emit('open')
+    assert opened == requested
+
+
 def test_pause_toggle_and_resume_do_not_clear_network_pause(console):
     c,root=console
     c.toggle_delivery()

@@ -283,3 +283,10 @@ def apply_source(source_id: Id, repo: Inventory, body: dict = Body(...)):
     except (TypeError, KeyError) as exc:
         raise InventoryError("货源或商品配置不完整，绑定未保存") from exc
     return ResultObject.success({"appliedCount": len(goods_ids)}, "货源已绑定到付款后发货规则")
+
+
+@router.delete("/auto-delivery/sources/{source_id}/goods/{goods_id}")
+def unbind_source(source_id: Id, goods_id: Id, repo: Inventory):
+    from app.services.unified_delivery_rules import UnifiedDeliveryRules
+    changed = UnifiedDeliveryRules(repo.path).unbind_source(source_id, goods_id)
+    return ResultObject.success({"updated": changed}, "已解除绑定并停用该货源的发货规则")

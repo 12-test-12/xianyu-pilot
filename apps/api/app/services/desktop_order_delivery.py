@@ -1,5 +1,6 @@
 """Use the desktop seller-console order feed with the durable delivery monitor."""
 import asyncio
+import json
 import logging
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlencode
@@ -50,13 +51,17 @@ def parse_sold_order(account_id, seller_id, row):
         if sku is not None and (isinstance(sku, bool) or not isinstance(sku, (int, str))):
             raise ValueError
         status = common["orderStatus"]
+        refunding = common.get("inRefund", row.get("inRefund"))
+        # The merchant console returns literal strings, unlike the seller API.
+        if refunding in ("true", "false"):
+            refunding = refunding == "true"
         order = OfficialOrder(
             account_id=account_id, seller_id=str(common.get("sellerId", seller_id)),
             order_id=str(common["orderId"] or ""),
             buyer_id=str(common.get("buyerId") or buyer.get("buyerId") or "").removesuffix("@goofish"),
             item_id=str(common.get("itemId") or item.get("itemId") or purchase.get("itemId") or ""),
             sku_id=str(sku) if sku is not None else "",
-            quantity=quantity, amount_cent=int(cents), status=_STATUS.get(status, status), refunding=common.get("inRefund"),
+            quantity=quantity, amount_cent=int(cents), status=_STATUS.get(status, status), refunding=refunding,
         )
         if order.seller_id != seller_id:
             raise ValueError
@@ -68,6 +73,40 @@ def parse_sold_order(account_id, seller_id, row):
 class DesktopSoldOrderSource:
     def __init__(self, store):
         self.store = store
+
+    def parse(self, account_id, seller_id, row):
+        order = parse_sold_order(account_id, seller_id, row)
+        if order.sku_id:
+            return order
+        with self.store.connection() as conn:
+            skus = conn.execute("""
+                SELECT s.sku_id,s.property_list_json FROM xianyu_goods_sku s
+                JOIN xianyu_goods g ON g.id=s.goods_id
+                WHERE g.account_id=? AND g.deleted=0 AND (g.external_goods_id=? OR g.goods_id=?)
+            """, (account_id, order.item_id, order.item_id)).fetchall()
+        lines = (row.get("itemVO") or {}).get("itemInfoLines") or []
+        if not skus:
+            if lines:
+                raise PlatformOrderError("sold_order_sku_missing")
+            return order
+        # Never infer a purchased SKU from price or from the only enabled rule.
+        matches = []
+        for sku in skus:
+            try:
+                props = json.loads(sku["property_list_json"] or "[]")
+                expected = [(p["propertyText"], p["valueText"]) for p in props]
+                actual = [(line["key"], line["value"]) for line in lines]
+                if not expected or any(not isinstance(k, str) or not k or not isinstance(v, str) or not v for k,v in expected + actual):
+                    continue
+                named_match = sorted(actual) == sorted(expected)
+                single_match = len(expected) == 1 and actual == [("规格", expected[0][1])]
+                if named_match or single_match:
+                    matches.append(sku["sku_id"])
+            except (ValueError, TypeError, KeyError):
+                continue
+        if len(matches) != 1:
+            raise PlatformOrderError("sold_order_sku_missing")
+        return order.model_copy(update={"sku_id": matches[0]})
 
     async def page(self, account_id, page):
         client = ws_manager.get_client(account_id)
@@ -87,7 +126,7 @@ class DesktopSoldOrderSource:
                        and isinstance(row.get("commonData"), dict)
                        and str(row["commonData"].get("orderId") or "") == order_id]
             if len(matches) == 1:
-                return parse_sold_order(account_id, seller_id, matches[0]), matches[0]
+                return await asyncio.to_thread(self.parse, account_id, seller_id, matches[0]), matches[0]
             if matches or not data["nextPage"]:
                 break
         raise PlatformOrderError("sold_order_not_verified")
@@ -105,13 +144,13 @@ class DesktopSoldOrderSource:
             if not isinstance(common, dict) or common.get("orderStatus") not in (WAITING, "待发货"):
                 continue
             try:
-                order = parse_sold_order(account_id, seller_id, row)
+                order = await asyncio.to_thread(self.parse, account_id, seller_id, row)
                 if not order.refunding:
                     orders.append(order)
-            except PlatformOrderError:
-                incomplete = True
+            except PlatformOrderError as exc:
+                incomplete = str(exc)
         if incomplete:
-            await asyncio.to_thread(self.store.monitor_state, account_id, "attention", "sold_order_facts_incomplete")
+            await asyncio.to_thread(self.store.monitor_state, account_id, "attention", incomplete)
         # shortcut: probe the newest two pages every 20 seconds, expand when the platform supports a verified waiting-only filter
         return orders, data["nextPage"] and page < 2
 
@@ -122,6 +161,11 @@ async def resolve_conversation(account_id, buyer_id, item_id):
             SELECT DISTINCT s_id FROM xianyu_conversation
             WHERE account_id=:account AND goods_id=:item AND s_id IS NOT NULL
               AND (peer_external_uid IN (:buyer, :suffixed) OR external_buyer_id IN (:buyer, :suffixed))
+            UNION
+            SELECT s_id FROM xianyu_chat_message
+            WHERE account_id=:account AND xy_goods_id=:item AND deleted=0 AND s_id IS NOT NULL
+              AND (peer_external_uid IN (:buyer, :suffixed) OR sender_user_id IN (:buyer, :suffixed)
+                   OR receiver_user_id IN (:buyer, :suffixed))
         """), {"account": account_id, "item": item_id, "buyer": buyer_id, "suffixed": f"{buyer_id}@goofish"})
         sessions = {str(sid).removesuffix("@goofish") for sid in result.scalars() if sid}
     return sessions.pop() if len(sessions) == 1 else ""

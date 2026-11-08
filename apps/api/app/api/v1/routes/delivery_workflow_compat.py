@@ -1124,6 +1124,9 @@ def _source_binding_predicate(config_alias: str = "source_cfg") -> str:
         )
         for timing in CONFIG_TIMINGS
     ]
+    timing_checks.append(
+        f"JSON_EXTRACT({safe_json}, CONCAT('$.sourceBindings.\"', :source_id, '\"')) = 1"
+    )
     return (
         "EXISTS ("
         f"SELECT 1 FROM delivery_goods_config {config_alias} "
@@ -1372,6 +1375,9 @@ async def _list_recommendation_candidate_rows(
 
 def _matching_source_ids(config: dict[str, Any]) -> set[int]:
     source_ids: set[int] = set()
+    bindings = config.get("sourceBindings")
+    if isinstance(bindings, dict):
+        source_ids.update(_to_int(key) for key, value in bindings.items() if value == 1 and _to_int(key) > 0)
     for timing in CONFIG_TIMINGS:
         timing_config = config.get(timing)
         if not isinstance(timing_config, dict):

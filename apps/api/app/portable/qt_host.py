@@ -7,7 +7,7 @@ import time
 import sys
 
 from PySide6.QtCore import QTimer,QUrl,Qt
-from PySide6.QtGui import QAction,QColor,QIcon,QPainter,QPixmap
+from PySide6.QtGui import QAction,QColor,QDesktopServices,QIcon,QPainter,QPixmap
 from PySide6.QtWidgets import QApplication,QMainWindow,QMenu,QMessageBox,QSystemTrayIcon,QLabel,QStackedWidget
 from PySide6.QtWebEngineCore import QWebEnginePage,QWebEngineProfile,QWebEngineProfileBuilder,QWebEngineSettings,QWebEngineUrlRequestInterceptor,QWebEngineUrlRequestInfo,QWebEnginePermission,QWebEngineLoadingInfo
 from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -132,6 +132,8 @@ class DesktopConsole:
         self.exiting=False
         self.first_hide=True
         self.loaded=False
+        self.initial_load_requested=False
+        self.console_url=QUrl(f"http://127.0.0.1:{backend.config.desktop_port}/")
         self.last_renderer_reload=None
         self.connected=None
         self.network_monitor=NetworkMonitor()
@@ -177,6 +179,8 @@ class DesktopConsole:
         self.startup_label=QLabel("正在启动闲鱼助手…",self.stack)
         self.startup_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.startup_label.setStyleSheet("background:#f6f9ff;color:#15213d;font-size:18px;")
+        self.startup_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+        self.startup_label.linkActivated.connect(self.open_in_browser)
         self.stack.addWidget(self.startup_label)
         self.stack.addWidget(self.view)
         self.window.setCentralWidget(self.stack)
@@ -209,8 +213,12 @@ class DesktopConsole:
             self.stack.setCurrentWidget(self.view)
         elif not self.exiting:
             self.loaded=False
-            self.startup_label.setText("本机控制台加载失败，按 F5 重新加载")
+            self.startup_label.setText('本机控制台加载失败，按 F5 重新加载<br><a href="open">在浏览器打开控制台</a>')
             self.stack.setCurrentWidget(self.startup_label)
+
+    def open_in_browser(self, _link):
+        if not self.exiting and self.backend.ready:
+            QDesktopServices.openUrl(self.console_url)
 
     def reload_console(self):
         if not self.exiting and self.backend.ready:
@@ -220,7 +228,7 @@ class DesktopConsole:
             if local_url(self.view.url(),self.backend.config.desktop_port):
                 self.view.reload()
             else:
-                self.view.setUrl(QUrl(f"http://127.0.0.1:{self.backend.config.desktop_port}/"))
+                self.view.setUrl(self.console_url)
 
     def on_renderer_terminated(self,status,exit_code):
         if self.exiting:
@@ -318,8 +326,9 @@ class DesktopConsole:
             self.connected=connected
         status=self.backend.poll()
         self.render(status["state"])
-        if self.backend.ready and self.view.url().isEmpty():
-            self.view.setUrl(QUrl(f"http://127.0.0.1:{self.backend.config.desktop_port}/"))
+        if self.backend.ready and not self.initial_load_requested:
+            self.initial_load_requested=True
+            self.view.setUrl(self.console_url)
         if self.smoke and self.loaded and not self.smoke_started:
             self.smoke_started=True
             self.page.runJavaScript("Boolean(document.querySelector('.app-shell') && document.querySelector('.sidebar'))",self.smoke_result)

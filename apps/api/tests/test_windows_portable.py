@@ -56,6 +56,7 @@ def test_qt_and_chromium_all_paths_set_before_import_no_user_fallback(portable,m
     assert all(path.is_relative_to(root) and path.is_dir() for path in mapping.values())
     assert 'C:/Users' not in os.environ['QTWEBENGINE_CHROMIUM_FLAGS']
     assert '--no-sandbox' not in os.environ['QTWEBENGINE_CHROMIUM_FLAGS']
+    assert '--disable-gpu' in os.environ['QTWEBENGINE_CHROMIUM_FLAGS'].split()
     assert 'QTWEBENGINE_REMOTE_DEBUGGING' not in os.environ
     assert 'QTWEBENGINE_DISABLE_SANDBOX' not in os.environ
 

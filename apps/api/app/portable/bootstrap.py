@@ -26,7 +26,8 @@ def configure_environment():
         "QTWEBENGINE_CHROMIUM_FLAGS":' '.join([
             f'--user-data-dir="{paths["profile"]}"',f'--disk-cache-dir="{paths["cache"]}"',
             f'--crash-dumps-dir="{paths["crashes"]}"',"--disable-breakpad",
-            "--disable-gpu-shader-disk-cache","--no-first-run",
+            # Keep the console off driver-dependent GPU compositing on Windows.
+            "--disable-gpu","--disable-gpu-shader-disk-cache","--no-first-run",
         ]),
     })
     # Never inherit a debugging listener or a disabled Chromium sandbox.

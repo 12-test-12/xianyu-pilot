@@ -24,11 +24,16 @@ class UnifiedDeliveryRules(DesktopDeliveryStore):
 
     def project(self,conn,goods_id):
         variants = [self.decode(row).model_dump() for row in conn.execute("SELECT * FROM delivery_rule WHERE goods_id=? AND deleted=0 ORDER BY sku_id",(goods_id,))]
-        payload = encode({"schemaVersion":2,"variants":variants})
+        bindings = {str(v["plan"]["sourceId"]): 1 for v in variants if v["plan"].get("sourceId")}
+        payload = encode({"schemaVersion":2,"variants":variants,"sourceBindings":bindings})
         conn.execute("""INSERT INTO delivery_goods_config(goods_id,config_json,version,deleted) VALUES(?,?,1,0)
             ON CONFLICT(goods_id) DO UPDATE SET config_json=excluded.config_json,version=delivery_goods_config.version+1,deleted=0""",(goods_id,payload))
 
     def validate_variant(self,conn,variant):
+        if variant.plan.source_id is not None and not conn.execute(
+            "SELECT 1 FROM delivery_text_source WHERE id=? AND deleted=0", (variant.plan.source_id,)
+        ).fetchone():
+            raise InventoryError("货源不存在或已删除", 404)
         if variant.plan.card_group_id is not None:
             self.group(conn,variant.plan.card_group_id)
         self.asset_manifest(variant.plan)
@@ -141,10 +146,22 @@ class UnifiedDeliveryRules(DesktopDeliveryStore):
                 )] or [""]
                 config = GoodsDeliveryConfig(variants=tuple(
                     RuleVariant(sku_id=sku_id, enabled=True, plan=DeliveryPlan(
-                        sku_id=sku_id, parts=parts, card_group_id=source["card_group_id"] if card else None
+                        sku_id=sku_id, source_id=source_id, parts=parts, card_group_id=source["card_group_id"] if card else None
                     )) for sku_id in sku_ids
                 ))
                 self.save_goods(goods_id, config, connection=conn)
+
+    def unbind_source(self, source_id, goods_id):
+        with self.connection(write=True) as conn:
+            rows = conn.execute("SELECT * FROM delivery_rule WHERE goods_id=? AND deleted=0", (goods_id,)).fetchall()
+            variants = [self.decode(row) for row in rows]
+            changed = any(v.plan.source_id == source_id for v in variants)
+            if changed:
+                variants = [v.model_copy(update={"enabled": False,
+                    "plan": v.plan.model_copy(update={"source_id": None})})
+                    if v.plan.source_id == source_id else v for v in variants]
+                self.save_goods(goods_id, GoodsDeliveryConfig(variants=tuple(variants)), connection=conn)
+            return changed
 
     def get_goods(self,goods_id):
         with self.connection() as conn:
@@ -190,8 +207,6 @@ class UnifiedDeliveryRules(DesktopDeliveryStore):
         kind=body.get("mode","text")
         if kind not in ("text","card","kami"):
             raise InventoryError("不支持的发货方式")
-        if body.get("sourceId") not in (None,"") or body.get("sourceTitle") not in (None,""):
-            raise InventoryError("旧货源库尚未迁移，请使用直接内容或规范组合配置")
         retries=body.get("retryCount",2)
         threshold=body.get("alertThreshold",0)
         if type(retries) is not int or not 0<=retries<=10 or type(threshold) is not int or not 0<=threshold<=10000:
@@ -231,7 +246,8 @@ class UnifiedDeliveryRules(DesktopDeliveryStore):
             words=tuple(w.strip() for w in re.split(r"[,，|]",words) if w.strip())
         trigger=TriggerPolicy(mode=body.get("triggerMode",previous.trigger.mode if previous else "payment"),keywords=words)
         variant=RuleVariant(sku_id=sku,enabled=boolean("enabled",False),trigger=trigger,
-            plan=DeliveryPlan(sku_id=sku,card_group_id=body.get("cardGroupId") if kind in ("card","kami") else None,
+            plan=DeliveryPlan(sku_id=sku,source_id=body.get("sourceId") or None,
+                card_group_id=body.get("cardGroupId") if kind in ("card","kami") else None,
                 confirm_shipment=boolean("autoConfirmShipment",True),max_attempts=retries+1,
                 low_stock_threshold=threshold,pause_on_low_stock=boolean("autoDisableOnLowStock",False),parts=tuple(parts)))
         variants=[existing for existing in variants if existing.sku_id!=sku]

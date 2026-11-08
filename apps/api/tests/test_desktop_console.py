@@ -284,6 +284,33 @@ def test_desktop_source_apply_creates_the_rules_used_by_paid_orders(console):
         _, rule = UnifiedDeliveryRules(config.sqlite_path).resolve(11, 'fixture-item', sku)
         assert rule.enabled and rule.trigger.mode == 'payment'
         assert rule.plan.parts[0].content == '测试发货内容'
+        assert rule.plan.source_id == 5
+    detail = client.get('/api/auto-delivery/sources/5/goods').json()['data']
+    assert detail['source']['usageCount'] == 1
+    assert [goods['id'] for goods in detail['configuredGoods']] == [21]
+    assert client.get('/api/auto-delivery/sources').json()['data']['records'][0]['usageCount'] == 1
+    # Disabling a rule keeps its source association; unbinding must disable execution too.
+    rules = client.get('/api/auto-delivery/goods/21/config').json()['data']
+    rules['variants'][0]['enabled'] = False
+    saved = client.put('/api/auto-delivery/goods/21/config', json={
+        'expectedVersion': rules['version'], 'variants': rules['variants']})
+    assert saved.status_code == 200
+    assert client.get('/api/auto-delivery/sources/5/goods').json()['data']['source']['usageCount'] == 1
+    removed = client.delete('/api/auto-delivery/sources/5/goods/21', headers={'Content-Type': 'application/json'})
+    assert removed.status_code == 200, removed.text
+    assert removed.json()['data']['updated'] is True
+    assert client.get('/api/auto-delivery/sources/5/goods').json()['data']['configuredGoods'] == []
+    for variant in client.get('/api/auto-delivery/goods/21/config').json()['data']['variants']:
+        assert not variant['enabled'] and variant['plan']['sourceId'] is None
+    assert client.delete('/api/auto-delivery/sources/5/goods/21', headers={'Content-Type': 'application/json'}).json()['data']['updated'] is False
+    saved = client.put('/api/auto-delivery/goods/21/config', json={
+        'skuId': 'sku-one', 'enabled': True, 'sourceId': 5, 'content': '独立修改的内容'})
+    assert saved.status_code == 200
+    assert client.get('/api/auto-delivery/sources/5/goods').json()['data']['source']['usageCount'] == 1
+    assert UnifiedDeliveryRules(config.sqlite_path).resolve(11, 'fixture-item', 'sku-one')[1].plan.parts[0].content == '独立修改的内容'
+    invalid = client.put('/api/auto-delivery/goods/21/config', json={
+        'skuId': 'sku-one', 'enabled': True, 'sourceId': 999, 'content': '无效货源'})
+    assert invalid.status_code == 404
 
 
 @pytest.mark.asyncio
