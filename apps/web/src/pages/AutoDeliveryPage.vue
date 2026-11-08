@@ -962,7 +962,7 @@ function fillConfigForm(config = {}) {
     enabled: config.enabled !== undefined ? Number(config.enabled) : 1,
     mode: config.mode || 'text',
     sourceId: config.sourceId || '',
-    sourceTitle: config.sourceTitle || '',
+    sourceTitle: config.sourceTitle || (config.sourceId ? sourceTitle(config.sourceId) : '') || '',
     cardGroupId: config.cardGroupId || '',
     cardSource: config.cardGroupId ? 'existing' : (config.cardSource || 'direct'),
     cardKeysText: '',

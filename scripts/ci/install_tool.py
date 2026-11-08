@@ -21,21 +21,13 @@ TOOLS = {
     "gitleaks": ("gitleaks/gitleaks", "8.24.2"),
 }
 
+_release_assets_cache: dict[tuple[str, str], dict[str, str]] = {}
 
-def _fetch_release_file(repo: str, version: str, filename: str, timeout: int = 20) -> bytes:
-    direct_url = f"https://github.com/{repo}/releases/download/v{version}/{filename}"
-    headers = {"User-Agent": "xianyu-pilot-ci-tool-installer/1.0"}
-    for attempt in range(1, 3):
-        try:
-            req = Request(direct_url, headers=headers)
-            with urlopen(req, timeout=timeout) as response:
-                return response.read()
-        except HTTPError as exc:
-            if exc.code == 404:
-                break
-            time.sleep(1)
-        except Exception:
-            time.sleep(1)
+
+def _fetch_release_assets(repo: str, version: str, timeout: int = 15) -> dict[str, str]:
+    key = (repo, version)
+    if key in _release_assets_cache:
+        return _release_assets_cache[key]
 
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     api_headers = {
@@ -59,6 +51,25 @@ def _fetch_release_file(repo: str, version: str, filename: str, timeout: int = 2
             time.sleep(1)
 
     assets = {a["name"]: a["url"] for a in (release_data or {}).get("assets", [])}
+    _release_assets_cache[key] = assets
+    return assets
+
+
+def _fetch_release_file(repo: str, version: str, filename: str, timeout: int = 10) -> bytes:
+    headers = {"User-Agent": "xianyu-pilot-ci-tool-installer/1.0"}
+    if (repo, version) not in _release_assets_cache:
+        direct_url = f"https://github.com/{repo}/releases/download/v{version}/{filename}"
+        try:
+            req = Request(direct_url, headers=headers)
+            with urlopen(req, timeout=timeout) as response:
+                return response.read()
+        except HTTPError as exc:
+            if exc.code == 404:
+                raise
+        except Exception:
+            pass
+
+    assets = _fetch_release_assets(repo, version, timeout=15)
     if filename not in assets:
         raise ValueError(f"Asset {filename} not found in release v{version} of {repo}")
 
@@ -66,9 +77,6 @@ def _fetch_release_file(repo: str, version: str, filename: str, timeout: int = 2
         "User-Agent": "xianyu-pilot-ci-tool-installer/1.0",
         "Accept": "application/octet-stream",
     }
-    if token:
-        asset_headers["Authorization"] = f"Bearer {token}"
-
     for attempt in range(1, 3):
         try:
             req = Request(assets[filename], headers=asset_headers)
@@ -78,7 +86,6 @@ def _fetch_release_file(repo: str, version: str, filename: str, timeout: int = 2
             if attempt == 2:
                 raise
             time.sleep(1)
-
     raise RuntimeError(f"Failed to fetch {filename} from {repo} v{version}")
 
 

@@ -1377,7 +1377,7 @@ def _matching_source_ids(config: dict[str, Any]) -> set[int]:
     source_ids: set[int] = set()
     bindings = config.get("sourceBindings")
     if isinstance(bindings, dict):
-        source_ids.update(_to_int(key) for key, value in bindings.items() if value == 1 and _to_int(key) > 0)
+        source_ids.update(_to_int(key) for key, value in bindings.items() if _to_int(value) == 1 and _to_int(key) > 0)
     for timing in CONFIG_TIMINGS:
         timing_config = config.get(timing)
         if not isinstance(timing_config, dict):

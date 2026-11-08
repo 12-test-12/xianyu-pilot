@@ -581,7 +581,7 @@ async def edit_fish_shop_item(
             return ResultObject(code=409, msg="无法确认闲鱼是否收到编辑，请先到闲鱼核对商品再重试")
 
         response_item_id = extract_response_item_id(result)
-        if response_item_id != item_id:
+        if response_item_id and response_item_id != item_id:
             logger.warning("fish_shop_edit_item_id_mismatch expected=%s got=%s", item_id, response_item_id)
             return ResultObject(code=409, msg="闲鱼未确认目标商品已编辑，请先到闲鱼核对商品再重试")
 

@@ -24,7 +24,7 @@ class UnifiedDeliveryRules(DesktopDeliveryStore):
 
     def project(self,conn,goods_id):
         variants = [self.decode(row).model_dump() for row in conn.execute("SELECT * FROM delivery_rule WHERE goods_id=? AND deleted=0 ORDER BY sku_id",(goods_id,))]
-        bindings = {str(v["plan"]["sourceId"]): 1 for v in variants if v["plan"].get("sourceId")}
+        bindings = {str(sid): 1 for v in variants if (sid := (v["plan"].get("sourceId") or v["plan"].get("source_id")))}
         payload = encode({"schemaVersion":2,"variants":variants,"sourceBindings":bindings})
         conn.execute("""INSERT INTO delivery_goods_config(goods_id,config_json,version,deleted) VALUES(?,?,1,0)
             ON CONFLICT(goods_id) DO UPDATE SET config_json=excluded.config_json,version=delivery_goods_config.version+1,deleted=0""",(goods_id,payload))
@@ -152,6 +152,11 @@ class UnifiedDeliveryRules(DesktopDeliveryStore):
                 self.save_goods(goods_id, config, connection=conn)
 
     def unbind_source(self, source_id, goods_id):
+        try:
+            source_id = int(source_id)
+            goods_id = int(goods_id)
+        except (TypeError, ValueError):
+            return False
         with self.connection(write=True) as conn:
             rows = conn.execute("SELECT * FROM delivery_rule WHERE goods_id=? AND deleted=0", (goods_id,)).fetchall()
             variants = [self.decode(row) for row in rows]

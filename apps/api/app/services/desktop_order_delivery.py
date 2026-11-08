@@ -82,8 +82,8 @@ class DesktopSoldOrderSource:
             skus = conn.execute("""
                 SELECT s.sku_id,s.property_list_json FROM xianyu_goods_sku s
                 JOIN xianyu_goods g ON g.id=s.goods_id
-                WHERE g.account_id=? AND g.deleted=0 AND (g.external_goods_id=? OR g.goods_id=?)
-            """, (account_id, order.item_id, order.item_id)).fetchall()
+                WHERE g.account_id=? AND g.deleted=0 AND (g.external_goods_id=? OR g.goods_id=? OR CAST(g.id AS TEXT)=?)
+            """, (account_id, order.item_id, order.item_id, order.item_id)).fetchall()
         lines = (row.get("itemVO") or {}).get("itemInfoLines") or []
         if not skus:
             if lines:
