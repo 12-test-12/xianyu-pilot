@@ -30,6 +30,8 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Validate workflow syntax and expressions
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python scripts/ci/install_tool.py actionlint "$RUNNER_TEMP/ci-tools"
           "$RUNNER_TEMP/ci-tools/actionlint" -color

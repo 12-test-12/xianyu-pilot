@@ -131,6 +131,8 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Install checksum-verified Gitleaks
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python scripts/ci/install_tool.py gitleaks "$RUNNER_TEMP/ci-tools"
       - name: Scan without exposing matched credentials
         run: |

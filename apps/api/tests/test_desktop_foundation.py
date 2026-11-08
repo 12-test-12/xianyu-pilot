@@ -122,10 +122,13 @@ def test_startup_lock_local_boundary_and_explicit_unavailable_routes(desktop_con
 
 
 def test_desktop_import_ignores_server_configuration_and_external_clients(tmp_path):
+    python_path = str(Path(__file__).resolve().parents[1])
+    if os.environ.get("PYTHONPATH"):
+        python_path = f"{python_path}{os.pathsep}{os.environ['PYTHONPATH']}"
     env = {**os.environ, "RUNTIME_MODE": "desktop", "DESKTOP_DATA_DIR": str(tmp_path / "ignored"),
            "MYSQL_PORT": "invalid", "REDIS_PORT": "invalid", "APP_ENV": "production",
            "MYSQL_PASSWORD_FILE": str(tmp_path / "missing-secret"),
-           "PYTHONPATH": str(Path(__file__).resolve().parents[1])}
+           "PYTHONPATH": python_path}
     script = """
 import sys
 from pathlib import Path

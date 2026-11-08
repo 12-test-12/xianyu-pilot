@@ -5,10 +5,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import io
+import json
+import os
 from pathlib import Path
 import platform
 import tarfile
-from urllib.request import urlopen
+import time
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 import zipfile
 
 
@@ -16,6 +20,66 @@ TOOLS = {
     "actionlint": ("rhysd/actionlint", "1.7.12"),
     "gitleaks": ("gitleaks/gitleaks", "8.24.2"),
 }
+
+
+def _fetch_release_file(repo: str, version: str, filename: str, timeout: int = 20) -> bytes:
+    direct_url = f"https://github.com/{repo}/releases/download/v{version}/{filename}"
+    headers = {"User-Agent": "xianyu-pilot-ci-tool-installer/1.0"}
+    for attempt in range(1, 3):
+        try:
+            req = Request(direct_url, headers=headers)
+            with urlopen(req, timeout=timeout) as response:
+                return response.read()
+        except HTTPError as exc:
+            if exc.code == 404:
+                break
+            time.sleep(1)
+        except Exception:
+            time.sleep(1)
+
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    api_headers = {
+        "User-Agent": "xianyu-pilot-ci-tool-installer/1.0",
+        "Accept": "application/vnd.github+json",
+    }
+    if token:
+        api_headers["Authorization"] = f"Bearer {token}"
+
+    api_url = f"https://api.github.com/repos/{repo}/releases/tags/v{version}"
+    release_data = None
+    for attempt in range(1, 3):
+        try:
+            req = Request(api_url, headers=api_headers)
+            with urlopen(req, timeout=timeout) as response:
+                release_data = json.loads(response.read().decode("utf-8"))
+            break
+        except Exception:
+            if attempt == 2:
+                raise
+            time.sleep(1)
+
+    assets = {a["name"]: a["url"] for a in (release_data or {}).get("assets", [])}
+    if filename not in assets:
+        raise ValueError(f"Asset {filename} not found in release v{version} of {repo}")
+
+    asset_headers = {
+        "User-Agent": "xianyu-pilot-ci-tool-installer/1.0",
+        "Accept": "application/octet-stream",
+    }
+    if token:
+        asset_headers["Authorization"] = f"Bearer {token}"
+
+    for attempt in range(1, 3):
+        try:
+            req = Request(assets[filename], headers=asset_headers)
+            with urlopen(req, timeout=timeout) as response:
+                return response.read()
+        except Exception:
+            if attempt == 2:
+                raise
+            time.sleep(1)
+
+    raise RuntimeError(f"Failed to fetch {filename} from {repo} v{version}")
 
 
 def install(name: str, destination: Path) -> Path:
@@ -27,15 +91,12 @@ def install(name: str, destination: Path) -> Path:
     arch = "x64" if name == "gitleaks" else "amd64"
     suffix = "zip" if windows else "tar.gz"
     asset = f"{name}_{version}_{system}_{arch}.{suffix}"
-    base = f"https://github.com/{repo}/releases/download/v{version}"
-    with urlopen(f"{base}/{name}_{version}_checksums.txt", timeout=60) as response:
-        checksums = response.read().decode("utf-8")
+    checksums = _fetch_release_file(repo, version, f"{name}_{version}_checksums.txt").decode("utf-8")
     entries = [line.split() for line in checksums.splitlines()]
     expected = [parts[0] for parts in entries if len(parts) >= 2 and parts[1].lstrip("*").lstrip("./") == asset]
     if len(expected) != 1:
         raise ValueError("Missing or ambiguous vendor checksum")
-    with urlopen(f"{base}/{asset}", timeout=60) as response:
-        archive = response.read()
+    archive = _fetch_release_file(repo, version, asset)
     if hashlib.sha256(archive).hexdigest() != expected[0]:
         raise ValueError("CI tool checksum mismatch")
     executable = name + (".exe" if windows else "")
