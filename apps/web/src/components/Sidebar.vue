@@ -1,5 +1,5 @@
 <template>
-  <aside class="sidebar" :class="{ open }">
+  <aside id="workspace-sidebar" class="sidebar" :class="{ open }">
     <button class="sidebar-close" type="button" aria-label="关闭菜单" @click="$emit('close')">
       <svg viewBox="0 0 24 24" class="ui-icon"><path d="M6 6l12 12M18 6 6 18" /></svg>
     </button>
@@ -14,6 +14,7 @@
           v-for="item in group.items"
           :key="item.key"
           :class="['nav-item', { active: isActive(item.key), child: item.child }]"
+          :aria-current="isActive(item.key) ? 'page' : undefined"
           @click="$emit('navigate', item.key)"
           @mouseenter="$emit('prefetch', item.key)"
           @focus="$emit('prefetch', item.key)"
@@ -30,7 +31,6 @@
         <strong>{{ displayName }}</strong>
         <span>管理员</span>
       </div>
-      <span class="online-dot"></span><span class="online-text">在线</span>
     </button>
     <button class="sidebar-logout" type="button" @click="$emit('logout')">退出登录</button>
     <div class="version">© {{ copyrightYear }} XianYuAssistant<br />v{{ APP_VERSION }}</div>

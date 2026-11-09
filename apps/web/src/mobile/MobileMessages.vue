@@ -1,5 +1,5 @@
 <template>
-  <div class="m-msg">
+  <div class="m-msg" :class="{ 'is-chat': activeChat }">
     <!-- 会话列表视图 -->
     <template v-if="!activeChat">
       <div class="m-page-header">
@@ -110,7 +110,7 @@
     <!-- 聊天详情视图 -->
     <template v-else>
       <div class="m-chat-header">
-        <button class="m-chat-back" @click="closeChat">
+        <button class="m-chat-back" type="button" aria-label="返回会话列表" @click="closeChat">
           <MIcon name="chevronLeft" :size="22" />
         </button>
         <div class="m-chat-title">
@@ -119,7 +119,7 @@
             <MIcon name="bag" :size="11" /> {{ activeChat.goodsTitle || activeChat.product }}
           </div>
         </div>
-        <button class="m-chat-more" @click="$emit('force-desktop')">
+        <button class="m-chat-more" type="button" aria-label="切换到桌面版" @click="$emit('force-desktop')">
           <MIcon name="desktop" :size="18" />
         </button>
       </div>
@@ -174,16 +174,15 @@
         <input
           v-model="draft"
           type="text"
+          aria-label="消息内容"
           placeholder="输入消息..."
           @keyup.enter="sendCurrentMessage"
         />
-        <button class="m-chat-send" :disabled="!draft.trim() || sending || chatLoading || Boolean(chatBlockingError)" @click="sendCurrentMessage">
+        <button class="m-chat-send" type="button" aria-label="发送消息" :disabled="!draft.trim() || sending || chatLoading || Boolean(chatBlockingError)" @click="sendCurrentMessage">
           <MIcon name="send" :size="18" />
         </button>
       </div>
     </template>
-
-    <div class="m-safe-bottom"></div>
   </div>
 </template>
 
@@ -783,12 +782,15 @@ onBeforeUnmount(() => {
   padding: 12px 16px 0;
   display: flex;
   flex-direction: column;
-  min-height: calc(100vh - 120px);
+  min-height: 100%;
   width: 100%;
   max-width: 100%;
   min-width: 0;
   box-sizing: border-box;
-  overflow-x: hidden;
+  overflow-x: clip;
+}
+.m-msg.is-chat {
+  height: 100%;
 }
 .m-page-header { margin-bottom: 20px; }
 .m-page-header h1 { margin: 0 0 4px; font-size: 26px; font-weight: 800; color: #15213d; }
@@ -1132,12 +1134,8 @@ onBeforeUnmount(() => {
 
 /* 聊天详情视图 */
 .m-chat-header {
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  background: rgba(245, 248, 255, 0.95);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  flex-shrink: 0;
+  background: var(--card);
   padding: 10px 4px 10px 0;
   display: flex;
   align-items: center;
@@ -1202,7 +1200,7 @@ onBeforeUnmount(() => {
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   padding: 14px 0;
-  min-height: 300px;
+  min-height: 0;
 }
 .m-chat-loading, .m-chat-empty {
   display: flex;
@@ -1311,11 +1309,10 @@ onBeforeUnmount(() => {
 }
 
 .m-chat-input {
-  position: sticky;
-  bottom: 0;
-  background: white;
+  flex-shrink: 0;
+  background: var(--card);
   border-top: 1px solid #eef2fa;
-  padding: 10px 10px max(10px, env(safe-area-inset-bottom));
+  padding: 10px;
   display: flex;
   gap: 8px;
   align-items: center;
@@ -1326,6 +1323,7 @@ onBeforeUnmount(() => {
 }
 .m-chat-input input {
   flex: 1;
+  min-width: 0;
   height: 44px;
   border: 1px solid #e8edf5;
   border-radius: 100px;
@@ -1341,14 +1339,13 @@ onBeforeUnmount(() => {
   height: 44px;
   border-radius: 50%;
   border: none;
-  background: linear-gradient(135deg, #0d6bff, #2580ff);
+  background: var(--primary);
   color: white;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   flex-shrink: 0;
-  box-shadow: 0 4px 10px rgba(13,107,255,0.3);
   transition: transform 0.1s;
 }
 .m-chat-send:active { transform: scale(0.95); }
@@ -1358,7 +1355,6 @@ onBeforeUnmount(() => {
   cursor: not-allowed;
 }
 
-.m-safe-bottom { height: 80px; }
 
 @media (max-width: 360px) {
   .m-msg { padding: 10px 12px 0; }

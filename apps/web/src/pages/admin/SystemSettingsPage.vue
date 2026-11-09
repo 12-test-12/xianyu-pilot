@@ -19,7 +19,7 @@
       </div>
     </section>
 
-    <div class="grid stat-grid" style="grid-template-columns: repeat(4, 1fr)">
+    <div class="grid stat-grid">
       <StatCard
         title="通用模型"
         :value="configAvailable ? summary.generalModel : '状态未知'"

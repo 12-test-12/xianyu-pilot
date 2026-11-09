@@ -154,8 +154,6 @@
       <span>账号详细管理与操作建议在PC端完成</span>
       <button class="m-tip-btn" @click="$emit('force-desktop')">进入桌面版</button>
     </div>
-
-    <div class="m-safe-bottom"></div>
   </div>
 </template>
 
@@ -676,5 +674,4 @@ onMounted(() => {
   flex-shrink: 0;
 }
 
-.m-safe-bottom { height: 80px; }
 </style>

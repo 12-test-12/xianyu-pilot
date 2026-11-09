@@ -214,8 +214,6 @@
         </div>
       </template>
     </template>
-
-    <div class="m-safe-bottom"></div>
   </div>
 </template>
 
@@ -751,9 +749,6 @@ onMounted(() => {
   transform: scale(0.96);
 }
 
-.m-safe-bottom {
-  height: 80px;
-}
 
 @media (max-width: 360px) {
   .m-data { padding: 10px 12px 0; }

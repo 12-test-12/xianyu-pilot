@@ -4,7 +4,7 @@
     <div v-if="kbsWarning" class="global-notice warning" role="status">{{ kbsWarning }}</div>
     <div v-if="success" class="global-notice success">{{ success }}</div>
 
-    <div class="grid stat-grid" style="grid-template-columns:repeat(4,1fr)">
+    <div class="grid stat-grid">
       <StatCard title="知识库总数" :value="kbMetric(kbStats.total)" change="全部记录" icon="document" />
       <StatCard title="启用中" :value="kbMetric(kbStats.active)" change="status=1" icon="shield" color="green" />
       <StatCard title="文档总数" :value="kbMetric(kbStats.docs)" change="所有知识库汇总" icon="product" color="orange" />
@@ -876,13 +876,5 @@ onBeforeUnmount(() => {
     word-break: break-word;
   }
 
-  /* 让宽表格横向滚动，避免撑破容器 */
-  :deep(.base-table),
-  :deep(.base-table-wrap),
-  :deep(table) {
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-    max-width: 100%;
-  }
 }
 </style>

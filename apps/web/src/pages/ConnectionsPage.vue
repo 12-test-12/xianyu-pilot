@@ -460,12 +460,5 @@ onBeforeUnmount(()=>{ window.removeEventListener('xya-header-action', onHeader);
     white-space: normal !important;
     word-break: break-word;
   }
-  /* 宽表格横向滚动 */
-  :deep(.base-table) {
-    display: block;
-    overflow-x: auto;
-    white-space: nowrap;
-    -webkit-overflow-scrolling: touch;
-  }
 }
 </style>

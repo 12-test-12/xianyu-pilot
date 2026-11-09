@@ -2051,16 +2051,6 @@ onBeforeUnmount(() => {
     font-size: 12px;
   }
 
-  /* 宽表格横向滚动 */
-  .base-table {
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-  }
-
-  .base-table tbody {
-    white-space: nowrap;
-  }
-
   /* 表格工具栏收敛 */
   .table-info {
     font-size: 13px;

@@ -2,7 +2,6 @@
   <div class="dashboard-page">
     <div class="dashboard-grid">
       <div class="dashboard-main">
-
         <OnboardingChecklist @navigate="onOnboardingNavigate" />
 
         <div v-if="error" class="global-notice error">
@@ -10,10 +9,10 @@
           <button class="retry-btn" type="button" :disabled="reloading" @click="reloadData">{{ reloading ? '重试中...' : '重试' }}</button>
         </div>
 
-        <CardPanel title="快速开始" desc="把最常用的入口放在这里，方便第一次进入系统时快速上手" class="dashboard-section">
+        <CardPanel title="常用操作" class="dashboard-section">
           <div class="quick-start-grid">
             <button v-for="item in quickStarts" :key="item.t" type="button" class="quick-card" @click="goFeature(item)">
-              <div :class="['circle-ico', item.c]"><Icon :name="item.i" /></div>
+              <div class="circle-ico"><Icon :name="item.i" /></div>
               <div class="quick-text">
                 <strong>{{ item.t }}</strong>
                 <span>{{ item.d }}</span>
@@ -23,14 +22,13 @@
           </div>
         </CardPanel>
 
-        <CardPanel title="功能特性" desc="常用业务能力模块一览，延续设计稿中的两行卡片结构" class="dashboard-section">
+        <CardPanel title="业务模块" class="dashboard-section">
           <div class="feature-grid">
             <button v-for="item in features" :key="item.t" type="button" class="feature-card" @click="goFeature(item)">
-              <div :class="['circle-ico', item.c]"><Icon :name="item.i" /></div>
+              <div class="circle-ico"><Icon :name="item.i" /></div>
               <div class="feature-text">
                 <strong>{{ item.t }}</strong>
                 <span>{{ item.d }}</span>
-                <em>{{ `点击进入 ${item.targetLabel}` }}</em>
               </div>
               <span class="card-arrow">›</span>
             </button>
@@ -56,7 +54,6 @@
       </div>
 
       <aside class="dashboard-side">
-
         <CardPanel class="side-panel">
           <template #title>使用指南</template>
           <template #action>
@@ -571,19 +568,19 @@ function openGuideDocument() {
 }
 
 const quickStarts = [
-  { t: '添加账号', d: '添加店铺账号，开始管理您的店铺', i: 'users', c: 'blue-bg', to: 'accounts' },
-  { t: 'WebSocket连接', d: '建立实时连接，接收消息和数据', i: 'data', c: 'purple-bg', to: 'accounts' },
-  { t: '商品管理', d: '发布管理商品，优化商品信息', i: 'product', c: 'green-bg', to: 'products' },
-  { t: '自动化发货', d: '设置发货规则并查看实际执行结果', i: 'truck', c: 'orange-bg', to: 'auto-delivery' }
+  { t: '添加账号', d: '添加店铺账号，开始管理您的店铺', i: 'users', to: 'accounts' },
+  { t: 'WebSocket连接', d: '建立实时连接，接收消息和数据', i: 'data', to: 'accounts' },
+  { t: '商品管理', d: '发布管理商品，优化商品信息', i: 'product', to: 'products' },
+  { t: '自动化发货', d: '设置发货规则并查看实际执行结果', i: 'truck', to: 'auto-delivery' }
 ]
 
 const features = [
-  { t: '多账号管理', d: '集中查看账号、授权与连接状态', i: 'users', c: 'purple-bg', to: 'accounts', targetLabel: '管理账号' },
-  { t: '商品同步', d: '按需同步商品；发布与改价结果以平台确认为准', i: 'product', c: 'green-bg', to: 'products', targetLabel: '商品管理' },
-  { t: '订单管理', d: '按需同步订单并查看后端实际记录状态', i: 'order', c: 'blue-bg', to: 'orders', targetLabel: '订单管理' },
-  { t: '自动发货', d: '按已配置规则处理发货，异常与未知结果需人工复核', i: 'truck', c: 'orange-bg', to: 'auto-delivery', targetLabel: '自动化' },
-  { t: '系统设置', d: '集中管理通用模型、向量模型、RAG 知识库配置。', i: 'settings', c: 'cyan-bg', to: 'settings-system', targetLabel: '系统配置' },
-  { t: '数据统计', d: '查看订单、发货与自动回复的实际汇总', i: 'data', c: 'blue-bg', to: 'data', targetLabel: '数据面板' }
+  { t: '多账号管理', d: '集中查看账号、授权与连接状态', i: 'users', to: 'accounts' },
+  { t: '商品同步', d: '按需同步商品；发布与改价结果以平台确认为准', i: 'product', to: 'products' },
+  { t: '订单管理', d: '按需同步订单并查看后端实际记录状态', i: 'order', to: 'orders' },
+  { t: '自动发货', d: '按已配置规则处理发货，异常与未知结果需人工复核', i: 'truck', to: 'auto-delivery' },
+  { t: '系统设置', d: '集中管理通用模型、向量模型、RAG 知识库配置。', i: 'settings', to: 'settings-system' },
+  { t: '数据统计', d: '查看订单、发货与自动回复的实际汇总', i: 'data', to: 'data' }
 ]
 
 function goFeature(item) {
@@ -607,7 +604,7 @@ onBeforeUnmount(() => {
 
 .dashboard-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 368px;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 31%);
   gap: 20px;
   align-items: start;
 }
@@ -618,64 +615,49 @@ onBeforeUnmount(() => {
 
 .dashboard-side {
   position: sticky;
-  top: 88px;
+  top: 54px;
   display: flex;
   flex-direction: column;
   gap: 20px;
 }
 
 .dashboard-section {
-  margin-top: 18px;
-  border-radius: 18px;
-  padding: 20px;
-  box-shadow: 0 16px 40px rgba(32, 68, 132, 0.05);
+  margin-top: 16px;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 .quick-start-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
 }
 
 .feature-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 218px), 1fr));
+  gap: 8px;
 }
 
 .quick-card,
 .feature-card {
-  min-height: 96px;
-  border: 1px solid #edf2fb;
-  border-radius: 18px;
-  background: #fff;
+  height: auto;
+  min-height: 64px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--bg);
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 18px 16px;
+  gap: 10px;
+  padding: 10px;
   text-align: left;
-  transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
+  box-shadow: none;
 }
 
 .quick-card:hover,
 .feature-card:hover {
-  transform: translateY(-1px);
-  border-color: #c9dcff;
-  box-shadow: 0 14px 30px rgba(37, 106, 214, 0.08);
+  transform: none;
+  border-color: var(--line);
+  background: #edf2fa;
+  box-shadow: none;
 }
 
 .quick-text,
@@ -687,40 +669,38 @@ onBeforeUnmount(() => {
 .quick-text strong,
 .feature-text strong {
   display: block;
-  color: #16233d;
-  font-size: 15px;
+  color: var(--text);
+  font-size: 14px;
 }
 
 .quick-text span,
 .feature-text span {
   display: block;
-  margin-top: 4px;
-  color: #7a8aa5;
+  margin-top: 3px;
+  color: var(--muted);
   font-size: 12px;
-  line-height: 1.65;
-}
-
-.feature-text em {
-  display: block;
-  margin-top: 6px;
-  color: #0d6bff;
-  font-style: normal;
-  font-size: 12px;
-  font-weight: 700;
+  line-height: 1.5;
+  text-wrap: pretty;
 }
 
 .quick-card .circle-ico,
 .feature-card .circle-ico {
-  width: 44px;
-  height: 44px;
-  flex: 0 0 44px;
-  font-size: 20px;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  border-radius: 8px;
+  background: #eaf1fd;
+  color: var(--primary);
+}
+
+.circle-ico :deep(.ui-icon-img) {
+  width: 22px;
+  height: 22px;
 }
 
 .card-arrow {
-  color: #bdc9db;
-  font-size: 20px;
-  font-weight: 700;
+  color: var(--muted);
+  font-size: 18px;
 }
 
 .events-empty {
@@ -769,12 +749,6 @@ onBeforeUnmount(() => {
   color: #9aa7bb;
   font-style: normal;
   text-align: right;
-}
-
-.side-panel {
-  border-radius: 18px;
-  padding: 20px 18px;
-  box-shadow: 0 16px 40px rgba(32, 68, 132, 0.06);
 }
 
 .side-link {
@@ -1104,22 +1078,6 @@ onBeforeUnmount(() => {
   color: #ef4444;
 }
 
-/* 中宽屏（1501-1680px）：4 列下功能卡片过窄，长描述与
-   "点击进入 XXX" 文本大量换行溢出，降为 3 列保证文字留白 */
-@media (max-width: 1680px) {
-  .quick-start-grid,
-  .feature-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 1500px) {
-  .quick-start-grid,
-  .feature-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
 @media (max-width: 1180px) {
   .dashboard-grid {
     grid-template-columns: minmax(0, 1fr);
@@ -1130,73 +1088,20 @@ onBeforeUnmount(() => {
   }
 }
 
-@media (max-width: 900px) {
-
-
-
-
-
-
-
-
-  /* 仪表盘网格间距收敛 */
-  .dashboard-grid {
-    gap: 12px;
+@media (max-width: 540px) {
+  .quick-start-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
+}
 
+@media (max-width: 900px) {
+  .dashboard-grid,
   .dashboard-side {
     gap: 12px;
   }
 
-  /* 各 Section 内边距收敛 */
   .dashboard-section {
     margin-top: 12px;
-    border-radius: 14px;
-    padding: 14px;
-  }
-
-  /* 快速开始 / 功能特性：小屏 1 列堆叠 */
-  .quick-start-grid,
-  .feature-grid {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 10px;
-  }
-
-  .quick-card,
-  .feature-card {
-    min-height: 0;
-    padding: 12px;
-    border-radius: 14px;
-    gap: 12px;
-  }
-
-  .quick-card .circle-ico,
-  .feature-card .circle-ico {
-    width: 38px;
-    height: 38px;
-    flex: 0 0 38px;
-    font-size: 18px;
-  }
-
-  .quick-text strong,
-  .feature-text strong {
-    font-size: 14px;
-  }
-
-  .quick-text span,
-  .feature-text span {
-    margin-top: 3px;
-    font-size: 11px;
-    line-height: 1.55;
-  }
-
-  .feature-text em {
-    margin-top: 4px;
-    font-size: 11px;
-  }
-
-  .card-arrow {
-    font-size: 18px;
   }
 
   /* 实时事件行：横向网格 → 纵向堆叠 */

@@ -599,13 +599,6 @@ onBeforeUnmount(() => {
   .inline-actions .link {
     font-size: 13px;
   }
-  /* 宽表格横向滚动 */
-  :deep(.base-table) {
-    display: block;
-    overflow-x: auto;
-    white-space: nowrap;
-    -webkit-overflow-scrolling: touch;
-  }
   .card-panel,
   .stat-grid > *,
   .stat-row > *,

@@ -1,5 +1,5 @@
 <template>
-  <div class="grid" style="grid-template-columns:minmax(0,1fr) 460px;gap:18px">
+  <div class="grid wide-right">
     <div>
       <div v-if="error" class="global-notice error">{{ error }}</div>
       <div v-if="success" class="global-notice success">{{ success }}</div>
@@ -375,13 +375,6 @@ onBeforeUnmount(() => {
   .json-section-head {
     flex-wrap: wrap;
     gap: 6px;
-  }
-  /* 宽表格横向滚动 */
-  :deep(.base-table) {
-    display: block;
-    overflow-x: auto;
-    white-space: nowrap;
-    -webkit-overflow-scrolling: touch;
   }
   /* 详情标题与关闭按钮行 */
   .right-drawer > div:first-of-type {

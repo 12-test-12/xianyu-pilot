@@ -1,44 +1,35 @@
 <template>
   <div class="data-page">
     <div class="data-hero">
-      <div class="hero-glow glow-blue"></div>
-      <div class="hero-glow glow-purple"></div>
-      <div class="hero-glow glow-accent"></div>
-      <div class="hero-header">
-        <div class="hero-title-group">
-          <div class="hero-badge">
-            <span class="hero-dot"></span>
-            <span>实时数据</span>
-          </div>
-          <h2>数据面板</h2>
-          <p>{{ scopeLabel }} · {{ dateLabel }} · 更新于 {{ updatedAt }}</p>
+      <p class="data-scope">{{ scopeLabel }} · {{ dateLabel }} · 更新于 {{ updatedAt }}</p>
+      <div class="hero-controls">
+        <div class="control-item">
+          <label for="data-account">账号</label>
+          <select
+            id="data-account"
+            v-model="accountId"
+            class="hero-select"
+            :disabled="accountsLoading || syncingOrders"
+          >
+            <option value="all">全部账号</option>
+            <option v-for="acc in accounts" :key="acc.id" :value="acc.id">
+              {{ formatAccountLabel(acc) }}
+            </option>
+          </select>
         </div>
-        <div class="hero-controls">
-          <div class="control-item">
-            <label for="data-account">账号</label>
-            <select
-              id="data-account"
-              v-model="accountId"
-              class="hero-select"
-              :disabled="accountsLoading || syncingOrders"
-            >
-              <option value="all">全部账号</option>
-              <option v-for="acc in accounts" :key="acc.id" :value="acc.id">
-                {{ formatAccountLabel(acc) }}
-              </option>
-            </select>
-          </div>
-          <div class="control-item">
-            <label>日期</label>
-            <input v-model="date" class="hero-input" type="date" :disabled="syncingOrders">
-          </div>
-          <button class="refresh-btn" :disabled="loading || syncingOrders" @click="refreshData">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" :class="{ 'spin': loading }">
-              <path d="M21 12a9 9 0 11-6.219-8.56"/><polyline points="21 3 21 9 15 9"/>
-            </svg>
-            {{ syncingOrders ? '同步订单中' : loading ? '加载中' : '刷新' }}
-          </button>
+        <div class="control-item">
+          <label for="data-date">日期</label>
+          <input id="data-date" v-model="date" class="hero-input" type="date" :disabled="syncingOrders">
         </div>
+        <AppButton
+          type="primary"
+          class="refresh-btn"
+          :loading="loading || syncingOrders"
+          :loading-text="syncingOrders ? '同步订单中' : '加载中'"
+          @click="refreshData"
+        >
+          刷新数据
+        </AppButton>
       </div>
     </div>
 
@@ -48,7 +39,7 @@
     </div>
 
     <div class="metrics-strip">
-      <div v-for="(m, i) in metrics" :key="m.key" class="metric-card" :style="{ '--delay': i * 60 + 'ms', '--accent': m.color }">
+      <div v-for="m in metrics" :key="m.key" class="metric-card" :style="{ '--accent': m.color }">
         <div class="metric-icon-wrap">
           <div class="metric-icon-bg"></div>
           <Icon :name="m.icon" class="metric-icon" />
@@ -217,6 +208,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import CardPanel from '../components/CardPanel.vue'
+import AppButton from '../components/AppButton.vue'
 import EmptyState from '../components/EmptyState.vue'
 import Icon from '../components/Icon.vue'
 import { getDashboardSummary, getDashboardSalesTrend } from '../api/dashboard.js'
@@ -886,7 +878,6 @@ function onSse(event) {
   logs.value = logs.value.slice(0, 5)
 }
 function onSseStatus(event) { sseStatus.value = String(event?.detail || 'disconnected') }
-function onHeader(e) { if (e.detail === 'refresh-data-panel') refreshData() }
 
 watch(accountId, () => { orderSyncError.value = ''; load() })
 watch(date, () => { load() })
@@ -894,7 +885,6 @@ watch(date, () => { load() })
 onMounted(() => {
   window.addEventListener('xya-sse-event', onSse)
   window.addEventListener('xya-sse-status', onSseStatus)
-  window.addEventListener('xya-header-action', onHeader)
   window.addEventListener('resize', handleResize)
   loadAccounts()
   load()
@@ -905,7 +895,6 @@ onBeforeUnmount(() => {
   if (resizeFrame !== null) cancelAnimationFrame(resizeFrame)
   window.removeEventListener('xya-sse-event', onSse)
   window.removeEventListener('xya-sse-status', onSseStatus)
-  window.removeEventListener('xya-header-action', onHeader)
   window.removeEventListener('resize', handleResize)
   trendChart?.dispose(); deliveryPieChart?.dispose(); replyBarChart?.dispose()
   trendChart = null; deliveryPieChart = null; replyBarChart = null
@@ -918,117 +907,39 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 16px;
   padding-bottom: 32px;
+  container-type: inline-size;
 }
 
 /* Decorative idle pulses continuously repaint the embedded Chromium window. */
-.data-page .hero-glow, .data-page .hero-dot,
 .data-page .live-dot.connected .live-pulse, .data-page .event-dot::after {
   animation: none;
 }
 
-/* ===== Hero Section ===== */
 .data-hero {
-  position: relative;
-  background: linear-gradient(135deg, #0f1b3d 0%, #162d6b 40%, #0d2152 100%);
-  border-radius: 16px;
-  padding: 24px 28px 22px;
-  overflow: hidden;
-  color: #fff;
-  box-shadow: 0 8px 32px rgba(13, 107, 255, 0.15);
-}
-
-.data-hero::before {
-  content: '';
-  position: absolute;
-  top: 0; left: 0; right: 0;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
-}
-
-.hero-glow {
-  position: absolute;
-  border-radius: 50%;
-  pointer-events: none;
-  will-change: transform, opacity;
-}
-.glow-blue {
-  width: 320px; height: 320px;
-  background: radial-gradient(circle, rgba(13,107,255,0.5) 0%, transparent 70%);
-  top: -120px; right: -60px;
-  animation: glow-float 8s ease-in-out infinite;
-}
-.glow-purple {
-  width: 240px; height: 240px;
-  background: radial-gradient(circle, rgba(49,134,255,0.35) 0%, transparent 70%);
-  bottom: -100px; left: 20%;
-  animation: glow-float 10s ease-in-out infinite reverse;
-  animation-delay: -3s;
-}
-.glow-accent {
-  width: 180px; height: 180px;
-  background: radial-gradient(circle, rgba(22,183,255,0.25) 0%, transparent 70%);
-  top: 40%; left: -40px;
-  animation: glow-float 12s ease-in-out infinite;
-  animation-delay: -6s;
-}
-
-@keyframes glow-float {
-  0%, 100% { opacity: 0.6; transform: translate(0, 0) scale(1); }
-  33% { opacity: 0.8; transform: translate(8px, -8px) scale(1.05); }
-  66% { opacity: 0.5; transform: translate(-6px, 6px) scale(0.98); }
-}
-
-.hero-header {
-  position: relative;
-  z-index: 1;
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-end;
   justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 18px;
+  gap: 12px 20px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px 16px;
 }
 
-.hero-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  background: rgba(255,255,255,0.1);
-  backdrop-filter: blur(12px);
-  border: 1px solid rgba(255,255,255,0.12);
-  border-radius: 999px;
-  padding: 5px 14px;
-  font-size: 12px;
-  color: rgba(255,255,255,0.85);
-  margin-bottom: 14px;
-  font-weight: 500;
+.data-scope {
+  margin: 0;
+  align-self: center;
+  color: var(--muted);
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+  text-wrap: pretty;
+  overflow-wrap: anywhere;
 }
-.hero-dot {
-  width: 7px; height: 7px;
-  border-radius: 50%;
-  background: #16bf78;
-  box-shadow: 0 0 10px rgba(22,191,120,0.6);
-  animation: pulse-dot 2s ease-in-out infinite;
-}
+
 @keyframes pulse-dot {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.5; transform: scale(0.85); }
-}
-
-.hero-title-group h2 {
-  font-size: 26px;
-  font-weight: 800;
-  margin: 0;
-  letter-spacing: -0.8px;
-  background: linear-gradient(135deg, #fff 0%, rgba(255,255,255,0.8) 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-}
-.hero-title-group p {
-  margin: 6px 0 0;
-  font-size: 13px;
-  color: rgba(255,255,255,0.55);
-  font-weight: 400;
 }
 
 .hero-controls {
@@ -1042,33 +953,23 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 5px;
+  min-width: 0;
+  width: min(160px, 100%);
 }
 .control-item label {
-  font-size: 11px;
-  color: rgba(255,255,255,0.45);
-  text-transform: uppercase;
-  letter-spacing: 0.8px;
-  font-weight: 500;
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
 }
 
 .hero-select,
 .hero-input {
-  background: rgba(255,255,255,0.07);
-  border: 1px solid rgba(255,255,255,0.12);
-  border-radius: 10px;
-  padding: 9px 14px;
-  color: #fff;
+  min-width: 136px;
+  max-width: 100%;
+  height: 38px;
   font-size: 13px;
-  min-width: 150px;
-  outline: none;
-  transition: all 0.25s ease;
-  cursor: pointer;
-  font-weight: 500;
 }
-.hero-select option {
-  background: #162d6b;
-  color: #fff;
-}
+
 @supports (appearance: base-select) and selector(::picker(select)) {
   /* Keep the account popup inside Qt WebEngine's rendered page. */
   :global(.desktop-host #data-account),
@@ -1076,52 +977,16 @@ onBeforeUnmount(() => {
     appearance: base-select;
   }
   :global(.desktop-host #data-account::picker(select)) {
-    background: #162d6b;
+    background: var(--card);
     border: 1px solid var(--line);
-    border-radius: 10px;
+    border-radius: 8px;
   }
-}
-.hero-select:hover, .hero-input:hover {
-  border-color: rgba(255,255,255,0.25);
-  background: rgba(255,255,255,0.12);
-}
-.hero-select:focus, .hero-input:focus {
-  border-color: rgba(49,134,255,0.6);
-  background: rgba(255,255,255,0.1);
-  box-shadow: 0 0 0 3px rgba(13,107,255,0.2);
-}
-.hero-input { cursor: default; }
-.hero-input::-webkit-calendar-picker-indicator {
-  filter: invert(1) opacity(0.6);
-  cursor: pointer;
 }
 
 .refresh-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  background: linear-gradient(135deg, #0d6bff 0%, #3186ff 100%);
-  color: #fff;
-  border: none;
-  border-radius: 10px;
-  padding: 10px 20px;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.25s ease;
-  white-space: nowrap;
-  box-shadow: 0 4px 14px rgba(13,107,255,0.35);
+  min-width: 110px;
+  height: 38px;
 }
-.refresh-btn:hover:not(:disabled) {
-  transform: translateY(-1px);
-  box-shadow: 0 6px 20px rgba(13,107,255,0.45);
-}
-.refresh-btn:active:not(:disabled) {
-  transform: translateY(0);
-}
-.refresh-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.spin { animation: spin 1s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
 
 /* ===== Error Banner ===== */
 .error-banner {
@@ -1140,50 +1005,32 @@ onBeforeUnmount(() => {
 /* ===== Metrics Strip ===== */
 .metrics-strip {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
+}
+
+@container (max-width: 760px) {
+  .metrics-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .metric-card {
   position: relative;
   background: var(--card, #fff);
   border: 1px solid var(--line, #e7edf7);
-  border-radius: 14px;
-  padding: 16px 18px;
+  border-radius: var(--radius);
+  padding: 12px;
   display: flex;
   align-items: center;
-  gap: 14px;
-  transition: all 0.3s cubic-bezier(0.4,0,0.2,1);
-  overflow: hidden;
-  animation: card-in 0.6s cubic-bezier(0.4,0,0.2,1) both;
-  animation-delay: var(--delay, 0ms);
-  box-shadow: 0 1px 2px rgba(31, 53, 94, .04), 0 4px 12px rgba(31, 53, 94, .04);
-  will-change: transform;
+  gap: 10px;
+  min-width: 0;
+  box-shadow: var(--shadow);
 }
-@keyframes card-in {
-  from { opacity: 0; transform: translateY(16px) scale(0.98); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
-}
-.metric-card:hover {
-  border-color: rgba(13,107,255,0.2);
-  box-shadow: 0 8px 24px rgba(31, 53, 94, .08);
-  transform: translateY(-3px);
-}
-.metric-card::after {
-  content: '';
-  position: absolute;
-  top: 0; left: 0;
-  width: 4px;
-  height: 0;
-  background: var(--accent);
-  border-radius: 0 4px 4px 0;
-  transition: height 0.3s cubic-bezier(0.4,0,0.2,1);
-}
-.metric-card:hover::after { height: 100%; }
 
 .metric-icon-wrap {
   position: relative;
-  width: 44px; height: 44px;
+  width: 36px; height: 36px;
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -1192,14 +1039,9 @@ onBeforeUnmount(() => {
 .metric-icon-bg {
   position: absolute;
   inset: 0;
-  border-radius: 12px;
+  border-radius: 8px;
   background: var(--accent);
   opacity: 0.1;
-  transition: all 0.3s;
-}
-.metric-card:hover .metric-icon-bg {
-  opacity: 0.15;
-  transform: scale(1.08);
 }
 .metric-icon {
   width: 22px; height: 22px;
@@ -1211,6 +1053,7 @@ onBeforeUnmount(() => {
 .metric-body {
   flex: 1;
   min-width: 0;
+  overflow-wrap: anywhere;
 }
 .metric-label {
   display: block;
@@ -1582,26 +1425,18 @@ onBeforeUnmount(() => {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
-  .hero-dot { animation: none; }
   .live-dot.connected .live-pulse { animation: none; }
-  .spin { animation: none; }
-  .glow-blue, .glow-purple, .glow-accent { animation: none; }
   .event-dot::after { display: none; }
-  .metric-card { animation: none; }
 }
 
 /* ===== Responsive ===== */
 @media (max-width: 1200px) {
-  .metrics-strip { grid-template-columns: repeat(4, 1fr); gap: 10px; }
   .chart-row-three { grid-template-columns: 1fr 1fr; }
   .chart-row-three .overview-panel { grid-column: 1 / -1; }
   .bottom-grid { grid-template-columns: 1fr 1fr; }
 }
 @media (max-width: 900px) {
-  .data-hero { padding: 20px; border-radius: 14px; }
-  .hero-title-group h2 { font-size: 22px; }
-  .metrics-strip { grid-template-columns: repeat(2, 1fr); gap: 10px; }
-  .metric-card { padding: 14px; border-radius: 12px; }
+  .data-hero { padding: 12px; }
   .metric-value { font-size: 20px; }
   .chart-row-three { grid-template-columns: 1fr; }
   .bottom-grid { grid-template-columns: 1fr; }
@@ -1610,12 +1445,18 @@ onBeforeUnmount(() => {
 }
 @media (max-width: 600px) {
   .data-page { gap: 12px; }
-  .metrics-strip { grid-template-columns: 1fr 1fr; gap: 8px; }
   .hero-controls { width: 100%; }
   .control-item { flex: 1; min-width: 0; }
   .hero-select, .hero-input { min-width: 0; width: 100%; }
   .quick-grid { grid-template-columns: 1fr; }
   .metric-spark { display: none; }
-  .refresh-btn { width: 100%; justify-content: center; }
+  .refresh-btn { width: 100%; }
+}
+
+@container (max-width: 380px) {
+  .metric-card {
+    flex-direction: column;
+    align-items: flex-start;
+  }
 }
 </style>

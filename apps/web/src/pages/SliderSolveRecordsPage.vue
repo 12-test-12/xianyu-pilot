@@ -1,5 +1,5 @@
 <template>
-  <div class="grid slider-layout" style="grid-template-columns:minmax(0,1fr) 460px;gap:18px">
+  <div class="grid wide-right slider-layout">
     <div>
       <div v-if="loadError" class="global-notice error">滑块记录加载失败：{{ loadError }}</div>
       <div class="grid stat-grid">
@@ -311,14 +311,6 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.slider-layout :deep(.stat-grid) {
-  grid-template-columns: repeat(4, 1fr);
-}
-@media (max-width: 1500px) {
-  .slider-layout :deep(.stat-grid) {
-    grid-template-columns: repeat(2, 1fr);
-  }
-}
 .slider-layout :deep(.base-table tbody tr) {
   cursor: pointer;
   transition: background .15s;

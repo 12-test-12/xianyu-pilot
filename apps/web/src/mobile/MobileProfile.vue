@@ -132,8 +132,6 @@
         <MIcon name="logout" :size="18" />退出登录
       </button>
     </div>
-
-    <div class="m-safe-bottom"></div>
   </div>
 </template>
 
@@ -415,7 +413,6 @@ onMounted(() => {
   border: 1.5px solid #ffd1d1;
 }
 
-.m-safe-bottom { height: 80px; }
 
 @media (max-width: 360px) {
   .m-profile { padding: 10px 12px 0; }

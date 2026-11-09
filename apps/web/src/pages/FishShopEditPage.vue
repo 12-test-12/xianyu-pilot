@@ -820,20 +820,6 @@ onMounted(async () => {
   padding: 16px;
   align-items: start;
 }
-.bottom-actions {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  display: flex;
-  justify-content: flex-end;
-  gap: 12px;
-  padding: 12px 24px;
-  background: var(--bg, #fff);
-  border-top: 1px solid var(--border, #e5e7eb);
-  z-index: 5;
-}
-
 /* ---- 顶部面包屑与返回 ---- */
 .edit-page-header {
   display: flex;
@@ -1068,9 +1054,6 @@ onMounted(async () => {
   }
   .edit-page-title {
     font-size: 14px;
-  }
-  .bottom-actions {
-    padding: 10px 12px;
   }
   .skeleton-grid {
     grid-template-columns: 1fr;

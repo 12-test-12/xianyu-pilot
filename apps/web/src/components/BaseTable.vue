@@ -1,63 +1,65 @@
 <template>
-  <table class="base-table">
-    <thead>
-      <tr>
-        <th v-if="selectable" class="col-select" @click="onHeaderSelectClick">
-          <input
-            type="checkbox"
-            class="bt-checkbox"
-            :checked="allSelected"
-            :indeterminate.prop="someSelected"
-            :disabled="!rows || rows.length === 0"
-            aria-label="全选"
-            @click.stop
-            @change="toggleAll"
-          />
-        </th>
-        <th
-          v-for="c in columns"
-          :key="c.key"
-          :class="{ sortable: c.sortable, 'sort-active': isSortActive(c), 'sort-asc': isSortDir(c, 'asc'), 'sort-desc': isSortDir(c, 'desc') }"
-          @click="onHeaderClick(c)"
+  <div class="base-table-wrap" tabindex="0" role="region" aria-label="数据表格">
+    <table class="base-table">
+      <thead>
+        <tr>
+          <th v-if="selectable" class="col-select" @click="onHeaderSelectClick">
+            <input
+              type="checkbox"
+              class="bt-checkbox"
+              :checked="allSelected"
+              :indeterminate.prop="someSelected"
+              :disabled="!rows || rows.length === 0"
+              aria-label="全选"
+              @click.stop
+              @change="toggleAll"
+            />
+          </th>
+          <th
+            v-for="c in columns"
+            :key="c.key"
+            :class="{ sortable: c.sortable, 'sort-active': isSortActive(c), 'sort-asc': isSortDir(c, 'asc'), 'sort-desc': isSortDir(c, 'desc') }"
+            @click="onHeaderClick(c)"
+          >
+            <span class="th-text">{{ c.title }}</span>
+            <span v-if="c.sortable" class="sort-indicator" aria-hidden="true">{{ sortIndicatorText(c) }}</span>
+          </th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr v-if="!rows?.length">
+          <td :colspan="(columns?.length || 1) + (selectable ? 1 : 0)">
+            <slot name="empty">
+              <div class="table-empty">暂无数据</div>
+            </slot>
+          </td>
+        </tr>
+        <tr
+          v-for="(row, idx) in rows"
+          :key="resolveRowKey(row, idx)"
+          :class="rowClass?.(row, idx) || ''"
+          :tabindex="rowIsInteractive ? 0 : undefined"
+          @click="activateRow(row)"
+          @keydown.enter="activateRow(row)"
+          @keydown.space.prevent="activateRow(row)"
         >
-          <span class="th-text">{{ c.title }}</span>
-          <span v-if="c.sortable" class="sort-indicator" aria-hidden="true">{{ sortIndicatorText(c) }}</span>
-        </th>
-      </tr>
-    </thead>
-    <tbody>
-      <tr v-if="!rows?.length">
-        <td :colspan="(columns?.length || 1) + (selectable ? 1 : 0)">
-          <slot name="empty">
-            <div class="table-empty">暂无数据</div>
-          </slot>
-        </td>
-      </tr>
-      <tr
-        v-for="(row, idx) in rows"
-        :key="resolveRowKey(row, idx)"
-        :class="rowClass?.(row, idx) || ''"
-        :tabindex="rowIsInteractive ? 0 : undefined"
-        @click="activateRow(row)"
-        @keydown.enter="activateRow(row)"
-        @keydown.space.prevent="activateRow(row)"
-      >
-        <td v-if="selectable" class="col-select" @click.stop="onRowSelectClick(row, idx, $event)">
-          <input
-            type="checkbox"
-            class="bt-checkbox"
-            :checked="isRowSelected(row, idx)"
-            :aria-label="'选择第 ' + (idx + 1) + ' 行'"
-            @click.stop
-            @change="toggleRow(row, idx)"
-          />
-        </td>
-        <td v-for="c in columns" :key="c.key">
-          <slot :name="c.key" :row="row">{{ row[c.key] }}</slot>
-        </td>
-      </tr>
-    </tbody>
-  </table>
+          <td v-if="selectable" class="col-select" @click.stop="onRowSelectClick(row, idx, $event)">
+            <input
+              type="checkbox"
+              class="bt-checkbox"
+              :checked="isRowSelected(row, idx)"
+              :aria-label="'选择第 ' + (idx + 1) + ' 行'"
+              @click.stop
+              @change="toggleRow(row, idx)"
+            />
+          </td>
+          <td v-for="c in columns" :key="c.key">
+            <slot :name="c.key" :row="row">{{ row[c.key] }}</slot>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
 </template>
 <script setup>
 import { computed, getCurrentInstance } from 'vue'
@@ -164,6 +166,23 @@ function onRowSelectClick(row, idx, e) {
 }
 </script>
 <style scoped>
+.base-table-wrap {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.base-table-wrap:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+
+@media (max-width: 900px) {
+  .base-table th {
+    white-space: nowrap;
+  }
+}
+
 .col-select {
   width: 44px;
   text-align: center;

@@ -5,10 +5,10 @@
         <div class="avatar small avatar-img"></div>
         <span>{{ displayName }}</span>
         <em>{{ sseLabel }}</em>
-        <b aria-hidden="true">⌄</b>
+        <b v-if="showLogout" aria-hidden="true">⌄</b>
       </button>
 
-      <div class="top-user-menu logout-only">
+      <div v-if="showLogout" class="top-user-menu logout-only">
         <button type="button" @click="$emit('logout')">退出登录</button>
       </div>
     </div>
@@ -21,6 +21,7 @@ import { computed } from 'vue'
 const props = defineProps({
   user: { type: Object, default: () => ({}) },
   sseStatus: { type: String, default: 'disconnected' },
+  showLogout: { type: Boolean, default: true },
   unreadCount: { type: [String, Number], default: 0 }
 })
 
@@ -39,16 +40,38 @@ const sseLabel = computed(() => ({
 <style scoped>
 .top-user-wrap {
   position: relative;
+  min-width: 0;
+}
+
+.top-user {
+  max-width: 100%;
+  min-height: 36px;
+  padding: 4px 10px 4px 5px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--text);
+}
+
+.top-user > span {
+  max-width: 18ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.top-user > em {
+  flex-shrink: 0;
 }
 
 .top-user-menu {
   position: absolute;
   right: 0;
-  top: 46px;
+  top: 100%;
   background: #fff;
   border: 1px solid #e8eef8;
-  border-radius: 14px;
-  box-shadow: 0 18px 40px rgba(30, 52, 92, 0.14);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
   padding: 8px;
   z-index: 20;
   opacity: 0;

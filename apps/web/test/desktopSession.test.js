@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { initializeDesktopSession } from '../src/utils/desktopSession.js'
-import { getToken, clearAuth } from '../src/utils/auth.js'
+import { getToken, setAuth } from '../src/utils/auth.js'
 
 test('server pages retain login flow; desktop exchanges its bootstrap capability for a local session', async () => {
   const previous = { document: globalThis.document, fetch: globalThis.fetch, sessionStorage: globalThis.sessionStorage, localStorage: globalThis.localStorage }
@@ -27,6 +27,13 @@ test('server pages retain login flow; desktop exchanges its bootstrap capability
     assert.equal(getToken(), 'fixture-session')
     assert.equal(removed, true)
     assert.equal(classes.has('desktop-host'), true)
-    clearAuth()
+    setAuth('stale-token', '旧会话')
+    classes.clear()
+    removed = false
+    globalThis.fetch = async () => ({ ok: false })
+    await assert.rejects(initializeDesktopSession(), /本地会话初始化失败/)
+    assert.equal(getToken(), '')
+    assert.equal(classes.has('desktop-host'), true)
+    assert.equal(removed, false)
   } finally { Object.assign(globalThis, previous) }
 })

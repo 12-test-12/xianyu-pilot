@@ -100,8 +100,6 @@
     <button class="m-big-btn" @click="$emit('force-desktop')">
       <MIcon name="desktop" :size="18" />进入桌面版配置
     </button>
-
-    <div class="m-safe-bottom"></div>
   </div>
 </template>
 
@@ -379,9 +377,6 @@ defineEmits(['navigate', 'force-desktop'])
   cursor: pointer;
 }
 
-.m-safe-bottom {
-  height: 100px;
-}
 
 @media (max-width: 360px) {
   .m-auto { padding: 10px 12px 0; }

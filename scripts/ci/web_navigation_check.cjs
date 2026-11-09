@@ -47,6 +47,15 @@ async function launchBrowser() {
       else if (endpoint === '/system/currentUser') data = { username: 'UI Test' };
       else if (endpoint === '/sse/ticket') data = { ticket: 'test-ticket' };
       else if (endpoint === '/xianyu/accounts') data = { records: [{ id: 12, nickname: 'Test account' }], total: 1 };
+      else if (endpoint === '/captcha/records') data = {
+        list: [{ id: 1, accountId: 12, accountName: 'UI Test', status: 'success' }], total: 1,
+      };
+      else if (endpoint === '/msg/online/conversations') data = {
+        records: [{ id: 42, sid: '12345', peerUserId: '789', peerUserName: '示例买家' }], hasMore: false,
+      };
+      else if (endpoint === '/msg/context') data = {
+        messages: Array.from({ length: 15 }, (_, i) => ({ id: i + 1, content: `测试消息 ${i + 1}` })),
+      };
       else if (endpoint === '/dashboard/summary') data = { todaySalesAmount: 0.01 };
       else if (endpoint === '/dashboard/sales-trend') data = {
         dates: ['2026-11-02', '2026-11-03', '2026-11-04'],
@@ -80,6 +89,18 @@ async function launchBrowser() {
       if (width === 780) await page.screenshot({ path: path.join(reportDir, 'navigation-desktop-narrow.png') });
     }
     checks.push('Desktop sidebar survives resizing across 900px and page navigation');
+
+    for (const width of [1024, 1180, 1440]) {
+      await page.setViewportSize({ width, height: 820 });
+      await page.goto(`${base}/#/accounts`);
+      await page.locator('.page-viewport .wide-right').waitFor();
+      const bounds = await page.locator('.page-head, .topbar').evaluateAll(elements =>
+        Object.fromEntries(elements.map(el => [el.className, el.getBoundingClientRect().toJSON()])));
+      assert.ok(bounds['page-head'].right <= bounds.topbar.left, `Page actions leave room for the user menu at ${width}px`);
+    }
+    await page.setViewportSize({ width: 1180, height: 820 });
+    await page.goto(`${base}/?desktop=1#/connections`);
+    checks.push('Page actions and user menu have separate space on desktop browsers');
 
     let releaseCode, codeRequested;
     const codeGate = new Promise(resolve => { releaseCode = resolve; });
@@ -167,7 +188,14 @@ async function launchBrowser() {
     assert.equal(await timeZone.inputValue(), 'UTC');
     checks.push('Slow settings navigation keeps the shell visible and the time-zone selector accepts keyboard input');
 
+    await page.setViewportSize({ width: 780, height: 720 });
     await page.goto(`${base}/?desktop=1#/product-publish`);
+    const publishActions = page.locator('.bottom-actions');
+    await publishActions.waitFor();
+    const [actionsBox, sidebarBox] = await Promise.all([publishActions.boundingBox(), page.locator('.sidebar').boundingBox()]);
+    assert.ok(actionsBox.x >= sidebarBox.width && actionsBox.x + actionsBox.width <= 780);
+    assert.ok(actionsBox.y + actionsBox.height <= 720, 'Publish actions stay in the viewport');
+    await page.setViewportSize({ width: 1180, height: 820 });
     await page.getByText('推荐不合适？填写闲鱼类目 ID').click();
     await page.getByLabel('同类商品的闲鱼商品 ID').fill('123456');
     await page.getByRole('button', { name: '读取商品类目' }).click();
@@ -176,6 +204,7 @@ async function launchBrowser() {
     await page.getByRole('button', { name: '使用此类目' }).click();
     assert.match(await page.getByText('已选分类：', { exact: false }).first().innerText(), /91000001/);
     checks.push('A synced item supplies a platform category ID outside the recommended categories');
+    checks.push('Publish actions remain visible and clear of the sidebar in a narrow desktop window');
 
     await page.goto(`${base}/?desktop=1#/data`);
     await page.getByText('¥0.01', { exact: true }).waitFor();
@@ -185,6 +214,7 @@ async function launchBrowser() {
     await page.mouse.move(plot.x + plot.width / 2, plot.y + plot.height / 2);
     await page.mouse.wheel(0, 320);
     await page.waitForFunction(() => window.scrollY > 0, null, { timeout: 2000 });
+    assert.ok((await page.locator('.topbar').boundingBox()).y >= 0, 'The desktop user menu remains available after scrolling');
     checks.push('Dashboard scrolls with the pointer over the trend chart');
 
     const account = page.locator('.hero-select');
@@ -199,7 +229,58 @@ async function launchBrowser() {
     await page.locator('.page-viewport .wide-right').waitFor();
     await page.setViewportSize({ width: 390, height: 844 });
     await page.locator('.mobile-shell').waitFor();
-    checks.push('Regular mobile browser retains its mobile layout');
+    for (const width of [320, 390, 768]) {
+      await page.setViewportSize({ width, height: 640 });
+      const inside = await page.locator('.m-topbar .m-user, .m-stats .m-stat-card, .m-tabbar').evaluateAll(elements =>
+        elements.length === 8 && elements.every(el => {
+          const box = el.getBoundingClientRect();
+          return box.left >= 0 && box.right <= innerWidth && box.bottom <= innerHeight;
+        }));
+      assert.ok(inside, `Mobile profile, statistics and navigation fit at ${width}px`);
+    }
+    checks.push('Mobile statistics and navigation fit 320px phones through 768px tablets');
+
+    await page.setViewportSize({ width: 320, height: 420 });
+    await page.getByRole('button', { name: '消息', exact: true }).click();
+    await page.getByText('示例买家', { exact: true }).click();
+    await page.getByText('测试消息 15', { exact: true }).waitFor();
+    const [composer, tabs] = await Promise.all([
+      page.locator('.m-chat-input').boundingBox(),
+      page.locator('.m-tabbar').boundingBox(),
+    ]);
+    assert.ok(composer.y >= 0 && composer.y + composer.height <= tabs.y);
+    assert.ok(await page.locator('.m-chat-body').evaluate(el => el.scrollHeight > el.clientHeight));
+    checks.push('Mobile chat scrolls independently and keeps the composer above the tabs in a short viewport');
+
+    await page.setViewportSize({ width: 320, height: 640 });
+    await page.goto(`${base}/#/slider-solve-records`);
+    const menu = page.getByRole('button', { name: '打开菜单' });
+    await menu.click();
+    assert.equal(await page.getByRole('button', { name: '关闭菜单' }).evaluate(el => el === document.activeElement), true);
+    await page.keyboard.press('Escape');
+    assert.equal(await menu.getAttribute('aria-expanded'), 'false');
+    assert.equal(await menu.evaluate(el => el === document.activeElement), true);
+    const table = page.getByRole('region', { name: '数据表格' });
+    await table.getByText('UI Test').waitFor();
+    await table.focus();
+    await page.keyboard.press('ArrowRight');
+    await page.waitForFunction(() => document.querySelector('.base-table-wrap').scrollLeft > 0);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 320);
+    checks.push('Mobile drawer restores focus and wide tables scroll without widening the page');
+
+    await page.setViewportSize({ width: 780, height: 720 });
+    await page.goto(`${base}/?desktop=1#/login`);
+    await page.locator('.dashboard-page').waitFor();
+    await page.waitForFunction(() => location.hash === '#/dashboard');
+    await page.evaluate(() => window.dispatchEvent(new CustomEvent('xya-auth-expired')));
+    await page.getByText('本地会话不可用', { exact: true }).waitFor();
+    assert.equal(await page.locator('.auth-shell').count(), 0);
+    await page.route('**/api/desktop/session', route => route.fulfill({ status: 403 }));
+    await page.goto(`${base}/?desktop=1#/login`);
+    await page.getByText('本地会话不可用', { exact: true }).waitFor();
+    assert.equal(await page.locator('.auth-shell').count(), 0);
+    checks.push('Desktop bootstrap and expired sessions never open the standalone login page');
+
     assert.deepEqual(errors, []);
     fs.writeFileSync(path.join(reportDir, 'navigation-browser.json'), JSON.stringify({ checks, frames, errors }, null, 2));
     console.log(JSON.stringify({ checks, frames, errors }));

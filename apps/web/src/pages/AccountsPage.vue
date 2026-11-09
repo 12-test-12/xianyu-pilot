@@ -17,7 +17,7 @@
       <Transition name="notice-fade">
         <div v-if="captchaErrorMsg" class="global-notice error">{{ captchaErrorMsg }}</div>
       </Transition>
-      <div class="grid stat-grid" style="grid-template-columns:repeat(4,minmax(0,1fr))">
+      <div class="grid stat-grid">
         <StatCard title="账号总数" :value="accountMetric(stats.total)" change="全部记录" icon="users" />
         <StatCard title="正常账号" :value="accountMetric(stats.normal)" change="当前页" icon="account" color="green" />
         <StatCard title="需验证" :value="accountMetric(stats.verify)" change="当前页" icon="shield" color="orange" />
@@ -2936,16 +2936,6 @@ onBeforeUnmount(() => {
     margin: 0;
     min-width: 0;
     border-radius: 14px;
-  }
-
-  /* 宽表格横向滚动 */
-  .base-table {
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-  }
-
-  .base-table tbody {
-    white-space: nowrap;
   }
 
   /* 编辑账号信息行允许换行 */

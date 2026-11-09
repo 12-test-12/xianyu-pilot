@@ -1,12 +1,8 @@
 <template>
-  <CardPanel v-if="visible" title="新手三步完成首次成功" class="onboarding-card">
-    <div class="onboarding-head">
-      <div>
-        <b>{{ completedCount }}/{{ steps.length }} 已完成</b>
-        <p>建议按顺序完成账号绑定、商品同步和自动化配置，先跑通一个最小运营闭环。</p>
-      </div>
-      <div class="onboarding-progress" :style="{ '--progress': `${progress}%` }"><span>{{ progress }}%</span></div>
-    </div>
+  <CardPanel v-if="visible" title="开店设置" class="onboarding-card">
+    <template #action>
+      <span class="onboarding-count">已完成 {{ completedCount }}/{{ steps.length }}</span>
+    </template>
     <div class="onboarding-steps">
       <button
         v-for="step in steps"
@@ -50,7 +46,6 @@ const steps = [
 
 const isDone = key => done.value.includes(key)
 const completedCount = computed(() => steps.filter(s => isDone(s.key)).length)
-const progress = computed(() => Math.round((completedCount.value / steps.length) * 100))
 
 function go(step) {
   markStepDone(step.key)
@@ -99,5 +94,72 @@ onMounted(() => {
 
 <style scoped>
 .onboarding-card { margin-bottom: 16px; }
-.onboarding-head{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:16px}.onboarding-head b{font-size:18px;color:#16213e}.onboarding-head p{margin:6px 0 0;color:#667085;line-height:1.7}.onboarding-progress{--progress:0%;width:72px;height:72px;border-radius:50%;background:conic-gradient(#0d6bff var(--progress),#edf2fb 0);display:flex;align-items:center;justify-content:center;flex:0 0 auto}.onboarding-progress span{width:54px;height:54px;border-radius:50%;background:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;color:#0d6bff}.onboarding-steps{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.onboarding-step{display:flex;align-items:flex-start;gap:12px;text-align:left;border:1px solid #e8eef8;background:#fff;border-radius:16px;padding:14px;cursor:pointer;transition:.16s}.onboarding-step:hover{border-color:#bfd7ff;box-shadow:0 12px 30px rgba(13,107,255,.08);transform:translateY(-1px)}.onboarding-step.done{background:#f4fff8;border-color:#abefc6}.step-check{width:28px;height:28px;border-radius:10px;background:#edf4ff;color:#0d6bff;display:flex;align-items:center;justify-content:center;font-weight:900;flex:0 0 auto}.done .step-check{background:#dcfae6;color:#067647}.onboarding-step span:nth-child(2){flex:1}.onboarding-step b{display:block;color:#16213e}.onboarding-step em{display:block;margin-top:5px;color:#667085;font-style:normal;line-height:1.5}.onboarding-step strong{color:#0d6bff;white-space:nowrap;font-size:13px}.onboarding-actions{display:flex;justify-content:flex-end;gap:14px;margin-top:12px}.onboarding-actions .link{background:transparent;border:0;color:#64748b;font-size:12px;cursor:pointer;padding:4px 8px;border-radius:6px}.onboarding-actions .link:hover{background:#f1f5f9;color:#0f172a}.onboarding-actions .link.danger:hover{color:#dc2626}@media(max-width:1100px){.onboarding-steps{grid-template-columns:minmax(0, 1fr)}.onboarding-steps > *{min-width:0}}
+
+.onboarding-count {
+  color: var(--muted);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.onboarding-steps {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 202px), 1fr));
+  gap: 8px;
+}
+
+.onboarding-step {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 5px 10px;
+  text-align: left;
+  border: 1px solid var(--line);
+  background: var(--card);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.onboarding-step:hover { background: var(--bg); }
+.step-check {
+  display: grid;
+  grid-row: span 2;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: #eaf1fd;
+  color: var(--primary);
+  font-weight: 700;
+}
+.done .step-check { background: #dcfae6; color: #067647; }
+.onboarding-step b { display: block; color: var(--text); }
+.onboarding-step em {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+.onboarding-step strong { grid-column: 2; color: var(--primary); font-size: 12px; }
+
+.onboarding-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+.onboarding-actions .link {
+  min-height: 36px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+.onboarding-actions .link:hover { background: var(--bg); color: var(--text); }
+.onboarding-actions .link.danger:hover { color: #b42318; }
 </style>

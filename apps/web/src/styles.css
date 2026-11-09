@@ -1,19 +1,20 @@
 :root {
-  --primary: #0d6bff;
+  --primary: #175cd3;
   --primary2: #3186ff;
-  --bg: #f6f9ff;
+  --bg: #f6f7f9;
   --card: #fff;
-  --line: #e7edf7;
-  --text: #15213d;
-  --muted: #72809a;
+  --line: #e1e6ed;
+  --text: #192438;
+  --muted: #55647c;
   --green: #16bf78;
   --red: #ff5b61;
   --orange: #ff9f22;
   --purple: #8b5cf6;
   --cyan: #11b5d8;
-  --shadow: 0 1px 2px rgba(31, 53, 94, .04), 0 8px 24px rgba(31, 53, 94, .06);
-  --radius: 16px;
-  --sidebar: 282px;
+  --shadow: 0 1px 2px rgba(25, 36, 56, .05);
+  --radius: 10px;
+  --sidebar: clamp(184px, 18vw, 236px);
+  --page-gutter: clamp(14px, 2.2vw, 32px);
 }
 
 * {
@@ -22,13 +23,11 @@
 
 html, body {
   max-width: 100%;
-  overflow-x: hidden;
+  overflow-x: clip;
 }
 
 #app {
   width: 100%;
-  max-width: 100vw;
-  overflow-x: hidden;
 }
 
 body {
@@ -58,8 +57,9 @@ a {
 
 .app-shell {
   min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
-  background: linear-gradient(180deg, #f8fbff 0%, #f4f8ff 100%)
+  background: var(--bg)
 }
 
 .sidebar {
@@ -68,9 +68,9 @@ a {
   top: 0;
   bottom: 0;
   width: var(--sidebar);
-  background: rgba(255, 255, 255, .86);
+  background: var(--card);
   border-right: 1px solid var(--line);
-  padding: 22px 18px;
+  padding: 16px 12px;
   display: flex;
   flex-direction: column;
   z-index: 20
@@ -132,12 +132,7 @@ a {
   overflow: auto;
   padding-right: 2px;
   flex: 1;
-  scrollbar-width: none;
-  -ms-overflow-style: none
-}
-
-.nav-scroll::-webkit-scrollbar {
-  display: none
+  scrollbar-width: thin
 }
 
 .nav-group {
@@ -146,7 +141,7 @@ a {
 
 .nav-title {
   font-size: 13px;
-  color: #8c98ae;
+  color: var(--muted);
   margin: 0 0 7px 0
 }
 
@@ -173,9 +168,9 @@ a {
 }
 
 .nav-item.active {
-  background: linear-gradient(90deg, #0d6bff, #167cff);
-  color: white;
-  box-shadow: 0 10px 20px rgba(13, 107, 255, .22)
+  background: #eaf1fd;
+  color: var(--primary);
+  font-weight: 650
 }
 
 .nav-item.child {
@@ -206,13 +201,13 @@ a {
 }
 
 .side-user {
-  height: 62px;
-  background: #f4f7fc;
-  border: 1px solid #eaf0f8;
-  border-radius: 13px;
+  min-height: 54px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
   display: flex;
   align-items: center;
-  padding: 10px 12px;
+  padding: 8px;
   gap: 10px;
   width: 100%;
   color: inherit;
@@ -248,26 +243,16 @@ a {
 }
 
 .side-user-main strong {
-  font-size: 15px
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap
 }
 
 .side-user-main span,
 .top-user em {
   font-style: normal;
   color: #7b879d;
-  font-size: 12px
-}
-
-.online-dot {
-  width: 7px;
-  height: 7px;
-  background: #18c785;
-  border-radius: 50%;
-  display: block
-}
-
-.online-text {
-  color: #13a66a;
   font-size: 12px
 }
 
@@ -281,18 +266,37 @@ a {
 .main {
   margin-left: var(--sidebar);
   width: calc(100% - var(--sidebar));
-  padding: 22px 28px 20px;
-  min-height: 100vh
+  min-width: 0;
+  padding: 12px var(--page-gutter) 24px;
+  min-height: 100dvh
+}
+
+.app-shell:not(.is-mobile) .main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: minmax(48px, auto) 1fr;
+  align-items: start;
+  column-gap: 16px;
+}
+
+.app-shell:not(.is-mobile) .page-head {
+  grid-area: 1 / 1;
+}
+
+.app-shell:not(.is-mobile) .page-viewport {
+  grid-area: 2 / 1 / 3 / -1;
 }
 
 .topbar {
-  position: fixed;
-  right: 22px;
-  top: 18px;
-  height: 42px;
+  grid-area: 1 / 2 / 3 / 3;
+  position: sticky;
+  top: 0;
   display: flex;
-  gap: 16px;
+  justify-content: flex-end;
   align-items: center;
+  width: fit-content;
+  max-width: 100%;
+  min-height: 42px;
   z-index: 40
 }
 
@@ -333,32 +337,32 @@ a {
 }
 
 .page-head {
-  height: 62px;
   display: flex;
-  align-items: flex-start;
+  flex-wrap: wrap;
+  align-items: flex-end;
   justify-content: space-between;
-  margin-bottom: 10px;
-  padding-right: 380px;
-  position: relative;
-  z-index: 35
+  gap: 12px 20px;
+  margin-bottom: 18px
 }
 
 .page-head h1 {
   margin: 0;
-  font-size: 30px;
-  line-height: 1.1;
-  letter-spacing: .3px
+  font-size: clamp(22px, 2.3vw, 28px);
+  line-height: 1.2;
+  text-wrap: balance
 }
 
 .page-head p {
-  margin: 10px 0 0;
-  color: #667491;
-  font-size: 15px
+  margin: 6px 0 0;
+  color: var(--muted);
+  line-height: 1.5;
+  text-wrap: pretty
 }
 
 .head-actions {
   display: flex;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 8px;
   align-items: center
 }
 
@@ -375,10 +379,10 @@ a {
 }
 
 .app-btn.primary {
-  background: linear-gradient(90deg, #0865f4, #147dff);
-  border-color: #0865f4;
+  background: var(--primary);
+  border-color: var(--primary);
   color: #fff;
-  box-shadow: 0 9px 18px rgba(13, 107, 255, .20)
+  box-shadow: none
 }
 
 .app-btn.danger {
@@ -401,6 +405,7 @@ a {
 
 .toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 12px;
   margin: 12px 0 16px
@@ -420,7 +425,7 @@ input {
 }
 
 .input.large {
-  width: 360px
+  width: min(100%, 360px)
 }
 
 .select {
@@ -435,27 +440,32 @@ input {
   gap: 16px
 }
 
+.grid > * {
+  min-width: 0
+}
+
 .stat-grid {
-  grid-template-columns: repeat(6, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 148px), 1fr));
   margin: 14px 0 18px
 }
 
 .stat-card {
-  height: 120px;
+  min-height: 96px;
   background: var(--card);
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: var(--radius);
   box-shadow: var(--shadow);
   display: flex;
   align-items: center;
-  padding: 22px 24px;
-  gap: 18px
+  padding: 14px;
+  gap: 10px
 }
 
 .stat-icon {
-  width: 54px;
-  height: 54px;
-  border-radius: 50%;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  border-radius: 8px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -491,7 +501,9 @@ input {
 
 .stat-info {
   display: flex;
-  flex-direction: column
+  flex-direction: column;
+  min-width: 0;
+  overflow-wrap: anywhere
 }
 
 .stat-info span {
@@ -501,8 +513,8 @@ input {
 }
 
 .stat-info strong {
-  font-size: 28px;
-  letter-spacing: .5px
+  font-size: 23px;
+  font-variant-numeric: tabular-nums
 }
 
 .stat-info em {
@@ -519,7 +531,7 @@ input {
 .card-panel {
   background: #fff;
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: var(--radius);
   box-shadow: var(--shadow);
   padding: 18px
 }
@@ -528,6 +540,8 @@ input {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
   margin-bottom: 14px
 }
 
@@ -539,7 +553,8 @@ input {
 
 .panel-head p {
   margin: 6px 0 0;
-  color: #7a879e
+  color: var(--muted);
+  text-wrap: pretty
 }
 
 .tabs {
@@ -1474,18 +1489,17 @@ input {
 }
 
 .bottom-actions {
-  position: fixed;
-  right: 0;
-  left: var(--sidebar);
+  position: sticky;
+  grid-column: 1 / -1;
   bottom: 0;
-  height: 78px;
-  background: rgba(255, 255, 255, .94);
+  background: var(--card);
   border-top: 1px solid var(--line);
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 18px;
-  padding: 0 34px;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px var(--page-gutter) max(12px, env(safe-area-inset-bottom));
   z-index: 12
 }
 
@@ -1710,14 +1724,6 @@ input {
 }
 
 @media (max-width:1500px) {
-  :root {
-    --sidebar: 250px
-  }
-
-  .stat-grid {
-    grid-template-columns: repeat(3, 1fr)
-  }
-
   .quick-grid,
   .feature-grid {
     grid-template-columns: repeat(2, 1fr)
@@ -1736,11 +1742,6 @@ input {
   .two-col,
   .three-col {
     grid-template-columns: 1fr
-  }
-
-  /* 保持 .topbar 为 fixed，避免滚动后管理员按钮消失导致无法点击个人中心 */
-  .page-head {
-    padding-right: 0
   }
 
   .settings-layout {
@@ -1771,22 +1772,21 @@ input {
     min-height: auto
   }
 
-  .app-shell.is-mobile.m-nav-open {
-    overflow: hidden;
-    height: 100vh
+  html:has(.m-nav-open) {
+    overflow-y: hidden
   }
 
-  .sidebar {
+  .is-mobile .sidebar {
     position: fixed;
     inset: 0 auto 0 0;
     width: 280px;
     max-width: 86vw;
     border-right: 1px solid var(--line);
-    padding: 16px 16px 18px;
-    background: rgba(255, 255, 255, .98);
-    backdrop-filter: blur(12px);
+    padding: max(16px, env(safe-area-inset-top)) 16px max(18px, env(safe-area-inset-bottom));
+    background: var(--card);
+    visibility: hidden;
     transform: translateX(-100%);
-    transition: transform .26s cubic-bezier(.4, 0, .2, 1);
+    transition: transform .18s ease-out;
     z-index: 60;
     overflow-y: auto;
     scrollbar-width: none;
@@ -1797,7 +1797,8 @@ input {
     display: none
   }
 
-  .sidebar.open {
+  .is-mobile .sidebar.open {
+    visibility: visible;
     transform: translateX(0);
     box-shadow: 0 24px 60px rgba(20, 36, 58, .28)
   }
@@ -1880,11 +1881,6 @@ input {
     height: 40px
   }
 
-  .side-user {
-    margin-top: 16px;
-    height: 64px
-  }
-
   .version {
     padding-top: 12px;
     text-align: center
@@ -1913,10 +1909,9 @@ input {
     gap: 10px;
     position: sticky;
     top: 0;
-    height: 56px;
-    padding: 0 12px;
-    background: rgba(255, 255, 255, .94);
-    backdrop-filter: blur(12px);
+    min-height: 56px;
+    padding: env(safe-area-inset-top) max(12px, env(safe-area-inset-right)) 0 max(12px, env(safe-area-inset-left));
+    background: var(--card);
     border-bottom: 1px solid var(--line);
     z-index: 40;
     /* 贴满页面边缘，抵消 .main 的 padding */
@@ -1948,18 +1943,21 @@ input {
   }
 
   .m-appbar-logo {
-    display: block;
-    height: 32px;
-    width: auto;
-    flex: 1;
-    object-fit: contain;
-    cursor: pointer
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    margin-right: auto;
+    padding: 0;
+    border: 0;
+    border-radius: 8px;
+    background: transparent
   }
 
-  .m-appbar-logo.m-appbar-brand-icon {
+  .m-appbar-logo img {
     width: 32px;
-    flex: 1;
-    object-position: left center
+    height: 32px;
+    object-fit: contain
   }
 
   .m-return-lite {
@@ -2007,11 +2005,9 @@ input {
   }
 
   .page-head {
-    height: auto;
     gap: 10px;
     margin-top: 8px;
-    margin-bottom: 6px;
-    padding-right: 0;
+    margin-bottom: 12px;
     flex-direction: column;
     align-items: flex-start
   }
@@ -2062,7 +2058,6 @@ input {
   /* ===== 网格布局降级 ===== */
   /* minmax(0,1fr) 防止内容撑开列宽导致水平溢出 */
   .stat-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 10px;
     margin: 10px 0 14px
   }
@@ -2073,12 +2068,6 @@ input {
     padding: 14px;
     gap: 12px;
     min-width: 0
-  }
-
-  .stat-icon {
-    width: 42px;
-    height: 42px;
-    flex-shrink: 0
   }
 
   .stat-info strong {
@@ -2196,11 +2185,7 @@ input {
   }
 
   .bottom-actions {
-    left: 0;
-    height: 64px;
-    padding: 0 14px;
-    gap: 10px;
-    flex-wrap: wrap
+    padding-inline: 12px
   }
 
   .bottom-actions .app-btn {
@@ -2224,24 +2209,6 @@ input {
 
   .panel-head h3 {
     font-size: 16px
-  }
-
-  /* ===== 表格横向滚动 ===== */
-  .base-table {
-    display: block;
-    width: 100%;
-    overflow-x: auto;
-    white-space: nowrap;
-    -webkit-overflow-scrolling: touch
-  }
-
-  .base-table thead,
-  .base-table tbody,
-  .base-table tr {
-    display: table;
-    width: max-content;
-    min-width: 100%;
-    table-layout: auto
   }
 
   .compare {
@@ -2424,22 +2391,6 @@ input {
     gap: 12px
   }
 
-  .alert-line {
-    height: auto;
-    min-height: 44px;
-    padding: 10px 14px;
-    font-size: 13px;
-    line-height: 1.5
-  }
-
-  /* ===== 移动端视觉增强 ===== */
-  /* 卡片面板：更柔和的阴影和圆角 */
-  .card-panel {
-    border-radius: 16px;
-    box-shadow: 0 2px 12px rgba(31, 53, 94, 0.05);
-    border: 1px solid #eef2fa;
-  }
-
   .panel-head {
     padding-bottom: 12px;
     border-bottom: 1px solid #f0f4fa;
@@ -2449,19 +2400,6 @@ input {
   .panel-head h3 {
     font-size: 16px;
     font-weight: 700;
-  }
-
-  /* 页面标题：更好的视觉层次 */
-  .page-head h1 {
-    font-weight: 800;
-    letter-spacing: -0.3px;
-  }
-
-  /* 表格横向滚动：更好的视觉提示 */
-  .base-table {
-    border-radius: 12px;
-    overflow: hidden;
-    border: 1px solid #eef2fa;
   }
 
   .base-table thead {
@@ -2494,10 +2432,6 @@ input {
     min-height: 40px;
     border-radius: 10px;
     font-weight: 600;
-  }
-
-  .app-btn.primary {
-    box-shadow: 0 4px 12px rgba(13, 107, 255, 0.2);
   }
 
   /* 输入框移动端优化 */
@@ -2567,14 +2501,13 @@ input {
 }
 
 .alert-line {
-  height: 48px;
   border: 1px solid #bcd7ff;
   background: #eef6ff;
   color: #275486;
   border-radius: 9px;
-  display: flex;
-  align-items: center;
-  padding: 0 22px;
+  padding: 10px 14px;
+  line-height: 1.5;
+  text-wrap: pretty;
   margin-bottom: 14px
 }
 
@@ -3138,10 +3071,6 @@ input {
   height: 22px
 }
 
-.nav-item.active .nav-icon .ui-icon-img {
-  filter: brightness(0) invert(1) drop-shadow(0 2px 3px rgba(0, 0, 0, .08))
-}
-
 .config-link .ui-icon-img {
   width: 22px;
   height: 22px
@@ -3196,7 +3125,9 @@ input {
 }
 
 .side-user .avatar {
-  box-shadow: 0 6px 16px rgba(21, 76, 155, .15)
+  flex: 0 0 36px;
+  height: 36px;
+  box-shadow: none
 }
 
 .hero-art {
@@ -3236,7 +3167,7 @@ input {
 .right-drawer,
 .list-card,
 .detail-card {
-  box-shadow: 0 10px 26px rgba(31, 53, 94, .055)
+  box-shadow: var(--shadow)
 }
 
 .quick-card .circle-ico,
@@ -3567,7 +3498,7 @@ button:focus-visible {
   padding: 24px;
   text-align: center;
   color: #8a96aa;
-  background: linear-gradient(135deg, #fbfdff, #f6f9ff);
+  background: var(--bg);
   border: 1px dashed #cfd9ea;
   border-radius: 14px;
 }
@@ -3625,18 +3556,6 @@ button:focus-visible {
 
 /* The native window can be narrower than the mobile breakpoint. */
 @media (max-width: 900px) {
-  .desktop-host {
-    --sidebar: 210px;
-  }
-
-  .desktop-host .sidebar {
-    width: var(--sidebar);
-    max-width: none;
-    transform: none;
-    transition: none;
-    backdrop-filter: none;
-  }
-
   .desktop-host .sidebar-close,
   .desktop-host .sidebar-logout {
     display: none;
@@ -3645,7 +3564,7 @@ button:focus-visible {
   .desktop-host .main {
     margin-left: var(--sidebar);
     width: calc(100% - var(--sidebar));
-    padding: 64px 18px 24px;
+    padding: 12px var(--page-gutter) 24px;
   }
 
   .desktop-host .topbar {

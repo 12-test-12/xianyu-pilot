@@ -58,7 +58,7 @@ export const settingsTabs = [
 
 export const pageTitles = {
   'not-found': ['页面不存在', '该链接可能已失效、地址有误或对应功能已下线'],
-  dashboard: ['导航面板', '系统导航中心，帮助你快速进入常用功能'],
+  dashboard: ['导航面板', '管理账号、商品和自动化任务'],
   data: ['数据面板', '按需查看运营数据、发货情况与业务趋势'],
   accounts: ['闲鱼账号', '管理账号状态、登录情况与连接健康度'],
   connections: ['连接管理', '统一查看账号连接、WebSocket 与 Cookie 状态'],

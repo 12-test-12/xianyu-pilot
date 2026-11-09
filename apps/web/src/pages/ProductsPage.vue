@@ -2483,12 +2483,5 @@ onBeforeUnmount(()=>{ syncPollCanceled = true; stopAutoRefreshTimer(); window.re
   .drawer-title {
     font-size: 14px;
   }
-  /* 同步任务历史表格横向滚动 */
-  :deep(.base-table) {
-    display: block;
-    overflow-x: auto;
-    white-space: nowrap;
-    -webkit-overflow-scrolling: touch;
-  }
 }
 </style>

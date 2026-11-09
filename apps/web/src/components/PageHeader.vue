@@ -1,6 +1,6 @@
 <template>
-  <header class="page-head" :class="{ compact: !title && !subtitle }">
-    <div v-if="title || subtitle">
+  <header class="page-head">
+    <div v-if="title || subtitle" class="page-head-copy">
       <h1 v-if="title">{{ title }}</h1>
       <p v-if="subtitle">{{ subtitle }}</p>
     </div>
@@ -13,14 +13,17 @@
 defineProps({ title: String, subtitle: String })
 </script>
 <style scoped>
-.page-head.compact {
-  height: auto;
-  min-height: 42px;
-  margin-bottom: 16px;
-  justify-content: flex-end;
+.page-head-copy {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .page-head-actions {
+  max-width: 100%;
   margin-left: auto;
+}
+
+.page-head-actions:empty {
+  display: none;
 }
 </style>

@@ -1,9 +1,9 @@
 <template>
-  <div v-if="booting" class="boot-screen">
+  <div v-if="booting || desktopSessionUnavailable" class="boot-screen">
     <div class="boot-card">
       <img src="/xya/brand/app-icon.png" class="boot-brand-icon" alt="XianYuAssistant" />
-      <b>正在连接后端服务...</b>
-      <span>{{ bootMessage }}</span>
+      <b>{{ desktopSessionUnavailable ? '本地会话不可用' : '正在连接后端服务...' }}</b>
+      <span>{{ desktopSessionUnavailable ? '请重新打开客户端。' : bootMessage }}</span>
     </div>
   </div>
 
@@ -21,16 +21,18 @@
     @force-desktop="enableMobileDesktopMode"
   />
 
-  <div v-else class="app-shell" :class="{ 'm-nav-open': mobileNavOpen, 'is-mobile': isMobile }">
+  <div v-else class="app-shell" :class="{ 'm-nav-open': mobileNavOpen, 'is-mobile': isMobile }" @keydown.esc="closeMobileNavigation">
     <div v-if="navTransitioning" class="nav-top-progress" role="progressbar" aria-label="页面加载中" />
-    <Sidebar :active="active" :user="currentUserInfo" :open="mobileNavOpen" @navigate="onSidebarNavigate" @prefetch="prefetchRoute" @close="mobileNavOpen = false" @logout="handleLogout" />
-    <div v-if="isMobile && mobileNavOpen" class="m-nav-overlay" @click="mobileNavOpen = false"></div>
-    <main class="main">
+    <Sidebar :active="active" :user="currentUserInfo" :open="mobileNavOpen" @navigate="onSidebarNavigate" @prefetch="prefetchRoute" @close="closeMobileNavigation" @logout="handleLogout" />
+    <div v-if="isMobile && mobileNavOpen" class="m-nav-overlay" @click="closeMobileNavigation"></div>
+    <main class="main" :inert="isMobile && mobileNavOpen">
       <header v-if="isMobile" class="m-appbar">
-        <button class="m-menu-btn" type="button" aria-label="打开菜单" @click="mobileNavOpen = true">
+        <button ref="mobileMenuButton" class="m-menu-btn" type="button" aria-label="打开菜单" aria-controls="workspace-sidebar" :aria-expanded="mobileNavOpen" @click="openMobileNavigation">
           <svg viewBox="0 0 24 24" class="ui-icon"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
         </button>
-        <img src="/xya/brand/app-icon.png" class="m-appbar-logo m-appbar-brand-icon" alt="XianYuAssistant" @click="navigate('dashboard')" />
+        <button class="m-appbar-logo" type="button" aria-label="返回首页" @click="navigate('dashboard')">
+          <img src="/xya/brand/app-icon.png" alt="" />
+        </button>
         <button
           v-if="mobileDesktopOverride"
           class="m-return-lite"
@@ -44,7 +46,7 @@
           <span class="avatar avatar-img small"></span>
         </button>
       </header>
-      <Topbar v-else :user="currentUserInfo" :sse-status="displaySseStatus" @logout="handleLogout" @open-profile-center="openProfileCenter" />
+      <Topbar v-else :user="currentUserInfo" :sse-status="displaySseStatus" :show-logout="!desktopHost" @logout="handleLogout" @open-profile-center="openProfileCenter" />
       <PageHeader :title="title" :subtitle="subtitle">
         <div v-if="headerActions.length" class="head-actions">
           <AppButton
@@ -54,8 +56,8 @@
             :disabled="action.disabled || (!action.to && pendingRequests > 0) || headerActionLocks.has(action.event)"
             @click="onHeaderAction(action)"
           >
-{{ action.text }}
-</AppButton>
+            {{ action.text }}
+          </AppButton>
         </div>
       </PageHeader>
       <PageViewport :route="active">
@@ -85,7 +87,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { asyncPage, prefetchPage } from './components/asyncPage.js'
 import Sidebar from './components/Sidebar.vue'
 import Topbar from './components/Topbar.vue'
@@ -147,6 +149,7 @@ const pageMap = {
 
 const settingsKeys = Object.keys(settingsPages)
 const authPages = ['login']
+const desktopHost = document.documentElement.classList.contains('desktop-host')
 const defaultPage = DEFAULT_PAGE
 const mobileLitePages = new Set([
   'dashboard',
@@ -169,6 +172,7 @@ const getHash = () => getRoute().page
 
 const initialRoute = getRoute()
 const booting = ref(true)
+const desktopSessionUnavailable = ref(false)
 const bootMessage = ref('正在检查登录状态')
 const loggingIn = ref(false)
 const active = ref(initialRoute.page)
@@ -184,6 +188,7 @@ const headerActionLocks = ref(new Set())
 const isOnline = ref(navigator.onLine !== false)
 const isMobile = ref(false)
 const mobileNavOpen = ref(false)
+const mobileMenuButton = ref(null)
 const mobileDesktopOverride = ref(readMobileDesktopOverride())
 let noticeTimer = null
 const pendingRequestIds = new Map()
@@ -280,10 +285,14 @@ async function navigate(key, options = {}) {
     const allowed = await runNavigationGuard()
     if (!allowed) return
   }
-  const requested = key || defaultPage
+  const requested = desktopHost && authPages.includes(key) ? defaultPage : key || defaultPage
   const known = isKnownPage(requested)
   const next = known ? requested : NOT_FOUND_PAGE
   if (!isAuthed() && !authPages.includes(next)) {
+    if (desktopHost) {
+      desktopSessionUnavailable.value = true
+      return
+    }
     location.hash = '#/login'
     active.value = 'login'
     return
@@ -314,8 +323,21 @@ async function navigate(key, options = {}) {
 }
 
 function onSidebarNavigate(key) {
-  mobileNavOpen.value = false
+  closeMobileNavigation()
   navigate(key)
+}
+
+async function openMobileNavigation() {
+  mobileNavOpen.value = true
+  await nextTick()
+  document.querySelector('#workspace-sidebar .sidebar-close')?.focus()
+}
+
+async function closeMobileNavigation() {
+  if (!mobileNavOpen.value) return
+  mobileNavOpen.value = false
+  await nextTick()
+  mobileMenuButton.value?.focus()
 }
 
 function openProfileCenter() {
@@ -384,6 +406,10 @@ async function onHash() {
   }
   const route = getRoute()
   const next = route.page
+  if (desktopHost && authPages.includes(next)) {
+    await navigate(defaultPage, { force: true })
+    return
+  }
   if (!isAuthed() && !authPages.includes(next)) {
     navigate('login')
     return
@@ -493,6 +519,10 @@ async function boot() {
       }
       return
     }
+    if (desktopHost) {
+      desktopSessionUnavailable.value = true
+      return
+    }
     if (!location.hash) {
       navigate('login')
       return
@@ -507,8 +537,12 @@ async function boot() {
     navigate('login')
   } catch (e) {
     recordClientError(e, { source: 'app_boot' })
-    active.value = 'login'
-    showNotice(e.message || '后端服务连接失败，请确认服务已启动。', 'error')
+    if (desktopHost) {
+      desktopSessionUnavailable.value = true
+    } else {
+      active.value = 'login'
+      showNotice(e.message || '后端服务连接失败，请确认服务已启动。', 'error')
+    }
   } finally {
     booting.value = false
   }
@@ -519,6 +553,10 @@ function onAuthExpired() {
   clearAuth()
   closeSse()
   clearNavigationGuard()
+  if (desktopHost) {
+    desktopSessionUnavailable.value = true
+    return
+  }
   showNotice('登录已过期，请重新登录', 'warn')
   navigate('login', { force: true })
 }
@@ -537,9 +575,8 @@ function onSseEventForSound(event) {
 }
 
 function updateMobileState() {
-  const ua = navigator.userAgent || ''
-  isMobile.value = !document.documentElement.classList.contains('desktop-host') &&
-    (window.matchMedia?.('(max-width: 900px)').matches || /Mobi|Android|iPhone|iPad|iPod/i.test(ua))
+  isMobile.value = !desktopHost && window.matchMedia('(max-width: 900px)').matches
+  if (!isMobile.value) mobileNavOpen.value = false
 }
 
 onMounted(() => {
@@ -635,7 +672,6 @@ const headerActions = computed(() => {
   }
 
   const map = {
-    data: [{ text: '刷新数据', type: 'ghost', event: 'refresh-data-panel' }],
     accounts: [
       { text: '扫码加账号', type: 'primary', event: 'open-scan-account' },
       { text: '手动添加', type: 'ghost', event: 'open-manual-account' },

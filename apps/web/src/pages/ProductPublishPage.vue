@@ -342,7 +342,6 @@
         </div>
         <p v-if="shippingMode === 'none'" class="subtle">适用于网盘资料、软件、卡密等线上资源，无需物流或自提。需要自动发送内容时，请开启自动发货并选择货源。</p>
       </CardPanel>
-      <div style="height:90px"></div>
     </div>
 
     <div>
@@ -2565,12 +2564,6 @@ onBeforeUnmount(() => {
   }
   .shipping-item {
     padding: 6px 0;
-  }
-  :deep(.base-table) {
-    display: block;
-    overflow-x: auto;
-    white-space: nowrap;
-    -webkit-overflow-scrolling: touch;
   }
   /* 字符计数 */
   .char-count {
