@@ -101,6 +101,11 @@ def preview_plan(manifest, parameter_type, value):
 
 
 class DesktopPlugins:
+    def _connect_db(self):
+        """Create a SQLite connection with a 5 s timeout.
+        Centralising this logic avoids duplication and ensures a consistent timeout.
+        """
+        return sqlite3.connect(self.database, timeout=5)
     def __init__(self, program_root: Path, database: Path):
         self.program_root = program_root
         self.root = program_root / "plugins"
@@ -153,7 +158,7 @@ class DesktopPlugins:
         return manifest, hashlib.sha256(files["manifest.json"]).hexdigest()
 
     def status(self):
-        with self.lock, closing(sqlite3.connect(self.database, timeout=5)) as db:
+        with self.lock, closing(self._connect_db()) as db:
             activations = {key: (version, digest) for key, version, digest in db.execute(
                 "SELECT plugin_id, version, manifest_hash FROM desktop_plugin_activation"
             )}
@@ -247,7 +252,7 @@ class DesktopPlugins:
                 raise InventoryError("插件文件格式异常，请手动检查", 409)
 
     def uninstall(self, plugin_id, version):
-        with self.lock, closing(sqlite3.connect(self.database, timeout=5)) as db:
+        with self.lock, closing(self._connect_db()) as db:
             path = self._path(f"{plugin_id}/{version}")
             if not path.exists():
                 with db:
@@ -260,7 +265,7 @@ class DesktopPlugins:
                 path.rename(Path(staging) / "package")
 
     def preview(self, plugin_id, version, parameter_type, value):
-        with self.lock, closing(sqlite3.connect(self.database, timeout=5)) as db:
+        with self.lock, closing(self._connect_db()) as db:
             manifest, digest = self._read(plugin_id, version, self._publisher())
             active = db.execute(
                 "SELECT version, manifest_hash FROM desktop_plugin_activation WHERE plugin_id=?", (plugin_id,)
