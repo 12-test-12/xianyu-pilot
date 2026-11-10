@@ -65,7 +65,7 @@
       <form class="plugin-form" @submit.prevent="run(preview)">
         <label>参数类型
           <select v-model="parameterType" class="input" @change="steps = []">
-            <option v-for="type in selected.parameterTypes" :key="type" :value="type">{{ parameterLabels[type] }}</option>
+            <option v-for="type in selected.parameterTypes" :key="type" :value="type">{{ parameterLabels[type] || type }}</option>
           </select>
         </label>
         <label>样例参数

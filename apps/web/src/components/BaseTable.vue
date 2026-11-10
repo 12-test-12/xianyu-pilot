@@ -1,5 +1,5 @@
 <template>
-  <div class="base-table-wrap" tabindex="0" role="region" aria-label="数据表格">
+  <div class="base-table-wrap" tabindex="0" role="region" :aria-label="ariaLabel">
     <table class="base-table">
       <thead>
         <tr>
@@ -83,6 +83,7 @@ const props = defineProps({
   columns: Array,
   rows: Array,
   rowClass: Function,
+  ariaLabel: { type: String, default: '数据表格' },
   // 是否开启行选择（opt-in，默认关闭，向后兼容）
   selectable: { type: Boolean, default: false },
   // 行唯一标识函数，用于 v-model:selectedKeys
@@ -175,12 +176,6 @@ function onRowSelectClick(row, idx, e) {
 .base-table-wrap:focus-visible {
   outline: 2px solid var(--primary);
   outline-offset: -2px;
-}
-
-@media (max-width: 900px) {
-  .base-table th {
-    white-space: nowrap;
-  }
 }
 
 .col-select {

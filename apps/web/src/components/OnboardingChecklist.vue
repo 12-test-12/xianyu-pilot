@@ -17,7 +17,6 @@
       </button>
     </div>
     <div class="onboarding-actions">
-      <button type="button" class="link" @click="markDone('seen-guide')">我已阅读指南</button>
       <button type="button" class="link danger" @click="onDismiss">不再提示</button>
     </div>
   </CardPanel>
@@ -51,11 +50,6 @@ function go(step) {
   markStepDone(step.key)
   done.value = getDoneKeys()
   emit('navigate', step.to)
-}
-
-function markDone(key) {
-  markStepDone(key)
-  done.value = getDoneKeys()
 }
 
 function onDismiss() {

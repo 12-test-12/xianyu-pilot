@@ -114,3 +114,7 @@ def test_rejects_unsafe_packages_and_revalidates_manual_install(desktop):
     assert not status["installed"]
     assert status["issues"][0]["path"] == "qiuqiu-assist/0.1.0"
     assert client.patch(INSTALLED, json={"enabled": True}).status_code == 400
+    assert post_zip(client, PACKAGE, archive(valid)).status_code == 200
+    recovered = client.get(ENDPOINT).json()["data"]
+    assert recovered["installed"][0]["version"] == "0.1.0"
+    assert not recovered["issues"]

@@ -152,7 +152,7 @@ class DesktopPlugins:
         return manifest, hashlib.sha256(files["manifest.json"]).hexdigest()
 
     def status(self):
-        with self.lock, closing(sqlite3.connect(self.database)) as db:
+        with self.lock, closing(sqlite3.connect(self.database, timeout=5)) as db:
             activations = {key: (version, digest) for key, version, digest in db.execute(
                 "SELECT plugin_id, version, manifest_hash FROM desktop_plugin_activation"
             )}
@@ -187,21 +187,27 @@ class DesktopPlugins:
             if not inspect:
                 path = self._path(f"{manifest.id}/{manifest.version}")
                 if path.exists():
-                    _, digest = self._read(manifest.id, manifest.version, publisher)
-                    if digest != hashlib.sha256(files["manifest.json"]).hexdigest():
+                    try:
+                        _, digest = self._read(manifest.id, manifest.version, publisher)
+                        if digest == hashlib.sha256(files["manifest.json"]).hexdigest():
+                            return manifest.summary()
                         raise InventoryError("同版本已存在，请发布新版本", 409)
-                else:
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    with tempfile.TemporaryDirectory(prefix=".install-", dir=path.parent) as staging:
-                        candidate = Path(staging) / "package"
-                        candidate.mkdir()
-                        for name, contents in files.items():
-                            (candidate / name).write_bytes(contents)
-                        candidate.rename(path)
+                    except InventoryError as exc:
+                        if exc.status == 409:
+                            raise
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with tempfile.TemporaryDirectory(prefix=".install-", dir=path.parent) as staging:
+                    candidate = Path(staging) / "package"
+                    candidate.mkdir()
+                    for name, contents in files.items():
+                        (candidate / name).write_bytes(contents)
+                    if path.exists():
+                        path.rename(Path(staging) / "corrupted")
+                    candidate.rename(path)
             return manifest.summary()
 
     def set_enabled(self, plugin_id, version, enabled):
-        with self.lock, closing(sqlite3.connect(self.database)) as db, db:
+        with self.lock, closing(sqlite3.connect(self.database, timeout=5)) as db, db:
             if enabled:
                 _, digest = self._read(plugin_id, version, self._publisher())
                 db.execute(
@@ -217,7 +223,7 @@ class DesktopPlugins:
         db.execute("DELETE FROM desktop_plugin_activation WHERE plugin_id=? AND version=?", (plugin_id, version))
 
     def uninstall(self, plugin_id, version):
-        with self.lock, closing(sqlite3.connect(self.database)) as db:
+        with self.lock, closing(sqlite3.connect(self.database, timeout=5)) as db:
             path = self._path(f"{plugin_id}/{version}")
             if not path.exists():
                 with db:
@@ -236,7 +242,7 @@ class DesktopPlugins:
                 path.rename(Path(staging) / "package")
 
     def preview(self, plugin_id, version, parameter_type, value):
-        with self.lock, closing(sqlite3.connect(self.database)) as db:
+        with self.lock, closing(sqlite3.connect(self.database, timeout=5)) as db:
             manifest, digest = self._read(plugin_id, version, self._publisher())
             active = db.execute(
                 "SELECT version, manifest_hash FROM desktop_plugin_activation WHERE plugin_id=?", (plugin_id,)

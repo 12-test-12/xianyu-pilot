@@ -471,6 +471,7 @@ async function handleLogout() {
   } catch {
     clearAuth()
   }
+  mobileNavOpen.value = false
   closeSse()
   clearNavigationGuard()
   currentUserInfo.value = { username: '管理员', avatar: '/xya/chat_ui_assets/chat_ui_assets_023.png' }
