@@ -9,6 +9,7 @@ from io import BytesIO
 from pathlib import Path, PureWindowsPath
 from threading import Lock
 from typing import Annotated, Literal
+from uuid import uuid4
 from zipfile import ZIP_DEFLATED, ZIP_STORED, BadZipFile, ZipFile
 
 from cryptography.exceptions import InvalidSignature
@@ -201,9 +202,24 @@ class DesktopPlugins:
                     candidate.mkdir()
                     for name, contents in files.items():
                         (candidate / name).write_bytes(contents)
+                    backup = None
                     if path.exists():
-                        path.rename(Path(staging) / "corrupted")
-                    candidate.rename(path)
+                        self._check_removable(path)
+                        backup = self._path(f"{manifest.id}/.repair-{uuid4().hex}")
+                        path.rename(backup)
+                    try:
+                        candidate.rename(path)
+                    except OSError:
+                        if backup is not None:
+                            try:
+                                backup.rename(path)
+                            except OSError as exc:
+                                raise InventoryError(f"旧插件文件保存在 {manifest.id}/{backup.name}，请手动恢复", 503) from exc
+                        raise
+                    if backup is not None:
+                        for name in PACKAGE_FILES:
+                            (backup / name).unlink(missing_ok=True)
+                        backup.rmdir()
             return manifest.summary()
 
     def set_enabled(self, plugin_id, version, enabled):
@@ -222,6 +238,14 @@ class DesktopPlugins:
     def _disable(db, plugin_id, version):
         db.execute("DELETE FROM desktop_plugin_activation WHERE plugin_id=? AND version=?", (plugin_id, version))
 
+    def _check_removable(self, path):
+        if not path.is_dir() or not {entry.name for entry in path.iterdir()} <= PACKAGE_FILES.keys():
+            raise InventoryError("插件目录含有其他内容，请手动检查", 409)
+        for name in PACKAGE_FILES:
+            entry = self._path((path / name).relative_to(self.root).as_posix())
+            if entry.exists() and not entry.is_file():
+                raise InventoryError("插件文件格式异常，请手动检查", 409)
+
     def uninstall(self, plugin_id, version):
         with self.lock, closing(sqlite3.connect(self.database, timeout=5)) as db:
             path = self._path(f"{plugin_id}/{version}")
@@ -229,13 +253,7 @@ class DesktopPlugins:
                 with db:
                     self._disable(db, plugin_id, version)
                 return
-            # Only remove package files. Leave other contents for the operator.
-            if not path.is_dir() or not {entry.name for entry in path.iterdir()} <= PACKAGE_FILES.keys():
-                raise InventoryError("插件目录含有其他内容，请手动检查", 409)
-            for name in PACKAGE_FILES:
-                entry = self._path(f"{plugin_id}/{version}/{name}")
-                if entry.exists() and not entry.is_file():
-                    raise InventoryError("插件文件格式异常，请手动检查", 409)
+            self._check_removable(path)
             with db:
                 self._disable(db, plugin_id, version)
             with tempfile.TemporaryDirectory(prefix=".remove-", dir=path.parent) as staging:

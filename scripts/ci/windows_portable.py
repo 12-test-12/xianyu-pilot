@@ -31,9 +31,10 @@ def safe_name(name):
 
 
 def safe_payload(name):
-    return safe_name(name) and not any(
-        part.lower() in ('data','secrets','.git','.env') or part.lower().startswith('.env.')
-        for part in PurePosixPath(name).parts)
+    parts = tuple(part.lower() for part in PurePosixPath(name).parts)
+    return safe_name(name) and parts[:1] != ('plugins',) and not any(
+        part in ('data','secrets','.git','.env') or part.startswith('.env.')
+        for part in parts)
 
 
 def is_link(path):
@@ -62,6 +63,7 @@ def inventory(root):
 
 def validate_required(files):
     required={'XianyuPilot.exe','_internal/web/index.html','_internal/app/desktop_migrations/006_full_console.sql',
+              '_internal/app/desktop_migrations/008_desktop_plugins.sql',
               '_internal/app/resources/china_address_dict.json','PORTABLE-README.txt'}
     if not required<=files.keys():
         raise ValueError('portable build is incomplete')

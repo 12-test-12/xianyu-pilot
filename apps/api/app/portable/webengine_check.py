@@ -15,7 +15,8 @@ CONSOLE_PROBE=r"""(() => {
       const checks = {};
       for (const path of ['/xianyu/accounts','/goods','/orders','/orders/today-amount','/cards',
                           '/auto-delivery/sources','/auto-delivery/records','/auto-reply/rules','/conversations',
-                          '/operation-logs','/business-settings/ai-customer-service','/system/open-source-config','/address-dict/tree']) {
+                          '/operation-logs','/business-settings/ai-customer-service','/system/open-source-config','/address-dict/tree',
+                          '/desktop/plugins']) {
         try { const response=await fetch('/api'+path,{headers}); const body=await response.json();
           checks[path]=response.ok && body.code===200 &&
             (path!=='/address-dict/tree' || body.data?.provinces?.length>0); } catch { checks[path]=false; }
@@ -30,13 +31,18 @@ CONSOLE_PROBE=r"""(() => {
           stream.onerror=()=>{clearTimeout(timer);stream.close();resolve(false)};
         });
       } catch { checks.sse=false; }
+      const waitFor=async predicate=>{
+        for(let n=0;n<80;n++) { if(predicate())return; await new Promise(r=>setTimeout(r,50)); }
+        throw new Error('console controls timeout');
+      };
+      try {
+        [...document.querySelectorAll('.page-head button')].find(button=>button.textContent.trim()==='查看插件')?.click();
+        await waitFor(()=>document.querySelector('.plugin-list')?.textContent.includes('球球助力'));
+        checks.pluginCatalog=true;
+      } catch { checks.pluginCatalog=false; }
       try {
         // Exercise Vue's actual cascader events in bundled Chromium. No account
         // or remote publication is needed for region/online-delivery controls.
-        const waitFor=async predicate=>{
-          for(let n=0;n<80;n++) { if(predicate())return; await new Promise(r=>setTimeout(r,50)); }
-          throw new Error('publish controls timeout');
-        };
         location.hash='#/product-publish';
         await waitFor(()=>document.querySelector('.publish-address-cascader select')?.options.length>1);
         const selects=[...document.querySelectorAll('.publish-address-cascader select')];

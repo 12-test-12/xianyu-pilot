@@ -14,7 +14,8 @@ class PortablePackageTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name)/'XianyuPilot'
         for name in ['XianyuPilot.exe','_internal/web/index.html','_internal/web/assets/safety.js',
-                     '_internal/app/desktop_migrations/006_full_console.sql','_internal/app/resources/china_address_dict.json','_internal/python311.dll',
+                     '_internal/app/desktop_migrations/006_full_console.sql','_internal/app/desktop_migrations/008_desktop_plugins.sql',
+                     '_internal/app/resources/china_address_dict.json','_internal/python311.dll',
                      '_internal/PySide6/QtWebEngineProcess.exe','_internal/PySide6/Qt6WebEngineCore.dll',
                      '_internal/PySide6/resources/qtwebengine_resources.pak','_internal/PySide6/resources/icudtl.dat',
                      '_internal/PySide6/translations/qtwebengine_locales/en-US.pak','_internal/vcruntime140.dll','_internal/msvcp140.dll']:
@@ -41,6 +42,11 @@ class PortablePackageTests(unittest.TestCase):
     def test_missing_address_dictionary_cannot_be_packaged(self):
         (self.root/'_internal/app/resources/china_address_dict.json').unlink()
         with self.assertRaises(ValueError):package.record(self.root,'a'*40)
+
+    def test_missing_plugin_migration_cannot_be_packaged(self):
+        (self.root/'_internal/app/desktop_migrations/008_desktop_plugins.sql').unlink()
+        with self.assertRaisesRegex(ValueError, 'incomplete'):
+            package.record(self.root, 'a'*40)
 
     def test_foreign_icu_cannot_shadow_windows_runtime(self):
         (self.root/'_internal/icuuc.dll').write_bytes(b'incompatible developer DLL')
@@ -98,15 +104,16 @@ class PortablePackageTests(unittest.TestCase):
         with self.assertRaises(ValueError):package.verify_archive(output.parent,'a'*40)
 
     def test_release_rejects_private_extra_traversal_and_duplicate_zip_paths(self):
-        for name in ('XianyuPilot/data/private','../escape','XianyuPilot/extra','XianyuPilot/xianyupilot.exe'):
+        for name in ('XianyuPilot/data/private','XianyuPilot/Plugins/local/manifest.json',
+                     '../escape','XianyuPilot/extra','XianyuPilot/xianyupilot.exe'):
             with self.subTest(name=name):
                 output=package.package(self.root,Path(self.temp.name)/'release')
                 self.rewrite_archive(output,lambda files:files.update({name:b'unexpected'}))
                 with self.assertRaises(ValueError):package.verify_archive(output.parent,'a'*40)
 
     def test_runtime_data_and_private_settings_cannot_enter_distribution(self):
-        for name in ['data/app.sqlite3','.env','.env.production','secrets/token']:
-            path=self.root/name;path.parent.mkdir(exist_ok=True);path.write_bytes(b'private')
+        for name in ['data/app.sqlite3','.env','.env.production','secrets/token','plugins/local/1.0.0/manifest.json']:
+            path=self.root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(b'private')
             with self.assertRaises(ValueError):package.record(self.root,'a'*40)
             path.unlink()
 

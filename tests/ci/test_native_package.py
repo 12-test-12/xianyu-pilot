@@ -35,7 +35,8 @@ class NativePackageTests(unittest.TestCase):
         icon = windows_icon.SOURCE_ICON.read_bytes()
         brand_exe = executable(windows_icon.icon_frames(icon))
         for name in ['XianyuPilot.exe','_internal/web/index.html','_internal/web/assets/safety.js',
-                     '_internal/app/desktop_migrations/006_full_console.sql','_internal/app/resources/china_address_dict.json','_internal/python311.dll',
+                     '_internal/app/desktop_migrations/006_full_console.sql','_internal/app/desktop_migrations/008_desktop_plugins.sql',
+                     '_internal/app/resources/china_address_dict.json','_internal/python311.dll',
                      '_internal/QtWebEngineProcess.exe','_internal/Qt6WebEngineCore.dll',
                      '_internal/qtwebengine_resources.pak','_internal/icudtl.dat','_internal/en-US.pak',
                      '_internal/vcruntime140.dll','_internal/msvcp140.dll']:
@@ -72,7 +73,8 @@ class NativePackageTests(unittest.TestCase):
     def test_worktree_data_desktop_prototype_and_containers_are_not_sources(self):
         for name in [".env", "secrets/token", "data/app.sqlite3", "data/uploads/customer.txt", "apps/api/.env", "apps/api/uploads/customer.txt",
                      "apps/api/secrets/key", "apps/web/node_modules/dependency/index.js",
-                     "apps/desktop/host.py", "apps/web/Dockerfile", "docker-compose.yml", "../escape"]:
+                     "apps/desktop/host.py", "apps/web/Dockerfile", "docker-compose.yml", "../escape",
+                     "plugins/local/1.0.0/manifest.json", "plugin-packages/qiuqiu-assist/manifest.json"]:
             with self.subTest(name=name):
                 self.assertFalse(package.allowed_source(name))
         self.assertTrue(package.allowed_source("apps/api/app/core/secret_store.py"))

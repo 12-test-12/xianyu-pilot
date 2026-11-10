@@ -118,3 +118,30 @@ def test_rejects_unsafe_packages_and_revalidates_manual_install(desktop):
     recovered = client.get(ENDPOINT).json()["data"]
     assert recovered["installed"][0]["version"] == "0.1.0"
     assert not recovered["issues"]
+
+
+def test_repair_preserves_local_files_and_restores_original_on_failed_install(desktop, monkeypatch):
+    client, key, root = desktop
+    package = archive(signed_files(key))
+    assert post_zip(client, PACKAGE, package).status_code == 200
+    folder = root / "plugins/qiuqiu-assist/0.1.0"
+    note = folder / "notes.txt"
+    note.write_bytes(b"user file")
+    assert post_zip(client, PACKAGE, package).status_code == 409
+    assert note.read_bytes() == b"user file"
+    note.unlink()
+
+    manifest = folder / "manifest.json"
+    manifest.write_bytes(b"damaged")
+    rename = Path.rename
+
+    def fail_publish(path, destination):
+        if path.name == "package" and destination == folder:
+            raise PermissionError("simulated Windows sharing lock")
+        return rename(path, destination)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "rename", fail_publish)
+        assert post_zip(client, PACKAGE, package).status_code == 503
+    assert manifest.read_bytes() == b"damaged"
+    assert post_zip(client, PACKAGE, package).status_code == 200
