@@ -23,7 +23,7 @@
 
   <div v-else class="app-shell" :class="{ 'm-nav-open': mobileNavOpen, 'is-mobile': isMobile }" @keydown.esc="closeMobileNavigation">
     <div v-if="navTransitioning" class="nav-top-progress" role="progressbar" aria-label="页面加载中" />
-    <Sidebar :active="active" :user="currentUserInfo" :open="mobileNavOpen" @navigate="onSidebarNavigate" @prefetch="prefetchRoute" @close="closeMobileNavigation" @logout="handleLogout" />
+    <Sidebar :active="active" :user="currentUserInfo" :open="mobileNavOpen" :desktop="desktopHost" @navigate="onSidebarNavigate" @prefetch="prefetchRoute" @close="closeMobileNavigation" @logout="handleLogout" />
     <div v-if="isMobile && mobileNavOpen" class="m-nav-overlay" @click="closeMobileNavigation"></div>
     <main class="main" :inert="isMobile && mobileNavOpen">
       <header v-if="isMobile" class="m-appbar">
@@ -120,6 +120,7 @@ import {
 const LoginPage = asyncPage(() => import('./pages/LoginPage.vue'))
 const MobileLite = asyncPage(() => import('./components/MobileLite.vue'))
 const DashboardPage = asyncPage(() => import('./pages/DashboardPage.vue'))
+const desktopHost = document.documentElement.classList.contains('desktop-host')
 
 const pageMap = {
   login: LoginPage,
@@ -143,13 +144,13 @@ const pageMap = {
   'auto-reply': asyncPage(() => import('./pages/AutoReplyPage.vue')),
   'slider-solve-records': asyncPage(() => import('./pages/SliderSolveRecordsPage.vue')),
   logs: asyncPage(() => import('./pages/LogsPage.vue')),
+  ...(desktopHost ? { plugins: asyncPage(() => import('./pages/PluginsPage.vue')) } : {}),
   'settings-notify': asyncPage(() => import('./pages/settings/NotifySettings.vue')),
   profile: asyncPage(() => import('./pages/ProfileCenterPage.vue'))
 }
 
 const settingsKeys = Object.keys(settingsPages)
 const authPages = ['login']
-const desktopHost = document.documentElement.classList.contains('desktop-host')
 const defaultPage = DEFAULT_PAGE
 const mobileLitePages = new Set([
   'dashboard',
@@ -635,6 +636,9 @@ const shouldUseMobileLite = computed(() =>
 )
 
 const headerActions = computed(() => {
+  if (active.value === 'dashboard' && desktopHost) {
+    return [{ text: '查看插件', type: 'ghost', to: 'plugins' }]
+  }
   if (active.value === 'settings-notify') {
     return [
       { text: '保存设置', type: 'primary', event: 'notify-save' },

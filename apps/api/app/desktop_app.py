@@ -23,6 +23,8 @@ from app.desktop_delivery_api import router as delivery_router
 from app.services.desktop_delivery import DesktopDeliveryStore
 from app.services.desktop_inventory import InventoryError
 from app.desktop_safety_api import router as safety_router
+from app.desktop_plugins_api import router as plugins_router
+from app.services.desktop_plugins import DesktopPlugins
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +89,7 @@ def create_desktop_app(config=None, *, web_dir=None, platform_runtime=None, inst
     app.state.desktop_stopping = False
     app.state.database = runtime
     app.state.desktop_store = store
+    app.state.desktop_plugins = DesktopPlugins(config.desktop_data_path.parent, config.sqlite_path)
     app.state.platform_runtime=platform_runtime
     app.state.console_services=console_services
     app.state.safety_action_token=secrets.token_urlsafe(32)
@@ -175,6 +178,7 @@ def create_desktop_app(config=None, *, web_dir=None, platform_runtime=None, inst
     app.include_router(inventory_router)
     app.include_router(delivery_router)
     app.include_router(safety_router)
+    app.include_router(plugins_router)
 
     if (web_dir/"assets").is_dir():
         app.mount("/assets",StaticFiles(directory=web_dir/"assets"),name="desktop-ui-assets")

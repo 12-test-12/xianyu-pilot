@@ -33,6 +33,8 @@ venv/
 .tmp-api-venv/
 .tmp/
 /data/
+/plugins/
+/plugin-publisher.pub
 
 # Local runtime data and browser-test artifacts must never be published.
 .playwright-cli/

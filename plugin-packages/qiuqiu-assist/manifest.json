@@ -1,0 +1,21 @@
+{
+  "id": "qiuqiu-assist",
+  "name": "球球助力",
+  "description": "预演短链接、球球号和昵称三种助力流程。",
+  "version": "0.1.0",
+  "hostApi": 1,
+  "kind": "qq-delivery",
+  "plans": {
+    "short_link": [
+      { "title": "按短链接发起助力", "verb": "助力" }
+    ],
+    "number": [
+      { "title": "查询全服排名", "verb": "查" },
+      { "title": "按排名发起助力", "verb": "助力", "input": "rank" }
+    ],
+    "nickname": [
+      { "title": "查询全服排名", "verb": "查" },
+      { "title": "按排名发起助力", "verb": "助力", "input": "rank" }
+    ]
+  }
+}

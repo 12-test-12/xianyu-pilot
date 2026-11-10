@@ -39,6 +39,7 @@ export const navGroups = [
   {
     title: '系统',
     items: [
+      { key: 'plugins', label: '插件管理', icon: 'workflow', desktopOnly: true },
       { key: 'logs', label: '操作日志', icon: 'log' },
       { key: 'settings-notify', label: '通知设置', icon: 'bell' },
       { key: 'settings-system', label: '系统设置', icon: 'settings' },
@@ -77,6 +78,7 @@ export const pageTitles = {
   'auto-reply': ['自动回复', '配置 AI 自动回复策略、作用域与兜底话术'],
   'slider-solve-records': ['滑块求解', '查看滑块验证求解记录与状态'],
   logs: ['操作日志', '查看系统操作与关键行为记录'],
+  plugins: ['插件管理', '查看可用插件，从本地安装并管理已安装版本'],
   'settings-ai-cs': ['系统设置 / AI 客服配置', '管理 AI 客服的人设、知识库、聊天规则与测试回复'],
   'settings-system': ['系统设置 / 系统配置', '查看开源版系统总览与各模块配置状态'],
   'settings-model': ['系统设置 / 模型配置', '集中管理通用模型与向量模型配置'],

@@ -43,8 +43,11 @@ import { navGroups } from '../data/nav.js'
 import Icon from './Icon.vue'
 import { APP_VERSION, getCopyrightYear } from '../utils/appMeta.js'
 defineEmits(['navigate', 'close', 'logout', 'prefetch'])
-const props = defineProps({ active: { type: String, required: true }, user: { type: Object, default: () => ({}) }, open: { type: Boolean, default: false } })
-const groups = navGroups
+const props = defineProps({ active: { type: String, required: true }, user: { type: Object, default: () => ({}) }, open: { type: Boolean, default: false }, desktop: Boolean })
+const groups = computed(() => navGroups.map(group => ({
+  ...group,
+  items: group.items.filter(item => !item.desktopOnly || props.desktop),
+})))
 const displayName = computed(() => props.user?.username || props.user?.displayName || props.user?.name || '管理员')
 const copyrightYear = getCopyrightYear()
 function isActive(key) {
