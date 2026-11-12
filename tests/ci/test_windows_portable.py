@@ -15,7 +15,7 @@ class PortablePackageTests(unittest.TestCase):
         self.root=Path(self.temp.name)/'XianyuPilot'
         for name in ['XianyuPilot.exe','_internal/web/index.html','_internal/web/assets/safety.js',
                      '_internal/app/desktop_migrations/006_full_console.sql','_internal/app/desktop_migrations/008_desktop_plugins.sql',
-                     '_internal/app/resources/china_address_dict.json','_internal/python311.dll',
+                     '_internal/app/resources/china_address_dict.json','_internal/app/resources/qiuqiu-assist.zip','_internal/python311.dll',
                      '_internal/PySide6/QtWebEngineProcess.exe','_internal/PySide6/Qt6WebEngineCore.dll',
                      '_internal/PySide6/resources/qtwebengine_resources.pak','_internal/PySide6/resources/icudtl.dat',
                      '_internal/PySide6/translations/qtwebengine_locales/en-US.pak','_internal/vcruntime140.dll','_internal/msvcp140.dll']:

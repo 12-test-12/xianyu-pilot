@@ -6,28 +6,32 @@
       <header class="plugin-heading">
         <div>
           <h2 id="available-plugins">可用插件</h2>
-          <p>插件由项目维护者独立发布，可按需安装到程序旁的 plugins 文件夹。</p>
+          <p>可离线安装程序自带的预演版，也可导入已签名的插件包。</p>
         </div>
         <div class="plugin-actions">
-          <AppButton type="primary" :disabled="busy || !data || !!data.publisherIssue" @click="openPicker($event, zipPicker)">安装 ZIP</AppButton>
-          <AppButton :disabled="busy || !data || !!data.publisherIssue" @click="openPicker($event, folderPicker)">安装文件夹</AppButton>
+          <AppButton :disabled="busy" @click="openPicker($event, zipPicker)">安装 ZIP</AppButton>
+          <AppButton :disabled="busy" @click="openPicker($event, folderPicker)">安装文件夹</AppButton>
           <AppButton :disabled="busy" @click="run(refresh)">刷新</AppButton>
         </div>
       </header>
       <input ref="zipPicker" type="file" accept=".zip,application/zip" aria-label="选择 ZIP 插件包" hidden @change="selectPackage($event, false)">
       <input ref="folderPicker" type="file" webkitdirectory aria-label="选择插件文件夹" hidden @change="selectPackage($event, true)">
-      <p v-if="data?.publisherIssue" class="global-notice warn" role="status">{{ data.publisherIssue }}，配置后点「刷新」。</p>
-      <ul v-if="data" class="plugin-list">
+      <p v-if="data?.publisherIssue" class="global-notice warn" role="status">{{ data.publisherIssue }}</p>
+      <p v-if="data?.catalogIssue" class="global-notice warn" role="status">{{ data.catalogIssue }}</p>
+      <ul v-if="data?.available.length" class="plugin-list">
         <li v-for="item in data.available" :key="item.id" class="plugin-row">
           <div>
-            <h3>{{ item.name }}</h3>
+            <h3>{{ item.name }} <small>v{{ item.version }}</small></h3>
             <p>{{ item.description }}</p>
-            <p>{{ item.requires }} · {{ item.source }}</p>
+            <p>支持{{ item.parameterTypes.map(type => parameterLabels[type] || type).join('、') }}。预演仅生成指令，QQ 收发和闲鱼发货需手动操作。</p>
           </div>
-          <Badge>{{ data.installed.some(plugin => plugin.id === item.id) ? '已安装' : '可安装' }}</Badge>
+          <div class="plugin-actions">
+            <Badge v-if="isInstalled(item)" type="green">已安装</Badge>
+            <AppButton v-else type="primary" :disabled="busy" @click="installBundled(item)">安装预演版</AppButton>
+          </div>
         </li>
       </ul>
-      <p v-else-if="busy" role="status">正在读取插件目录…</p>
+      <p v-else-if="!data && busy" role="status">正在读取插件目录…</p>
     </section>
     <section class="card-panel plugin-panel" aria-labelledby="installed-plugins">
       <header class="plugin-heading">
@@ -36,7 +40,7 @@
           <p>手动复制到插件目录的版本，点「刷新」后即可核对并启用。</p>
         </div>
       </header>
-      <p v-if="data && !data.installed.length" class="plugin-empty">暂无通过校验的插件。</p>
+      <p v-if="data && !data.installed.length" class="plugin-empty">还没有通过校验的插件。安装后可在这里启用并运行预演。</p>
       <ul v-else-if="data" class="plugin-list">
         <li v-for="item in data.installed" :key="item.id + '/' + item.version" class="plugin-row">
           <div>
@@ -106,6 +110,7 @@ const parameterType = ref('')
 const value = ref('')
 const steps = ref([])
 const pathFor = item => `${endpoint}/${item.id}/${item.version}`
+const isInstalled = item => data.value.installed.some(plugin => pathFor(plugin) === pathFor(item))
 let packageButton
 
 async function run(action, trigger = document.activeElement) {
@@ -127,8 +132,16 @@ async function run(action, trigger = document.activeElement) {
 }
 
 async function refresh() {
-  const result = await request.get(endpoint, { uiMode: 'silent' })
-  data.value = result.data
+  try {
+    const { data: status } = await request.get(endpoint, { uiMode: 'silent' })
+    if (!Array.isArray(status?.available) || !Array.isArray(status?.installed)
+      || !Array.isArray(status?.issues) || status.available.some(item => !Array.isArray(item.parameterTypes))) {
+      throw new Error('请更新或重新启动闲鱼助手桌面版。')
+    }
+    data.value = status
+  } catch (err) {
+    throw new Error(`无法读取本机插件状态。${err?.message || '请刷新重试。'}`, { cause: err })
+  }
   if (selected.value && !data.value.installed.some(item => item.enabled && pathFor(item) === pathFor(selected.value))) {
     selected.value = null
     steps.value = []
@@ -154,15 +167,25 @@ function selectPackage(event, folder) {
     const payload = folder ? await folderPayload(files) : files[0]
     const config = { uiMode: 'silent', headers: { 'Content-Type': folder ? 'application/json' : 'application/zip' } }
     const { data: item } = await request.post(`${endpoint}/package/inspect`, payload, config)
-    if (!await confirmAction({
-      title: `安装 ${item.name} v${item.version}`,
-      description: `${item.description}\n维护者签名已校验 · 支持离线预演`,
-      confirmText: '安装插件',
-    })) return
-    await request.post(`${endpoint}/package`, payload, config)
-    await refresh()
-    notice.value = `${item.name} v${item.version} 已安装。`
+    await confirmInstall(item, () => request.post(`${endpoint}/package`, payload, config))
   }, packageButton)
+}
+
+async function confirmInstall(item, install) {
+  if (!await confirmAction({
+    title: `安装 ${item.name} v${item.version}`,
+    description: `${item.description}\n安装后可在「已安装」中启用。`,
+    confirmText: '安装插件',
+  })) return
+  await install()
+  await refresh()
+  notice.value = `${item.name} v${item.version} 已安装。`
+}
+
+function installBundled(item) {
+  return run(() => confirmInstall(item, () => request.post(
+    `${endpoint}/catalog/${item.id}/install`, null, { uiMode: 'silent' },
+  )))
 }
 
 function openPicker(event, picker) {

@@ -24,11 +24,12 @@ VERSION_PATTERN = r"^(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4
 PACKAGE_FILES = {"manifest.json": 24 * 1024, "manifest.sig": 256}
 UPLOAD_LIMIT = 64 * 1024
 ParameterType = Literal["short_link", "number", "nickname"]
-CATALOG = [{
-    "id": "qiuqiu-assist", "name": "球球助力",
-    "description": "预演短链接、球球号和昵称的助力指令。",
-    "requires": "正式执行需 QQ 机器人", "source": "从项目维护者获取插件包",
-}]
+BUNDLED_ID = "qiuqiu-assist"
+BUNDLED_PACKAGE = Path(__file__).resolve().parents[1] / "resources" / "qiuqiu-assist.zip"
+# Public key from the signed Qiuqiu Assist trial. Its trust is limited to that plugin ID.
+BUNDLED_PUBLISHER = Ed25519PublicKey.from_public_bytes(
+    bytes.fromhex("839a44c4c2944f3ddd66c5c1c2d38319ff88bf4834006ec199234d0bc144089a")
+)
 
 
 class Step(BaseModel):
@@ -118,25 +119,48 @@ class DesktopPlugins:
         except ValueError as exc:
             raise InventoryError("插件目录不允许链接、目录联接或越界路径") from exc
 
-    def _publisher(self):
+    def _local_publisher(self):
         try:
             path = contained_data_path(self.program_root, "plugin-publisher.pub")
             public_key = read_small(path, 128).decode("ascii")
-            return Ed25519PublicKey.from_public_bytes(bytes.fromhex(public_key))
-        except (OSError, ValueError) as exc:
-            raise InventoryError("请在程序旁配置维护者的 plugin-publisher.pub", 503) from exc
+            return Ed25519PublicKey.from_public_bytes(bytes.fromhex(public_key)), None
+        except FileNotFoundError:
+            return None, None
+        except (OSError, ValueError, InventoryError):
+            return None, "无法读取程序旁的 plugin-publisher.pub。使用此公钥签名的插件需要修复公钥后重试。"
 
-    def _verify(self, files, publisher):
+    def _verify(self, files, local_publisher):
         if files.keys() != PACKAGE_FILES.keys() or any(len(files[name]) > limit for name, limit in PACKAGE_FILES.items()):
             raise InventoryError("插件包应只包含 manifest.json 和 manifest.sig")
         try:
-            publisher.verify(bytes.fromhex(files["manifest.sig"].decode("ascii")), files["manifest.json"])
-        except (InvalidSignature, ValueError) as exc:
+            signature = bytes.fromhex(files["manifest.sig"].decode("ascii"))
+        except ValueError as exc:
             raise InventoryError("插件签名校验失败") from exc
         try:
-            return Manifest.model_validate_json(files["manifest.json"])
+            manifest = Manifest.model_validate_json(files["manifest.json"])
         except ValidationError as exc:
             raise InventoryError("插件清单无效或宿主版本不兼容") from exc
+        for publisher in (BUNDLED_PUBLISHER if manifest.id == BUNDLED_ID else None, local_publisher):
+            if publisher is not None:
+                try:
+                    publisher.verify(signature, files["manifest.json"])
+                    return manifest
+                except InvalidSignature:
+                    pass
+        raise InventoryError("插件签名校验失败，请使用可信的插件包，或核对发布者公钥。")
+
+    def _bundled(self):
+        try:
+            files = unpack_zip(read_small(BUNDLED_PACKAGE, UPLOAD_LIMIT))
+            return files, self._verify(files, None)
+        except (InventoryError, OSError) as exc:
+            raise InventoryError("程序自带的球球助力插件包缺失或校验失败，请重新解压或更新桌面版。", 503) from exc
+
+    def install_bundled(self, plugin_id):
+        if plugin_id != BUNDLED_ID:
+            raise InventoryError("没有此程序自带的插件", 404)
+        files, _ = self._bundled()
+        return self.install(files)
 
     def _read(self, plugin_id, version, publisher):
         relative = f"{plugin_id}/{version}"
@@ -162,11 +186,14 @@ class DesktopPlugins:
             activations = {key: (version, digest) for key, version, digest in db.execute(
                 "SELECT plugin_id, version, manifest_hash FROM desktop_plugin_activation"
             )}
-            packages, issues = [], []
+            available, packages, issues = [], [], []
+            catalog_issue = None
             try:
-                publisher = self._publisher()
+                _, manifest = self._bundled()
+                available.append(manifest.summary())
             except InventoryError as exc:
-                return {"available": CATALOG, "installed": [], "issues": [], "publisherIssue": str(exc)}
+                catalog_issue = str(exc)
+            publisher, publisher_issue = self._local_publisher()
             for folder in sorted(self._path(".").glob("*")):
                 if not re.fullmatch(ID_PATTERN, folder.name):
                     continue
@@ -184,11 +211,14 @@ class DesktopPlugins:
                         packages.append(manifest.summary() | {"enabled": enabled})
                     except InventoryError as exc:
                         issues.append({"path": f"{folder.name}/{version.name}", "message": str(exc)})
-            return {"available": CATALOG, "installed": packages, "issues": issues, "publisherIssue": None}
+            return {
+                "available": available, "installed": packages, "issues": issues,
+                "publisherIssue": publisher_issue, "catalogIssue": catalog_issue,
+            }
 
     def install(self, files, *, inspect=False):
         with self.lock:
-            publisher = self._publisher()
+            publisher, _ = self._local_publisher()
             manifest = self._verify(files, publisher)
             if not inspect:
                 path = self._path(f"{manifest.id}/{manifest.version}")
@@ -230,7 +260,7 @@ class DesktopPlugins:
     def set_enabled(self, plugin_id, version, enabled):
         with self.lock, closing(sqlite3.connect(self.database, timeout=5)) as db, db:
             if enabled:
-                _, digest = self._read(plugin_id, version, self._publisher())
+                _, digest = self._read(plugin_id, version, self._local_publisher()[0])
                 db.execute(
                     """INSERT INTO desktop_plugin_activation VALUES (?, ?, ?)
                     ON CONFLICT(plugin_id) DO UPDATE SET version=excluded.version, manifest_hash=excluded.manifest_hash""",
@@ -266,7 +296,7 @@ class DesktopPlugins:
 
     def preview(self, plugin_id, version, parameter_type, value):
         with self.lock, closing(self._connect_db()) as db:
-            manifest, digest = self._read(plugin_id, version, self._publisher())
+            manifest, digest = self._read(plugin_id, version, self._local_publisher()[0])
             active = db.execute(
                 "SELECT version, manifest_hash FROM desktop_plugin_activation WHERE plugin_id=?", (plugin_id,)
             ).fetchone()

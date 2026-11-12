@@ -80,6 +80,11 @@ async def install_package(request: Request):
     return await run_in_threadpool(perform, store(request).install, files)
 
 
+@router.post("/catalog/{plugin_id}/install")
+def install_bundled(request: Request, plugin_id: PluginId):
+    return perform(store(request).install_bundled, plugin_id)
+
+
 @router.patch("/{plugin_id}/{version}")
 def set_enabled(request: Request, plugin_id: PluginId, version: PluginVersion, body: EnableBody):
     return perform(store(request).set_enabled, plugin_id, version, body.enabled)

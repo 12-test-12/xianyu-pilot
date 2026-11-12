@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from app.core import paths
 from app.core.config import Settings
 from app.desktop_app import create_desktop_app
+from app.services import desktop_plugins
 
 ENDPOINT = "/api/desktop/plugins"
 PACKAGE = f"{ENDPOINT}/package"
@@ -47,17 +48,58 @@ def desktop(tmp_path, monkeypatch):
     with TestClient(app, base_url="http://127.0.0.1:15177") as client:
         assert client.get(ENDPOINT).status_code == 401
         client.headers["Authorization"] = f"Bearer {app.state.desktop_token}"
-        assert client.get(ENDPOINT).json()["data"]["publisherIssue"]
-        (tmp_path / "plugin-publisher.pub").write_text(key.public_key().public_bytes_raw().hex(), encoding="ascii")
         yield client, key, tmp_path
+
+
+@pytest.fixture
+def external_publisher(desktop):
+    _, key, root = desktop
+    (root / "plugin-publisher.pub").write_text(key.public_key().public_bytes_raw().hex(), encoding="ascii")
+    return desktop
 
 
 def post_zip(client, target, contents):
     return client.post(target, content=contents, headers={"Content-Type": "application/zip", "X-Request-Id": "plugin-test"})
 
 
-def test_zip_install_preview_version_switch_and_uninstall(desktop):
-    client, key, root = desktop
+def test_bundled_plugin_installs_and_runs_without_a_publisher_file(desktop, monkeypatch):
+    client, _, root = desktop
+    status = client.get(ENDPOINT).json()["data"]
+    plugin, = status["available"]
+    assert plugin["id"] == "qiuqiu-assist"
+    assert set(plugin["parameterTypes"]) == {"short_link", "number", "nickname"}
+    assert not status["installed"]
+    assert status["publisherIssue"] is None
+    assert status["catalogIssue"] is None
+
+    headers = {"X-Request-Id": "plugin-test"}
+    assert client.post(f"{ENDPOINT}/catalog/unknown/install", headers=headers).status_code == 404
+    assert client.post(f"{ENDPOINT}/catalog/qiuqiu-assist/install").status_code == 415
+    publisher_file = root / "plugin-publisher.pub"
+    publisher_file.write_text("invalid", encoding="ascii")
+    install_url = f"{ENDPOINT}/catalog/qiuqiu-assist/install"
+    for _ in range(2):
+        assert client.post(install_url, headers=headers).json()["data"] == plugin
+    installed_url = f"{ENDPOINT}/{plugin['id']}/{plugin['version']}"
+    assert client.patch(installed_url, json={"enabled": True}).status_code == 200
+    assert client.get(ENDPOINT).json()["data"]["installed"] == [plugin | {"enabled": True}]
+    result = client.post(f"{installed_url}/preview", json={"parameterType": "number", "value": "12345678"})
+    assert result.json()["data"][0]["command"] == "查 12345678"
+
+    monkeypatch.setattr(desktop_plugins, "BUNDLED_PACKAGE", root / "missing.zip")
+    status = client.get(ENDPOINT).json()["data"]
+    assert not status["available"]
+    assert status["catalogIssue"]
+    assert status["publisherIssue"]
+    assert status["installed"] == [plugin | {"enabled": True}]
+    assert client.post(install_url, headers=headers).status_code == 503
+    assert client.patch(installed_url, json={"enabled": False}).status_code == 200
+    assert client.delete(installed_url, headers=headers).status_code == 200
+    assert not client.get(ENDPOINT).json()["data"]["installed"]
+
+
+def test_zip_install_preview_version_switch_and_uninstall(external_publisher):
+    client, key, root = external_publisher
     package = archive(signed_files(key))
     assert post_zip(client, f"{PACKAGE}/inspect", package).json()["data"]["id"] == "qiuqiu-assist"
     assert not (root / "plugins").exists()
@@ -86,8 +128,8 @@ def test_zip_install_preview_version_switch_and_uninstall(desktop):
     assert (root / "plugins/qiuqiu-assist/0.1.0/manifest.json").is_file()
 
 
-def test_rejects_unsafe_packages_and_revalidates_manual_install(desktop):
-    client, key, root = desktop
+def test_rejects_unsafe_packages_and_revalidates_manual_install(external_publisher):
+    client, key, root = external_publisher
     valid = signed_files(key)
     for files in (
         valid | {"../outside": b"outside"},
@@ -120,8 +162,8 @@ def test_rejects_unsafe_packages_and_revalidates_manual_install(desktop):
     assert not recovered["issues"]
 
 
-def test_repair_preserves_local_files_and_restores_original_on_failed_install(desktop, monkeypatch):
-    client, key, root = desktop
+def test_repair_preserves_local_files_and_restores_original_on_failed_install(external_publisher, monkeypatch):
+    client, key, root = external_publisher
     package = archive(signed_files(key))
     assert post_zip(client, PACKAGE, package).status_code == 200
     folder = root / "plugins/qiuqiu-assist/0.1.0"

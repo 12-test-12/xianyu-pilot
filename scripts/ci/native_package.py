@@ -66,6 +66,7 @@ REQUIRED = {
     "apps/api/app/desktop_console.py", "apps/api/app/desktop_migrations/006_full_console.sql",
     "apps/api/app/desktop_migrations/008_desktop_plugins.sql", "apps/api/app/desktop_plugins_api.py",
     "apps/api/app/services/desktop_plugins.py", "apps/web/src/pages/PluginsPage.vue",
+    "apps/api/app/resources/qiuqiu-assist.zip",
     "docs/desktop-performance.md",
     "scripts/ci/windows_icon.py",
     *PORTABLE_BUILD_FILES,

@@ -19,6 +19,7 @@ a=Analysis(
     [str(root/'apps/api/run_portable.py')],pathex=[str(root/'apps/api')],
     binaries=[*playwright_binaries],datas=[(str(web),'web'),(str(root/'apps/api/app/desktop_migrations'),'app/desktop_migrations'),
         (str(root/'apps/api/app/data/china_address_dict.json'),'app/resources'),
+        (str(root/'apps/api/app/resources/qiuqiu-assist.zip'),'app/resources'),
         *project_notices,*playwright_datas]+copy_metadata('PySide6',recursive=True),
     hiddenimports=['app.portable.qt_host','app.portable.webengine_check','sqlalchemy.dialects.sqlite.aiosqlite',
         'aiosqlite','uvicorn.protocols.http.h11_impl','uvicorn.lifespan.on','uvicorn.loops.asyncio',
