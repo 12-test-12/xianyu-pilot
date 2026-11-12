@@ -41,7 +41,7 @@ CONSOLE_PROBE=r"""(() => {
           const catalog=document.querySelector('[aria-labelledby="available-plugins"]');
           const item=catalog?.querySelector('.plugin-row');
           return item?.querySelector('h3')?.textContent.includes('球球助力') &&
-            /^v\d+\.\d+\.\d+$/.test(item.querySelector('small')?.textContent) &&
+            /^v\d+\.\d+\.\d+$/.test(item.querySelector('small')?.textContent?.trim() || '') &&
             [...catalog.querySelectorAll('button')].some(button=>button.textContent.trim()==='安装 ZIP' && !button.disabled) &&
             (item.textContent.includes('已安装') ||
               [...item.querySelectorAll('button')].some(button=>button.textContent.trim()==='安装预演版' && !button.disabled));

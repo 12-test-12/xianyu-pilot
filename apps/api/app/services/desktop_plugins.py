@@ -258,7 +258,7 @@ class DesktopPlugins:
             return manifest.summary()
 
     def set_enabled(self, plugin_id, version, enabled):
-        with self.lock, closing(sqlite3.connect(self.database, timeout=5)) as db, db:
+        with self.lock, closing(self._connect_db()) as db, db:
             if enabled:
                 _, digest = self._read(plugin_id, version, self._local_publisher()[0])
                 db.execute(
