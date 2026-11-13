@@ -64,7 +64,8 @@ def inventory(root):
 def validate_required(files):
     required={'XianyuPilot.exe','_internal/web/index.html','_internal/app/desktop_migrations/006_full_console.sql',
               '_internal/app/desktop_migrations/008_desktop_plugins.sql',
-              '_internal/app/resources/china_address_dict.json','_internal/app/resources/qiuqiu-assist.zip',
+              '_internal/app/resources/categories.json','_internal/app/resources/china_address_dict.json',
+              '_internal/app/resources/qiuqiu-assist.zip',
               'PORTABLE-README.txt'}
     if not required<=files.keys():
         raise ValueError('portable build is incomplete')

@@ -4,13 +4,26 @@ from __future__ import annotations
 
 import copy
 import json
+import sys
 import threading
 from pathlib import Path
 
 
-_CATEGORIES_PATH = (
-    Path(__file__).resolve().parents[1] / "data" / "categories.json"
-)
+def _resolve_categories_path() -> Path:
+    """Resolve the versioned category JSON artifact across frozen and development layouts."""
+    base = Path(__file__).resolve().parents[1]
+    preferred = "resources" if getattr(sys, "frozen", False) else "data"
+    fallback = "data" if preferred == "resources" else "resources"
+    primary = base / preferred / "categories.json"
+    if primary.is_file():
+        return primary
+    secondary = base / fallback / "categories.json"
+    if secondary.is_file():
+        return secondary
+    return primary
+
+
+_CATEGORIES_PATH = _resolve_categories_path()
 _MAX_CATEGORY_BYTES = 2 * 1024 * 1024
 _cache_lock = threading.Lock()
 _cache_signature: tuple[int, int] | None = None
@@ -51,14 +64,15 @@ def load_categories() -> dict:
     """
 
     global _cache_signature, _cache_value
+    path = _resolve_categories_path()
     with _cache_lock:
         try:
-            stat_result = _CATEGORIES_PATH.stat()
+            stat_result = path.stat()
             signature = (stat_result.st_mtime_ns, stat_result.st_size)
         except OSError as exc:
             raise CategoryDataError("分类树版本文件不存在或不可读取") from exc
         if _cache_value is None or signature != _cache_signature:
-            signature, payload = _load_category_artifact(_CATEGORIES_PATH)
+            signature, payload = _load_category_artifact(path)
             _cache_signature = signature
             _cache_value = payload
         return copy.deepcopy(_cache_value)

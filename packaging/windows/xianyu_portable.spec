@@ -18,6 +18,7 @@ playwright_datas,playwright_binaries,playwright_hidden=collect_all('playwright')
 a=Analysis(
     [str(root/'apps/api/run_portable.py')],pathex=[str(root/'apps/api')],
     binaries=[*playwright_binaries],datas=[(str(web),'web'),(str(root/'apps/api/app/desktop_migrations'),'app/desktop_migrations'),
+        (str(root/'apps/api/app/data/categories.json'),'app/resources'),
         (str(root/'apps/api/app/data/china_address_dict.json'),'app/resources'),
         (str(root/'apps/api/app/resources/qiuqiu-assist.zip'),'app/resources'),
         *project_notices,*playwright_datas]+copy_metadata('PySide6',recursive=True),
@@ -40,4 +41,6 @@ exe=EXE(pyz,a.scripts,[],exclude_binaries=True,name='XianyuPilot',debug=False,
 coll=COLLECT(exe,a.binaries,a.datas,strip=False,upx=False,name='XianyuPilot')
 standalone=EXE(pyz,a.scripts,a.binaries,a.datas,[],name='XianyuPilot-Standalone',debug=False,
     bootloader_ignore_signals=False,strip=False,upx=False,console=False,icon=str(icon),
+    # Keep live DLLs, certificates and web assets out of Windows' shared Temp folder.
+    runtime_tmpdir=r'%LOCALAPPDATA%\XianyuPilot\Runtime',
     disable_windowed_traceback=True)

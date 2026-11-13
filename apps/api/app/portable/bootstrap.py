@@ -62,6 +62,13 @@ def portable_self_check(root,web):
     from app.services.desktop_delivery import DesktopDeliveryStore
     if not (web/"index.html").is_file() or not (web/"assets").is_dir():
         raise RuntimeError("便携包缺少内嵌前端")
+    frozen=bool(getattr(sys,"frozen",False))
+    if frozen:
+        from requests.certs import where as ca_bundle
+        from app.services.category_data import load_categories
+        load_categories()
+        if not Path(ca_bundle()).is_file():
+            raise RuntimeError("便携包缺少 HTTPS 证书文件")
     with SingleInstance(root):
         schema=DesktopStore(root/"app.sqlite3").initialize()
         DesktopDeliveryStore(root/"app.sqlite3").recover_interrupted()
@@ -72,7 +79,7 @@ def portable_self_check(root,web):
             import uuid
             conn.execute("INSERT OR IGNORE INTO portable_self_check VALUES(1,?)",(uuid.uuid4().hex,))
             token=conn.execute("SELECT token FROM portable_self_check WHERE id=1").fetchone()[0]
-    report={"ok":True,"programRoot":str(program_root()),"dataRoot":str(root),"schema":schema,"storageToken":token,
-        "frozen":bool(getattr(sys,"frozen",False)),"uiBuilt":True,"automaticDeliveryEnabled":False}
+    report={"ok":True,"programRoot":str(program_root()),"dataRoot":str(root),"bundleRoot":str(web.parent),
+        "schema":schema,"storageToken":token,"frozen":frozen,"uiBuilt":True,"automaticDeliveryEnabled":False}
     contained_data_path(root,"logs/portable-self-check.json").write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding="utf-8")
     return report

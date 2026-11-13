@@ -17,9 +17,11 @@ def run(bundle,workspace,*,webengine=True,standalone=None):
         second=root/'移动盘符模拟 B'/'XianyuPilot'
         outside=root/'unrelated-cwd';outside.mkdir()
         forbidden=root/'inherited-user-and-temp';forbidden.mkdir()
+        local_app_data=root/'isolated-local-appdata';local_app_data.mkdir()
+        runtime_dir=local_app_data/'XianyuPilot/Runtime'
         env=dict(os.environ)
         env.update({'PATH':str(Path(os.environ['SystemRoot'])/'System32'),'APPDATA':str(forbidden),
-                    'LOCALAPPDATA':str(forbidden),'TEMP':str(forbidden),'TMP':str(forbidden)})
+                    'LOCALAPPDATA':str(local_app_data),'TEMP':str(forbidden),'TMP':str(forbidden)})
         for key in ('PYTHONHOME','PYTHONPATH','QTWEBENGINE_CHROMIUM_FLAGS','QTWEBENGINE_REMOTE_DEBUGGING'):
             env.pop(key,None)
         if standalone is not None:
@@ -44,28 +46,39 @@ def run(bundle,workspace,*,webengine=True,standalone=None):
             if result.returncode:
                 diagnostics()
                 raise RuntimeError(f'Frozen {flag} failed: {result.returncode}')
-        probe(first,'--self-check')
-        before=json.loads((first/'data/logs/portable-self-check.json').read_text(encoding='utf-8'))
-        if not before['frozen'] or Path(before['dataRoot']).resolve()!=first/'data':
-            raise ValueError('frozen data root escaped')
+        def self_check(folder):
+            probe(folder,'--self-check')
+            report=json.loads((folder/'data/logs/portable-self-check.json').read_text(encoding='utf-8'))
+            data_root=Path(report['dataRoot']).resolve()
+            if not report['frozen'] or data_root!=(folder/'data').resolve():
+                raise ValueError('frozen data root escaped')
+            bundle_root=Path(report['bundleRoot']).resolve()
+            if standalone is not None:
+                if bundle_root.parent!=runtime_dir.resolve() or not bundle_root.name.startswith('_MEI'):
+                    raise ValueError('standalone bundle must extract under LocalAppData/XianyuPilot/Runtime')
+            elif bundle_root!=(folder/'_internal').resolve():
+                raise ValueError('directory bundle must use its packaged _internal folder')
+            return report
+        before=self_check(first)
         second.parent.mkdir()
         # Both checked absolute paths are inside this disposable test workspace.
         if not first.resolve().is_relative_to(root) or not second.resolve().is_relative_to(root):
             raise ValueError('unsafe relocation target')
         shutil.move(str(first),str(second))
-        probe(second,'--self-check')
-        after=json.loads((second/'data/logs/portable-self-check.json').read_text(encoding='utf-8'))
-        if after['storageToken']!=before['storageToken'] or Path(after['dataRoot']).resolve()!=second/'data':
+        after=self_check(second)
+        if after['storageToken']!=before['storageToken']:
             raise ValueError('portable relocation lost database identity')
         if webengine:
             probe(second,'--webengine-check')
-            ui=json.loads((second/'data/logs/webengine-check.json').read_text())
+            ui=json.loads((second/'data/logs/webengine-check.json').read_text(encoding='utf-8'))
             if not ui['ok'] or not ui.get('originalConsoleRendered'):
                 raise ValueError('embedded Chromium did not render Vue')
         if list(outside.iterdir()):
             raise ValueError('application wrote data relative to the calling cwd')
         if list(forbidden.iterdir()):
-            raise ValueError('application used inherited user or Temp directories')
+            raise ValueError('application left files in inherited AppData or Temp directories')
+        if standalone is not None and runtime_dir.is_dir() and any(runtime_dir.iterdir()):
+            raise ValueError('standalone bundle left extracted files after exit')
         return {'frozenStartup':True,'externalCwd':True,'relocatedDatabase':True,'embeddedVueRendered':webengine,'standalone':standalone is not None,
                 'inheritedUserTempUntouched':True,'developerPathRemoved':True,
                 'nativeTrayValidated':False,'cleanVmValidated':False,'crossVolumeValidated':False,'fullIoIsolationValidated':False}
