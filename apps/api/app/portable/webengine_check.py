@@ -87,7 +87,8 @@ CONSOLE_PROBE=r"""(() => {
 
 def check(root,paths,web,port):
     os.environ["QT_QPA_PLATFORM"]="offscreen"
-    os.environ["QTWEBENGINE_CHROMIUM_FLAGS"]+=" --disable-gpu"
+    if "--disable-gpu" not in os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS",""):
+        os.environ["QTWEBENGINE_CHROMIUM_FLAGS"]=(os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS","")+" --disable-gpu").strip()
     from PySide6.QtCore import QTimer,QUrl
     from PySide6.QtWidgets import QApplication
     from PySide6.QtWebEngineCore import QWebEngineProfileBuilder,QWebEnginePage

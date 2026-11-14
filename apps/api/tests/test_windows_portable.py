@@ -62,6 +62,22 @@ def test_qt_and_chromium_all_paths_set_before_import_no_user_fallback(portable,m
     assert 'QTWEBENGINE_DISABLE_SANDBOX' not in os.environ
 
 
+@pytest.mark.parametrize('cli_flags,expected_software_rendering', [
+    ([], False),
+    (['--software-rendering'], True),
+    (['--webengine-check'], True),
+])
+def test_portable_runtime_hook_detects_software_rendering(portable, monkeypatch, cli_flags, expected_software_rendering):
+    import importlib.util
+    monkeypatch.setattr(sys, 'argv', ['XianyuPilot.exe', *cli_flags])
+    hook_path = Path(__file__).resolve().parents[3] / 'packaging/windows/portable_runtime_hook.py'
+    spec = importlib.util.spec_from_file_location('portable_runtime_hook_test', hook_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    flags = os.environ.get('QTWEBENGINE_CHROMIUM_FLAGS', '').split()
+    assert ('--disable-gpu' in flags) is expected_software_rendering
+
+
 def test_resource_bundle_is_read_only_meipass_but_data_is_always_next_to_exe(portable,monkeypatch):
     monkeypatch.setattr(sys,'frozen',True,raising=False)
     monkeypatch.setattr(sys,'executable',str(portable/'XianyuPilot.exe'))

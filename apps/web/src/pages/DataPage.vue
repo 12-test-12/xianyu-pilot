@@ -909,11 +909,6 @@ onBeforeUnmount(() => {
   container-type: inline-size;
 }
 
-/* Decorative idle pulses continuously repaint the embedded Chromium window. */
-.data-page .live-dot.connected .live-pulse, .data-page .event-dot::after {
-  animation: none;
-}
-
 .data-hero {
   display: flex;
   flex-wrap: wrap;

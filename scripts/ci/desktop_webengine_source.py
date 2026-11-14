@@ -11,7 +11,7 @@ from app.portable.webengine_check import check
 
 
 if __name__=='__main__':
-    root,locations=configure_environment()
+    root,locations=configure_environment(software_rendering=True)
     handler=configure_logging(root)
     try:
         result=check(root,locations,Path('apps/web/dist').resolve(),19177)

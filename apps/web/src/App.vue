@@ -576,7 +576,9 @@ function onSseEventForSound(event) {
   }
 }
 
-const mobileViewport = desktopHost ? null : window.matchMedia('(max-width: 900px)')
+const mobileViewport = desktopHost || typeof window === 'undefined' || typeof window.matchMedia !== 'function'
+  ? null
+  : window.matchMedia('(max-width: 900px)')
 
 function updateMobileState() {
   isMobile.value = mobileViewport?.matches ?? false
