@@ -45,18 +45,19 @@ def portable(tmp_path,monkeypatch):
     return root
 
 
-def test_qt_and_chromium_all_paths_set_before_import_no_user_fallback(portable,monkeypatch):
-    monkeypatch.setenv('QTWEBENGINE_CHROMIUM_FLAGS','--user-data-dir=C:/Users/unsafe --no-sandbox')
+@pytest.mark.parametrize('software_rendering', [False, True])
+def test_qt_and_chromium_all_paths_set_before_import_no_user_fallback(portable,monkeypatch,software_rendering):
+    monkeypatch.setenv('QTWEBENGINE_CHROMIUM_FLAGS','--user-data-dir=C:/Users/unsafe --no-sandbox --disable-gpu')
     monkeypatch.setenv('QTWEBENGINE_REMOTE_DEBUGGING','9222')
     monkeypatch.setenv('QTWEBENGINE_DISABLE_SANDBOX','1')
-    root,mapping=configure_environment()
+    root,mapping=configure_environment(software_rendering=software_rendering)
     assert root==portable/'data'
     for key in ('APPDATA','LOCALAPPDATA','QML_DISK_CACHE_PATH','TEMP','TMP','TMPDIR'):
         assert Path(os.environ[key]).is_relative_to(root)
     assert all(path.is_relative_to(root) and path.is_dir() for path in mapping.values())
     assert 'C:/Users' not in os.environ['QTWEBENGINE_CHROMIUM_FLAGS']
     assert '--no-sandbox' not in os.environ['QTWEBENGINE_CHROMIUM_FLAGS']
-    assert '--disable-gpu' in os.environ['QTWEBENGINE_CHROMIUM_FLAGS'].split()
+    assert ('--disable-gpu' in os.environ['QTWEBENGINE_CHROMIUM_FLAGS'].split()) is software_rendering
     assert 'QTWEBENGINE_REMOTE_DEBUGGING' not in os.environ
     assert 'QTWEBENGINE_DISABLE_SANDBOX' not in os.environ
 

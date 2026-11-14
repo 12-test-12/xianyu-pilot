@@ -19,7 +19,7 @@ def console(tmp_path,monkeypatch):
         monkeypatch.setenv(key,os.environ.get(key,''))
     monkeypatch.setenv('QT_QPA_PLATFORM','offscreen')
     from app.portable.bootstrap import configure_environment
-    root,locations=configure_environment()
+    root,locations=configure_environment(software_rendering=True)
     web=tmp_path/'apps/web/dist'
     web.mkdir(parents=True)
     (web/'favicon.ico').write_bytes((Path(__file__).resolve().parents[2]/'web/public/favicon.ico').read_bytes())

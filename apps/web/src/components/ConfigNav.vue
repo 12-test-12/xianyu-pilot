@@ -32,7 +32,7 @@ const tabs = settingsTabs
 
 <style scoped>
 .config-nav {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 251, 255, 0.92));
+  background: linear-gradient(180deg, #fff, #f8fbff);
   border: 1px solid rgba(231, 237, 247, 0.95);
   border-radius: 22px;
   box-shadow: 0 18px 42px rgba(31, 53, 94, 0.08);
@@ -40,7 +40,6 @@ const tabs = settingsTabs
   min-height: calc(100vh - 168px);
   position: sticky;
   top: 18px;
-  backdrop-filter: blur(10px);
 }
 
 .config-nav-head {

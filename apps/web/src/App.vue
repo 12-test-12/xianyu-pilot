@@ -576,16 +576,17 @@ function onSseEventForSound(event) {
   }
 }
 
+const mobileViewport = desktopHost ? null : window.matchMedia('(max-width: 900px)')
+
 function updateMobileState() {
-  isMobile.value = !desktopHost && window.matchMedia('(max-width: 900px)').matches
+  isMobile.value = mobileViewport?.matches ?? false
   if (!isMobile.value) mobileNavOpen.value = false
 }
 
 onMounted(() => {
   installClientErrorReporter()
   updateMobileState()
-  window.addEventListener('resize', updateMobileState)
-  window.addEventListener('orientationchange', updateMobileState)
+  mobileViewport?.addEventListener('change', updateMobileState)
   window.addEventListener('offline', onOffline)
   window.addEventListener('online', onOnline)
   window.addEventListener('hashchange', onHash)
@@ -600,8 +601,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
-  window.removeEventListener('resize', updateMobileState)
-  window.removeEventListener('orientationchange', updateMobileState)
+  mobileViewport?.removeEventListener('change', updateMobileState)
   window.removeEventListener('offline', onOffline)
   window.removeEventListener('online', onOnline)
   window.removeEventListener('hashchange', onHash)

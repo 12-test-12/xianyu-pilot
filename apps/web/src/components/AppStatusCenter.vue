@@ -67,14 +67,13 @@ const isUrgent = computed(() => ['error', 'warn'].includes(props.notice?.type))
   padding: 12px 14px;
   border: 1px solid #d8e5fa;
   border-radius: 14px;
-  background: rgba(255, 255, 255, .97);
+  background: #fff;
   box-shadow: 0 18px 48px rgba(25, 48, 86, .2);
   color: #24466f;
   display: flex;
   align-items: center;
   gap: 12px;
   pointer-events: auto;
-  backdrop-filter: blur(12px);
 }
 
 .app-status-banner.offline,

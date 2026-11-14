@@ -210,6 +210,19 @@ async function launchBrowser() {
     await page.getByText('¥0.01', { exact: true }).waitFor();
     const chart = page.locator('.trend-box canvas').first();
     await chart.waitFor();
+    await page.locator('.trend-box').evaluate(el => {
+      el.dataset.chartId = el.getAttribute('_echarts_instance_');
+    });
+    for (const width of [940, 1180]) {
+      await page.setViewportSize({ width, height: 820 });
+      await page.waitForFunction(() => {
+        const box = document.querySelector('.trend-box');
+        const canvas = box.querySelector('canvas');
+        return box.dataset.chartId === box.getAttribute('_echarts_instance_') &&
+          Math.abs(canvas.getBoundingClientRect().width - box.clientWidth) <= 1;
+      });
+    }
+    checks.push('The trend chart follows its container width and keeps the same instance');
     const plot = await chart.boundingBox();
     await page.mouse.move(plot.x + plot.width / 2, plot.y + plot.height / 2);
     await page.mouse.wheel(0, 320);

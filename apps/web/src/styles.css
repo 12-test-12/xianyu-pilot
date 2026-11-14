@@ -3525,15 +3525,23 @@ button:focus-visible {
   right: 0;
   height: 3px;
   z-index: 9999;
-  background: linear-gradient(90deg, #2563eb, #3b82f6, #06b6d4, #3b82f6);
-  background-size: 250% 100%;
+  overflow: hidden;
+  pointer-events: none;
+  background: #dbeafe;
+}
+
+.nav-top-progress::before {
+  content: '';
+  display: block;
+  width: 35%;
+  height: 100%;
+  background: linear-gradient(90deg, #2563eb, #06b6d4);
   animation: navProgressSlide 1.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
-  box-shadow: 0 0 10px rgba(37, 99, 235, 0.5);
 }
 
 @keyframes navProgressSlide {
-  0% { background-position: 100% 0; }
-  100% { background-position: -100% 0; }
+  from { transform: translateX(-100%); }
+  to { transform: translateX(286%); }
 }
 
 .page-viewport {
@@ -3644,8 +3652,9 @@ button:focus-visible {
   .notice-fade-leave-active {
     transition: none;
   }
-  .nav-top-progress {
+  .nav-top-progress::before {
     animation: none;
+    width: 100%;
   }
   .skeleton-shimmer::after {
     animation: none;

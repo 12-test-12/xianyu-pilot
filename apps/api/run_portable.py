@@ -16,6 +16,7 @@ def main():
     parser.add_argument("--self-check",action="store_true")
     parser.add_argument("--smoke-test",action="store_true")
     parser.add_argument("--webengine-check",action="store_true")
+    parser.add_argument("--software-rendering",action="store_true",help="使用软件渲染以兼容存在显示问题的显卡驱动")
     args=parser.parse_args()
     if not 1024<=args.port<=65535:
         parser.error("端口须为 1024–65535")
@@ -24,7 +25,7 @@ def main():
     handler=None
     backend=None
     try:
-        root,paths=configure_environment()
+        root,paths=configure_environment(software_rendering=args.software_rendering)
         handler=configure_logging(root)
         web=bundled_web_dir()
         if args.self_check:

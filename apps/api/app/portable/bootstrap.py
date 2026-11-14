@@ -10,7 +10,7 @@ from app.core.paths import contained_data_path,program_root
 from app.core.portable_runtime import prepare_portable_runtime
 
 
-def configure_environment():
+def configure_environment(*, software_rendering=False):
     root=prepare_portable_runtime()
     paths={name:contained_data_path(root,relative) for name,relative in {
         "roaming":"profiles/system/roaming","local":"profiles/system/local",
@@ -19,16 +19,18 @@ def configure_environment():
     }.items()}
     for path in paths.values():
         path.mkdir(parents=True,exist_ok=True)
+    chromium_flags = [
+        f'--user-data-dir="{paths["profile"]}"',f'--disk-cache-dir="{paths["cache"]}"',
+        f'--crash-dumps-dir="{paths["crashes"]}"',"--disable-breakpad",
+        "--disable-gpu-shader-disk-cache","--no-first-run",
+    ]
+    if software_rendering:
+        chromium_flags.append("--disable-gpu")
     os.environ.update({
         "RUNTIME_MODE":"desktop","APPDATA":str(paths["roaming"]),"LOCALAPPDATA":str(paths["local"]),
         "XDG_CONFIG_HOME":str(paths["roaming"]),"XDG_CACHE_HOME":str(paths["cache"]),
         "XDG_DATA_HOME":str(paths["local"]),"QML_DISK_CACHE_PATH":str(paths["qml"]),
-        "QTWEBENGINE_CHROMIUM_FLAGS":' '.join([
-            f'--user-data-dir="{paths["profile"]}"',f'--disk-cache-dir="{paths["cache"]}"',
-            f'--crash-dumps-dir="{paths["crashes"]}"',"--disable-breakpad",
-            # Keep the console off driver-dependent GPU compositing on Windows.
-            "--disable-gpu","--disable-gpu-shader-disk-cache","--no-first-run",
-        ]),
+        "QTWEBENGINE_CHROMIUM_FLAGS":' '.join(chromium_flags),
     })
     # Never inherit a debugging listener or a disabled Chromium sandbox.
     for key in ("QTWEBENGINE_REMOTE_DEBUGGING","QTWEBENGINE_DISABLE_SANDBOX"):

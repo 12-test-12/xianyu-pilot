@@ -284,7 +284,7 @@ const replyBarEl = ref(null)
 let trendChart = null, deliveryPieChart = null, replyBarChart = null
 const dataRequests = createLatestRequestGuard()
 let dataScope = ''
-let resizeFrame = null
+let chartResizeObserver = null
 
 const quick = [
   { label: '添加闲鱼账号', key: 'accounts', icon: '👤' },
@@ -538,13 +538,12 @@ const tooltipStyle = {
   borderRadius: 12,
   padding: [12, 16],
   textStyle: { color: '#15213d', fontSize: 13, fontWeight: 500 },
-  extraCssText: 'box-shadow:0 12px 40px rgba(31,53,94,0.12);backdrop-filter:blur(16px);',
+  extraCssText: 'box-shadow:0 12px 40px rgba(31,53,94,0.12);',
 }
 
 function renderTrendChart() {
   if (!trendChartEl.value) return
   if (!trendChart) trendChart = echarts.init(trendChartEl.value)
-  trendChart.resize()
   const t = trend.value
   trendChart.setOption({
     color: [C.primary, C.green, C.red, C.purple, C.cyan],
@@ -680,7 +679,6 @@ function renderTrendChart() {
 function renderDeliveryPie() {
   if (!deliveryPieEl.value) return
   if (!deliveryPieChart) deliveryPieChart = echarts.init(deliveryPieEl.value)
-  deliveryPieChart.resize()
   const sc = Number(stats.value.deliverySuccessCount) || 0
   const fc = Number(stats.value.deliveryFailCount) || 0
   const pc = Number(stats.value.pendingDeliveryCount) || 0
@@ -775,7 +773,6 @@ function renderDeliveryPie() {
 function renderReplyBar() {
   if (!replyBarEl.value) return
   if (!replyBarChart) replyBarChart = echarts.init(replyBarEl.value)
-  replyBarChart.resize()
   const reply = Number(stats.value.autoReplyCount ?? stats.value.aiReplyCount) || 0
   const order = Number(stats.value.todayOrderCount ?? stats.value.orderCount) || 0
   const delivery = Number(stats.value.deliverySuccessCount) || 0
@@ -861,19 +858,10 @@ function exportTrendCsv() {
   URL.revokeObjectURL(url)
 }
 
-function handleResize() {
-  if (resizeFrame !== null) return
-  resizeFrame = requestAnimationFrame(() => {
-    resizeFrame = null
-    trendChart?.resize()
-    deliveryPieChart?.resize()
-    replyBarChart?.resize()
-  })
-}
-
 function onSse(event) {
   sseStatus.value = 'connected'
   const d = event.detail || {}
+  if (d.type === 'heartbeat' || d.type === 'connected') return
   logs.value.unshift({ t: d.type || d.event || '实时事件', d: shortText(d.message || d.content || JSON.stringify(d), 70), time: new Date().toLocaleTimeString('zh-CN', { hour12: false }) })
   logs.value = logs.value.slice(0, 5)
 }
@@ -885,17 +873,28 @@ watch(date, () => { load() })
 onMounted(() => {
   window.addEventListener('xya-sse-event', onSse)
   window.addEventListener('xya-sse-status', onSseStatus)
-  window.addEventListener('resize', handleResize)
+  chartResizeObserver = new ResizeObserver(entries => {
+    for (const { target, contentRect } of entries) {
+      const chart = echarts.getInstanceByDom(target)
+      const width = Math.floor(contentRect.width)
+      const height = Math.floor(contentRect.height)
+      if (chart && width > 0 && height > 0 && (width !== chart.getWidth() || height !== chart.getHeight())) {
+        chart.resize({ width, height, silent: true })
+      }
+    }
+  })
+  for (const element of [trendChartEl.value, deliveryPieEl.value, replyBarEl.value]) {
+    if (element) chartResizeObserver.observe(element)
+  }
   loadAccounts()
   load()
 })
 
 onBeforeUnmount(() => {
   dataRequests.invalidate()
-  if (resizeFrame !== null) cancelAnimationFrame(resizeFrame)
+  chartResizeObserver?.disconnect()
   window.removeEventListener('xya-sse-event', onSse)
   window.removeEventListener('xya-sse-status', onSseStatus)
-  window.removeEventListener('resize', handleResize)
   trendChart?.dispose(); deliveryPieChart?.dispose(); replyBarChart?.dispose()
   trendChart = null; deliveryPieChart = null; replyBarChart = null
 })
@@ -935,11 +934,6 @@ onBeforeUnmount(() => {
   font-variant-numeric: tabular-nums;
   text-wrap: pretty;
   overflow-wrap: anywhere;
-}
-
-@keyframes pulse-dot {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.5; transform: scale(0.85); }
 }
 
 .hero-controls {
@@ -1308,7 +1302,6 @@ onBeforeUnmount(() => {
   border-radius: 50%;
   background: currentColor;
 }
-.live-dot.connected .live-pulse { animation: pulse-dot 2s ease-in-out infinite; }
 
 .event-list {
   display: flex;
@@ -1331,19 +1324,6 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
   box-shadow: 0 0 0 3px rgba(13,107,255,0.12);
   position: relative;
-}
-.event-dot::after {
-  content: '';
-  position: absolute;
-  inset: -4px;
-  border-radius: 50%;
-  border: 2px solid var(--primary, #0d6bff);
-  opacity: 0;
-  animation: event-pulse 2s ease-out infinite;
-}
-@keyframes event-pulse {
-  0% { transform: scale(0.8); opacity: 0.6; }
-  100% { transform: scale(2); opacity: 0; }
 }
 .event-content { flex: 1; min-width: 0; }
 .event-content b {
@@ -1425,8 +1405,6 @@ onBeforeUnmount(() => {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
-  .live-dot.connected .live-pulse { animation: none; }
-  .event-dot::after { display: none; }
 }
 
 /* ===== Responsive ===== */
