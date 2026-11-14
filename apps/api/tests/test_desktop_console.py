@@ -268,6 +268,145 @@ async def test_automatic_reply_requires_opt_in_and_sends_after_platform_ack(tmp_
         assert db.execute('SELECT state FROM ai_auto_reply_attempt').fetchone() == ('confirmed',)
 
 
+@pytest.mark.asyncio
+async def test_welcome_uses_new_conversation_push_and_preserves_first_buyer_question(tmp_path, monkeypatch):
+    from base64 import b64encode
+
+    from app.core import paths, secret_store
+    from app.core.database import use_database_runtime
+    from app.desktop_storage import DesktopStore
+    from app.services import automation_runtime, ws_startup
+    from app.services.ai_reply_batcher import AiAutoReplyBatcher
+    from app.services.business_settings import save_raw_business_setting
+    from app.services.message_automation_outbox import run_message_automation_outbox_once
+    from app.services.ws_protocol import parse_sync_package
+
+    monkeypatch.setattr(paths, 'SOURCE_ROOT', tmp_path)
+    config = Settings(runtime_mode='desktop')
+    monkeypatch.setattr(secret_store, 'settings', config)
+    DesktopStore(config.sqlite_path).initialize()
+    runtime = DatabaseRuntime(config)
+    sent = []
+    model_calls = []
+
+    class Client:
+        is_connected = True
+        _sid = 'registered'
+
+        async def send_text_message(self, *, cid, to_id, text, persist):
+            assert (cid, to_id, persist) == ('fresh@goofish', 'buyer@goofish', False)
+            sent.append(text)
+            return {'code': 200}
+
+    async def load_model():
+        model_calls.append('load')
+        return {'enabled': True, 'base_url': 'https://models.example', 'model': 'example-chat', 'api_key': 'fixture-model-key'}
+
+    async def generate(**kwargs):
+        assert kwargs['messages'][-1] == {'role': 'user', 'content': '现在有货吗？'}
+        model_calls.append('generate')
+        return {'ok': True, 'content': '有货。'}
+
+    async def unexpected_wait():
+        pytest.fail('a conversation opening must bypass the normal reply delay')
+
+    batcher = AiAutoReplyBatcher(ws_startup._dispatch_ai_auto_reply_batch, delay_seconds=unexpected_wait)
+    monkeypatch.setattr(ws_startup, 'ai_auto_reply_batcher', batcher)
+    monkeypatch.setitem(automation_runtime.ws_manager._clients, 1, Client())
+    monkeypatch.setattr(automation_runtime, '_resolve_ai_config', load_model)
+    monkeypatch.setattr(automation_runtime, 'generate_text', generate)
+    now = int(time.time() * 1000)
+    welcome = '欢迎光临本店，有问题可以直接问我。'
+
+    def opening(sid, pnm_id, *, created_at=now, seller='seller'):
+        body = {
+            'sessionInfo': {'sessionId': sid, 'createTime': created_at, 'extensions': {
+                'extUserId': 'buyer', 'ownerUserId': seller, 'itemId': '2026', 'itemTitle': '测试商品',
+            }},
+            'content': {'contentType': 8},
+            'messageId': pnm_id,
+        }
+        encoded = b64encode(json.dumps(body).encode()).decode()
+        (message,) = parse_sync_package({'lwp': '/s/vulcan', 'body': {'data': [{'data': encoded}]}})['messages']
+        assert message['isConversationOpening'] == bool(created_at)
+        return message
+
+    async def process(message):
+        await ws_startup.on_message_callback(1, message)
+        await run_message_automation_outbox_once()
+        await asyncio.wait_for(ws_startup.ai_auto_reply_batcher.drain(), timeout=3)
+
+    with use_database_runtime(runtime):
+        try:
+            async with runtime.session() as db:
+                await db.execute(text("INSERT INTO xianyu_account(id, external_uid, status, deleted) VALUES(1, 'seller', 1, 0)"))
+                await save_raw_business_setting(db, 'ai-customer-service', {'enabled': True, 'welcomeMessage': welcome})
+            await process(opening('disabled', 'opening-disabled'))
+            async with runtime.session() as db:
+                await save_raw_business_setting(db, 'auto-reply-account-scopes', {'accounts': {'1': True}})
+            await process(opening('stale', 'opening-stale', created_at=now - 120_000))
+            await process(opening('other-seller', 'opening-other', seller='other'))
+            await process(opening('regular-card', 'regular-card', created_at=0))
+            assert not sent
+
+            await process(opening('fresh', 'opening-fresh'))
+            monkeypatch.setattr(ws_startup, 'ai_auto_reply_batcher', AiAutoReplyBatcher(
+                ws_startup._dispatch_ai_auto_reply_batch, delay_seconds=unexpected_wait,
+            ))
+            await process(opening('fresh@goofish', 'opening-replay'))
+            assert sent == [welcome]
+            assert not model_calls
+
+            await process({
+                'sId': 'fresh', 'pnmId': 'platform-welcome-echo', 'senderUserId': 'seller@goofish',
+                'receiverUserId': 'buyer', 'msgContent': welcome, 'messageTime': now + 1, 'contentType': 1,
+                'rawPayload': {'messageId': 'platform-welcome-echo'},
+            })
+            monkeypatch.setattr(ws_startup, 'ai_auto_reply_batcher', AiAutoReplyBatcher(
+                ws_startup._dispatch_ai_auto_reply_batch, delay_seconds=0,
+            ))
+            await process({
+                'sId': 'fresh', 'pnmId': 'first-question', 'senderUserId': 'buyer',
+                'receiverUserId': 'seller', 'msgContent': '现在有货吗？', 'messageTime': now, 'contentType': 1,
+            })
+            assert sent == [welcome, '有货。']
+            assert model_calls == ['load', 'generate']
+            async with runtime.session() as db:
+                assert await db.scalar(text("SELECT count(*) FROM xianyu_chat_message WHERE msg_content = :welcome"), {'welcome': welcome}) == 1
+                await save_raw_business_setting(db, 'ai-customer-service', {'enabled': True, 'welcomeMessage': ''})
+            await process(opening('no-welcome', 'opening-welcome-disabled'))
+            assert sent == [welcome, '有货。']
+        finally:
+            await runtime.dispose()
+
+
+@pytest.mark.asyncio
+async def test_ai_reply_batch_deadline_starts_at_the_first_message():
+    from app.services.ai_reply_batcher import AiAutoReplyBatcher
+
+    resolving_delay = asyncio.Event()
+    release_delay = asyncio.Event()
+    observed = []
+
+    async def delay():
+        assert not resolving_delay.is_set()
+        resolving_delay.set()
+        await release_delay.wait()
+        return 0
+
+    async def handler(account_id, messages, seller_id):
+        observed.append([message['msgContent'] for message in messages])
+
+    batcher = AiAutoReplyBatcher(handler, delay_seconds=delay)
+    first = {'sId': 'session', 'senderUserId': 'buyer', 'pnmId': 'first', 'msgContent': 'first'}
+    assert batcher.enqueue(1, first, 'seller')
+    await resolving_delay.wait()
+    assert batcher.enqueue(1, {**first, 'pnmId': 'second', 'msgContent': 'second'}, 'seller')
+    release_delay.set()
+    await asyncio.wait_for(batcher.drain(), timeout=1)
+    assert observed == [['first', 'second']]
+
+
 def test_desktop_source_apply_creates_the_rules_used_by_paid_orders(console):
     from app.services.unified_delivery_rules import UnifiedDeliveryRules
 

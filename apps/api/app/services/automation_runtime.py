@@ -1,7 +1,7 @@
 """
 AI 自动回复编排运行时（开源版）。
 
-在 WebSocket 消息落库后，由 ws_startup._run_ai_auto_reply_after_message_saved 调用。
+在 WebSocket 消息落库后，由 ws_startup._dispatch_ai_auto_reply_batch 调用。
 负责把"收到的买家消息"和"已配置的通用模型"串起来，完成端到端自动回复：
 
 1. 检查自动回复作用域（全局 / 账号 / 商品级）是否启用
@@ -41,7 +41,7 @@ from .business_settings import (
     load_raw_business_setting,
 )
 from .ws_client import ws_manager
-from .ws_storage import save_chat_message
+from .ws_storage import _normalize_sid_value, save_chat_message
 from ..models.entities import AiAutoReplyAttempt, AutoReplyRule
 
 logger = logging.getLogger(__name__)
@@ -83,6 +83,8 @@ def _build_ai_reply_command(payload: dict[str, Any]) -> AiAutoReplyCommand:
         else []
     )
     source_ids = [item for item in source_ids if item]
+    if payload.get("conversationOpening") is True:
+        source_ids = [f"conversation-opening:{_normalize_sid_value(session_id)}"]
     if not source_ids:
         fallback_id = str(
             payload.get("sourceMessageUid") or payload.get("pnmId") or ""
@@ -135,6 +137,25 @@ def _build_ai_reply_command(payload: dict[str, Any]) -> AiAutoReplyCommand:
         goods_id=goods_id,
         seller_external_uid=seller_external_uid,
     )
+
+
+async def match_welcome_echo(db: AsyncSession, account_id: int, msg: dict) -> None:
+    """Keep the platform echo and local greeting under the same message identity."""
+    sid = _normalize_sid_value(msg.get("sId"))
+    content = str(msg.get("msgContent") or "").strip()
+    if not sid or not content or msg.get("contentType") != 1:
+        return
+    event_key = _build_ai_reply_command({
+        "accountId": account_id, "sId": sid, "conversationOpening": True,
+    }).event_key
+    match = await db.scalar(select(AiAutoReplyAttempt.id).where(
+        AiAutoReplyAttempt.event_key == event_key,
+        AiAutoReplyAttempt.reply_digest == _sha256_text(content),
+        AiAutoReplyAttempt.message_started_at >= dt.datetime.now() - dt.timedelta(minutes=1),
+        AiAutoReplyAttempt.state.in_(("message_sending", "message_sent", "confirmed", "unknown")),
+    ))
+    if match is not None:
+        msg.update(sId=sid, pnmId=f"ai-auto-reply:{event_key}", direction="OUT", isAutoReply=1)
 
 
 def _parse_rule_keywords(raw: Any) -> list[str]:
@@ -282,8 +303,9 @@ async def process_incoming_message(db: AsyncSession, payload: dict[str, Any]) ->
     goods_id = str(payload.get("goodsId") or "").strip()
     item_title = str(payload.get("itemTitle") or "").strip()
     seller_external_uid = str(payload.get("sellerExternalUid") or "").strip()
+    conversation_opening = payload.get("conversationOpening") is True
 
-    if not account_id or not s_id or not content:
+    if not account_id or not s_id or not (content or conversation_opening):
         logger.debug(
             "AI 自动回复跳过：缺少必要参数 accountId=%s sessionPresent=%s contentLen=%d",
             account_id,
@@ -329,7 +351,7 @@ async def process_incoming_message(db: AsyncSession, payload: dict[str, Any]) ->
 
     # Step 1.6: 关键词自动回复规则匹配（在 AI 自动回复之前）
     # 若匹配到关键词规则，直接发送规则配置的回复内容，跳过 AI 自动回复
-    keyword_matched = await _try_keyword_auto_reply(
+    keyword_matched = not conversation_opening and await _try_keyword_auto_reply(
         db,
         account_id=account_id,
         content=content,
@@ -356,7 +378,7 @@ async def process_incoming_message(db: AsyncSession, payload: dict[str, Any]) ->
     latest_message_time = _coerce_message_time(
         payload.get("latestMessageTime") or payload.get("messageTime")
     )
-    if await _is_late_incoming_before_latest_outbound(
+    if not conversation_opening and await _is_late_incoming_before_latest_outbound(
         db,
         account_id=account_id,
         s_id=s_id,
@@ -384,50 +406,48 @@ async def process_incoming_message(db: AsyncSession, payload: dict[str, Any]) ->
         )
         return policy.reason
 
-    # Step 3: 检查通用模型是否已配置
-    provider_config = await _resolve_ai_config()
-    if not is_ai_configured(provider_config):
-        logger.warning("AI 自动回复跳过：通用模型未配置或缺少 baseUrl/apiKey/model accountId=%d", account_id)
-        return "model_not_configured"
+    welcome_message = ""
+    messages: list[dict[str, str]] = []
+    if conversation_opening:
+        welcome_message = ai_config["welcomeMessage"].strip()
+        if not welcome_message:
+            return "welcome_disabled"
+    else:
+        if not is_ai_configured(await _resolve_ai_config()):
+            logger.warning("AI 自动回复跳过：通用模型未配置或缺少 baseUrl/apiKey/model accountId=%d", account_id)
+            return "model_not_configured"
 
-    # Step 4: 拼装 system prompt（systemPrompt + 商品事实 + 知识库 + 聊天规则 + 人设）
-    system_prompt = _build_system_prompt(ai_config, goods_context)
-    model_content = _trim_product_fact(content, limit=12_000)
+        system_prompt = _build_system_prompt(ai_config, goods_context)
+        model_content = _trim_product_fact(content, limit=12_000)
+        history_messages = await _load_history_messages(db, account_id, s_id) if ai_config.get("carryContext", True) else []
+        messages.append({"role": "system", "content": system_prompt})
+        for hist in history_messages:
+            role = "assistant" if hist.get("direction") == "OUT" else "user"
+            messages.append({"role": role, "content": hist.get("content") or ""})
 
-    # Step 5: 加载历史消息（carryContext=True 时）
-    history_messages: list[dict[str, Any]] = []
-    if ai_config.get("carryContext", True):
-        history_messages = await _load_history_messages(db, account_id, s_id)
-
-    # Step 6: 构造 messages。知识库只使用当前 AI 客服配置中明确绑定的
-    # 内容（已由 _build_system_prompt 加入）；不再读取独立 JSON 文件向量库。
-    messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
-    for hist in history_messages:
-        role = "assistant" if hist.get("direction") == "OUT" else "user"
-        messages.append({"role": role, "content": hist.get("content") or ""})
-
-    # The WebSocket callback persists the buyer message before it enters this
-    # runtime.  When a debounced batch is supplied, all of its texts are
-    # already present in history; appending the joined batch a second time made
-    # the model see the same question twice and encouraged duplicate replies.
-    batched_contents = payload.get("batchedContents")
-    if not isinstance(batched_contents, list):
-        batched_contents = []
-    expected_tail = [
-        _trim_product_fact(item, limit=4_000)
-        for item in batched_contents[-20:]
-        if str(item or "").strip()
-    ]
-    if not expected_tail and model_content:
-        expected_tail = [model_content]
-    history_input_tail = [
-        str(item.get("content") or "").strip()
-        for item in history_messages
-        if str(item.get("direction") or "").upper() == "IN" and str(item.get("content") or "").strip()
-    ]
-    already_in_history = bool(expected_tail) and history_input_tail[-len(expected_tail):] == expected_tail
-    if not (payload.get("contentAlreadyPersisted") and already_in_history):
-        messages.append({"role": "user", "content": model_content})
+        # Persisted buyer messages can already be present at the end of history.
+        batched_contents = payload.get("batchedContents")
+        if not isinstance(batched_contents, list):
+            batched_contents = []
+        expected_tail = [
+            _trim_product_fact(item, limit=4_000)
+            for item in batched_contents[-20:]
+            if str(item or "").strip()
+        ]
+        if not expected_tail and model_content:
+            expected_tail = [model_content]
+        history_input_tail = [
+            str(item.get("content") or "").strip()
+            for item in history_messages
+            if str(item.get("direction") or "").upper() == "IN" and str(item.get("content") or "").strip()
+        ]
+        already_in_history = (
+            bool(expected_tail) and bool(history_messages)
+            and history_messages[-1]["direction"] == "IN"
+            and history_input_tail[-len(expected_tail):] == expected_tail
+        )
+        if not (payload.get("contentAlreadyPersisted") and already_in_history):
+            messages.append({"role": "user", "content": model_content})
 
     command = replace(
         _build_ai_reply_command(
@@ -448,6 +468,8 @@ async def process_incoming_message(db: AsyncSession, payload: dict[str, Any]) ->
     runtime = AiAutoReplyRuntime(SqlAiAutoReplyAttemptStore(db))
 
     async def generate_reply() -> str:
+        if conversation_opening:
+            return welcome_message
         result = await generate_text(
             scene="ai_customer_service",
             system_prompt="",  # 已在 messages 中包含
@@ -483,6 +505,11 @@ async def process_incoming_message(db: AsyncSession, payload: dict[str, Any]) ->
             if not await _check_auto_reply_scope(db, account_id, goods_id):
                 return AiAutoReplySendResult.failed("scope_disabled", retry_safe=False)
             ai_config_now = await load_business_setting(db, AI_CS_SETTING_KEY)
+            if conversation_opening:
+                if await _conversation_has_chat(db, account_id, s_id):
+                    return AiAutoReplySendResult.failed("conversation_already_started", retry_safe=False)
+                if welcome_message != str(ai_config_now.get("welcomeMessage") or "").strip():
+                    return AiAutoReplySendResult.failed("welcome_changed", retry_safe=False)
             send_policy = await evaluate_ai_auto_reply_policy(
                 db,
                 config=ai_config_now,
@@ -868,6 +895,21 @@ def _coerce_message_time(value: Any) -> int:
     return parsed if parsed > 0 else 0
 
 
+async def _conversation_has_chat(db: AsyncSession, account_id: int, s_id: str) -> bool:
+    result = await db.execute(
+        text("""
+            SELECT id FROM xianyu_chat_message
+            WHERE account_id = :account_id AND deleted = 0
+              AND s_id IN (:sid, :suffixed, :prefixed, :prefixed_suffixed)
+              AND (direction = 'OUT' OR content_type IN (1, 2, 3, 4, 5, 6, 7))
+            LIMIT 1
+        """),
+        {"account_id": account_id, "sid": s_id, "suffixed": f"{s_id}@goofish",
+         "prefixed": f"sid:{s_id}", "prefixed_suffixed": f"sid:{s_id}@goofish"},
+    )
+    return result.scalar_one_or_none() is not None
+
+
 async def _is_late_incoming_before_latest_outbound(
     db: AsyncSession,
     *,
@@ -889,6 +931,9 @@ async def _is_late_incoming_before_latest_outbound(
         return False
     sid_plain = normalized_sid
     sid_goofish = f"{normalized_sid}@goofish"
+    welcome_key = _build_ai_reply_command({
+        "accountId": account_id, "sId": normalized_sid, "conversationOpening": True,
+    }).event_key
     latest_outbound = (await db.execute(
         text(
             """
@@ -898,6 +943,12 @@ async def _is_late_incoming_before_latest_outbound(
               AND deleted = 0
               AND direction = 'OUT'
               AND s_id IN (:sid_plain, :sid_goofish)
+              AND COALESCE(pnm_id, '') != :welcome_message_key
+              AND NOT EXISTS (
+                  SELECT 1 FROM ai_auto_reply_attempt
+                  WHERE event_key = :welcome_key
+                    AND local_message_id = xianyu_chat_message.id
+              )
             ORDER BY message_time DESC, id DESC
             LIMIT 1
             """
@@ -906,6 +957,8 @@ async def _is_late_incoming_before_latest_outbound(
             "account_id": account_id,
             "sid_plain": sid_plain,
             "sid_goofish": sid_goofish,
+            "welcome_key": welcome_key,
+            "welcome_message_key": f"ai-auto-reply:{welcome_key}",
         },
     )).scalar_one_or_none()
     latest_outbound_time = _coerce_message_time(latest_outbound)
@@ -1242,7 +1295,7 @@ async def _save_reply_message(
     direction=OUT 即标识为卖家/AI 发出的回复。
     """
     now_ms = int(time.time() * 1000)
-    sender_id = f"{seller_external_uid}@goofish" if seller_external_uid else ""
+    sender_id = f"{seller_external_uid.removesuffix('@goofish')}@goofish" if seller_external_uid else ""
     reply_msg = {
         # Stable local idempotency key: a crash after the INSERT but before the
         # attempt confirmation can safely execute this finalizer again.
@@ -1254,6 +1307,7 @@ async def _save_reply_message(
         "receiverUserId": buyer_id,
         "senderUserName": "我",
         "direction": "OUT",
+        "isAutoReply": 1,
         "messageTime": now_ms,
         "readStatus": 1,
         "xyGoodsId": goods_id,

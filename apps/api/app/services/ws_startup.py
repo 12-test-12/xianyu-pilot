@@ -33,9 +33,10 @@ from .message_automation_outbox import (
     stop_message_automation_outbox_worker,
 )
 from .ws_client import ws_manager
-from .ws_storage import save_chat_message, stable_chat_message_uid
+from .ws_storage import _normalize_sid_value, save_chat_message, stable_chat_message_uid
 
 logger = logging.getLogger(__name__)
+_WELCOME_EVENT_MAX_AGE_MS = 60_000
 
 
 async def _run_delivery_after_message_saved(account_id: int, msg: dict):
@@ -208,7 +209,7 @@ def _should_trigger_ai_auto_reply(
 
 
 async def _load_ai_reply_delay_seconds() -> float:
-    """Read the configured quiet period before one merged AI reply."""
+    """Read the configured collection window before one merged AI reply."""
     try:
         async with async_session() as db:
             config = await load_business_setting(db, AI_CS_SETTING_KEY)
@@ -226,13 +227,16 @@ async def _dispatch_ai_auto_reply_batch(
     messages: list[dict],
     seller_external_uid: str,
 ) -> None:
-    """Invoke AI once after a conversation has been quiet for its configured delay."""
+    """Run a buyer message batch or an immediate first-contact greeting."""
     if not messages:
         return
     latest = messages[-1]
+    opening_session_id = (
+        _normalize_sid_value(latest.get("sId")) if latest.get("isConversationOpening") is True else ""
+    )
     contents = [str(item.get("msgContent") or "").strip() for item in messages]
     contents = [content for content in contents if content]
-    if not contents:
+    if not contents and not opening_session_id:
         await complete_deferred_messages(messages)
         return
     try:
@@ -246,7 +250,7 @@ async def _dispatch_ai_auto_reply_batch(
                 "accountId": account_id,
                 "buyerId": latest.get("senderUserId"),
                 "buyerName": latest.get("senderUserName"),
-                "content": "\n".join(contents),
+                "content": "" if opening_session_id else "\n".join(contents),
                 "batchedContents": contents,
                 "contentAlreadyPersisted": True,
                 "messageType": latest.get("messageType") or "text",
@@ -256,7 +260,8 @@ async def _dispatch_ai_auto_reply_batch(
                     for item in messages
                     if str(item.get("_sourceMessageUid") or "").strip()
                 ],
-                "sId": latest.get("sId"),
+                "sId": opening_session_id or latest.get("sId"),
+                "conversationOpening": bool(opening_session_id),
                 "latestMessageTime": latest.get("messageTime") or latest.get("message_time"),
                 "goodsId": latest.get("xyGoodsId"),
                 "itemTitle": latest.get("goodsTitle") or latest.get("reminderContent"),
@@ -289,7 +294,7 @@ async def _dispatch_ai_auto_reply_batch(
     retry_safe = bool(attempt_row.get("retry_safe"))
     error_code = str(attempt_row.get("last_error_code") or f"ai_{state}")
     if state == "confirmed":
-        await complete_deferred_messages(messages, reason="reply_confirmed")
+        await complete_deferred_messages(messages, reason="welcome_confirmed" if opening_session_id else "reply_confirmed")
     elif state == "unknown":
         await settle_deferred_messages(
             messages,
@@ -354,6 +359,8 @@ async def execute_message_automation_claim(
     if msg is None:
         raise NonRetryableOutboxError("source_message_unavailable")
     if claim.branch == "delivery":
+        if msg.get("isConversationOpening") is True:
+            return "completed"
         outcome = await _run_delivery_after_message_saved(claim.account_id, msg)
         if outcome is None:
             return "completed"
@@ -375,7 +382,7 @@ async def execute_message_automation_claim(
     # failure must be retried, never treated as if the packet came from a buyer.
     async with async_session() as db:
         row = await db.execute(
-            text("SELECT id, external_uid FROM xianyu_account WHERE id = :aid LIMIT 1"),
+            text("SELECT id, external_uid FROM xianyu_account WHERE id = :aid AND deleted = 0 LIMIT 1"),
             {"aid": claim.account_id},
         )
         account = row.mappings().first()
@@ -383,19 +390,41 @@ async def execute_message_automation_claim(
             raise NonRetryableOutboxError("seller_identity_unavailable")
         seller_external_uid = str(account["external_uid"]).strip()
 
-    should_trigger, content_type, sender_user_id, reminder_content = (
-        _should_trigger_ai_auto_reply(msg, seller_external_uid)
-    )
-    if not should_trigger:
-        if str(msg.get("direction") or "IN").upper() == "IN":
-            logger.info(
-                "AI follow-up skipped accountId=%d contentType=%s senderPresent=%s reminderPresent=%s",
-                claim.account_id,
-                content_type,
-                bool(sender_user_id),
-                bool(reminder_content),
-            )
-        return "completed"
+    if msg.get("isConversationOpening") is True:
+        sid = _normalize_sid_value(msg.get("sId"))
+        buyer = _normalize_xianyu_user_id(msg.get("senderUserId"))
+        seller = _normalize_xianyu_user_id(seller_external_uid)
+        try:
+            created_at = int(msg.get("messageTime") or 0)
+        except (TypeError, ValueError):
+            return "completed"
+        if 0 < created_at < 10**11:
+            created_at *= 1000
+        age_ms = int(time.time() * 1000) - created_at
+        if (
+            sid and buyer and buyer != seller
+            and str(msg.get("direction") or "IN").upper() == "IN"
+            and _normalize_xianyu_user_id(msg.get("receiverUserId")) == seller
+            and msg.get("xyGoodsId") and msg.get("parseStatus") != "failed"
+            and -5_000 <= age_ms <= _WELCOME_EVENT_MAX_AGE_MS
+        ):
+            msg.update(sId=sid, senderUserId=buyer)
+        else:
+            return "completed"
+    else:
+        should_trigger, content_type, sender_user_id, reminder_content = (
+            _should_trigger_ai_auto_reply(msg, seller_external_uid)
+        )
+        if not should_trigger:
+            if str(msg.get("direction") or "IN").upper() == "IN":
+                logger.info(
+                    "AI follow-up skipped accountId=%d contentType=%s senderPresent=%s reminderPresent=%s",
+                    claim.account_id,
+                    content_type,
+                    bool(sender_user_id),
+                    bool(reminder_content),
+                )
+            return "completed"
 
     if claim.attempt_count > 1:
         # A retry must not be swallowed by the in-memory recent-message cache
@@ -417,7 +446,7 @@ async def execute_message_automation_claim(
         )
     except AiAutoReplyBatcherCapacityError as exc:
         raise RetryableOutboxError("ai_batch_capacity") from exc
-    # A genuinely queued row stays processing until the quiet-period batch
+    # A genuinely queued row stays processing until the batch
     # handler has completed.  A replay rejected by the debounce is terminal.
     return "deferred" if queued else "completed"
 
@@ -439,6 +468,17 @@ async def on_message_callback(account_id: int, msg: dict) -> None:
                     {"aid": account_id},
                 )
                 seller_external_uid = seller_uid_row.scalar_one_or_none() or ""
+                if msg.get("rawPayload") and seller_external_uid and (
+                    _normalize_xianyu_user_id(msg.get("senderUserId"))
+                    == _normalize_xianyu_user_id(seller_external_uid)
+                ):
+                    from .automation_runtime import match_welcome_echo
+
+                    try:
+                        await match_welcome_echo(db, account_id, msg)
+                    except Exception as exc:
+                        await db.rollback()
+                        logger.warning("欢迎语回环核对失败 accountId=%d errorType=%s", account_id, type(exc).__name__)
                 saved_message_id = await save_chat_message(db, account_id, msg, seller_external_uid=seller_external_uid)
                 if saved_message_id is not None:
                     source_message_uid = stable_chat_message_uid(
@@ -480,6 +520,10 @@ async def on_message_callback(account_id: int, msg: dict) -> None:
 
     msg["_persistedMessageId"] = int(saved_message_id)
     msg["_sourceMessageUid"] = stable_chat_message_uid(msg, seller_external_uid)
+
+    if msg.get("isConversationOpening") is True:
+        notify_message_automation_worker()
+        return
 
     # 声明回复处理：买家回复"确认/取消"时触发声明会话状态更新
     try:

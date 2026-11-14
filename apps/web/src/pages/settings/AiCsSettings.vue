@@ -62,9 +62,9 @@
             </div>
 
             <div class="aics-row">
-              <label>回复延时（秒）</label>
-              <input v-model.number="form.replyDelaySeconds" type="number" min="5" max="120" class="aics-input" />
-              <p class="aics-hint">建议保持 8 到 15 秒：系统会把这段时间内的连续咨询合并为一次回复。</p>
+              <label for="aics-reply-delay">买家消息合并时间（秒）</label>
+              <input id="aics-reply-delay" v-model.number="form.replyDelaySeconds" type="number" min="0" max="120" aria-describedby="aics-reply-delay-hint" class="aics-input" />
+              <p id="aics-reply-delay-hint" class="aics-hint">从首条消息开始计时，期间收到的咨询会合并为一次回复。设为 0 可立即开始处理。</p>
             </div>
 
             <div class="aics-row aics-row-toggle">
@@ -117,6 +117,12 @@
                 <option value="zh-CN">简体中文</option>
                 <option value="en">English</option>
               </select>
+            </div>
+
+            <div class="aics-row">
+              <label for="aics-welcome-message">首次进线欢迎语</label>
+              <textarea id="aics-welcome-message" v-model="form.welcomeMessage" class="aics-input aics-textarea" rows="2" maxlength="8000" aria-describedby="aics-welcome-message-hint"></textarea>
+              <p id="aics-welcome-message-hint" class="aics-hint">闲鱼推送新会话后，在已启用自动回复的会话中发送一次。留空可关闭。</p>
             </div>
 
             <div class="aics-row">
@@ -337,6 +343,9 @@ async function loadLatestRun() {
     const { data } = await getLatestAutoReplyRun()
     const messages = {
       reply_confirmed: '平台已确认自动回复送达',
+      welcome_confirmed: '平台已确认首次进线欢迎语送达',
+      welcome_disabled: '首次进线欢迎语为空',
+      conversation_already_started: '会话已有聊天内容，跳过欢迎语',
       scope_disabled: 'AI 客服主开关未开启，或账号和商品未启用自动回复',
       manual_mode: '当前处于人工接待模式',
       manual_disabled: '该会话已手动关闭自动回复',
@@ -384,6 +393,7 @@ const form = reactive({
   pauseOnHumanIntervene: true,
   humanInterventionPauseMinutes: 30,
   systemPrompt: '',
+  welcomeMessage: '',
   knowledgeBase: '',
   knowledgeBases: [],
   defaultKnowledgeBases: [],

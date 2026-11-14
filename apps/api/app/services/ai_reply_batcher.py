@@ -15,18 +15,18 @@ logger = logging.getLogger(__name__)
 
 MessageBatchHandler = Callable[[int, list[dict], str], Awaitable[None]]
 DelayResolver = Callable[[], float | Awaitable[float]]
-ConversationKey = tuple[int, str, str]
+ConversationKey = tuple[int, str, str, bool]
 
 
 class AiAutoReplyBatcherCapacityError(RuntimeError):
-    """The bounded in-process quiet-period queue is temporarily full."""
+    """The bounded in-process reply queue is temporarily full."""
 
 
 @dataclass
 class _PendingConversation:
     messages: list[dict] = field(default_factory=list)
     seller_external_uid: str = ""
-    revision: int = 0
+    started_at: float = 0.0
     task: asyncio.Task | None = None
 
 
@@ -119,6 +119,8 @@ class AiAutoReplyBatcher:
         recent_semantic[semantic_fingerprint] = now
 
         state = self._pending.setdefault(key, _PendingConversation())
+        if not state.messages:
+            state.started_at = now
         self._prune_recent_conversations(now)
         bounded_message = dict(message)
         bounded_message["msgContent"] = str(
@@ -140,12 +142,11 @@ class AiAutoReplyBatcher:
             bounded_reversed.append(item_copy)
         state.messages = list(reversed(bounded_reversed))
         state.seller_external_uid = seller_external_uid or state.seller_external_uid
-        state.revision += 1
 
         if state.task is None or state.task.done():
             state.task = asyncio.create_task(
                 self._run(key, state),
-                name="ai-reply.quiet-period",
+                name="ai-reply.batch",
             )
         return True
 
@@ -185,15 +186,11 @@ class AiAutoReplyBatcher:
     async def _run(self, key: ConversationKey, state: _PendingConversation) -> None:
         try:
             while True:
-                observed_revision = state.revision
-                delay = await self._resolve_delay_seconds()
-                if delay:
-                    await asyncio.sleep(delay)
-
-                # A later buyer message resets the quiet period so all related
-                # messages are submitted to the model as one conversation turn.
-                if state.revision != observed_revision:
-                    continue
+                started_at = state.started_at
+                delay = 0 if key[3] else await self._resolve_delay_seconds()
+                remaining = started_at + delay - time.monotonic()
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
 
                 batch = list(state.messages)
                 state.messages.clear()
@@ -229,7 +226,7 @@ class AiAutoReplyBatcher:
         buyer_id = str(message.get("senderUserId") or message.get("sender_user_id") or "").strip()
         if not account_id or not sid or not buyer_id:
             return None
-        return account_id, sid, buyer_id
+        return account_id, sid, buyer_id, message.get("isConversationOpening") is True
 
     @staticmethod
     def _message_fingerprint(message: dict) -> str:

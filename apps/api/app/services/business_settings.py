@@ -6,6 +6,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .ai_auto_reply_attempt import MAX_AI_REPLY_CHARS
 from .ai_auto_reply_policy import (
     DEFAULT_POLICY_TIMEZONE,
     SUPPORTED_POLICY_TIMEZONES,
@@ -56,6 +57,11 @@ def validate_ai_customer_service_config(
     if mode not in {"auto", "hybrid", "manual"}:
         raise BusinessSettingValidationError("接待模式无效")
     candidate["mode"] = mode
+
+    welcome_message = candidate.get("welcomeMessage")
+    if not isinstance(welcome_message, str) or len(welcome_message.strip()) > MAX_AI_REPLY_CHARS:
+        raise BusinessSettingValidationError(f"首次进线欢迎语必须是 {MAX_AI_REPLY_CHARS} 字以内的文本")
+    candidate["welcomeMessage"] = welcome_message.strip()
 
     for field, label in (
         ("enabled", "AI 自动回复主开关"),
@@ -318,11 +324,10 @@ def normalize_ai_customer_service_config(
     )
 
     legacy_system_markers = ["你是本店的AI客服", "使用“您好”", "欢迎光临本店"]
-    legacy_welcome_markers = ["欢迎光临本店", "商品拍下后", "8小时内发货"]
     if _looks_like_legacy_text(normalized.get("systemPrompt"), legacy_system_markers):
         normalized["systemPrompt"] = default_config.get("systemPrompt")
-    if _looks_like_legacy_text(normalized.get("welcomeMessage"), legacy_welcome_markers):
-        normalized["welcomeMessage"] = default_config.get("welcomeMessage")
+    if not isinstance(normalized.get("welcomeMessage"), str):
+        normalized["welcomeMessage"] = ""
 
     return normalized
 

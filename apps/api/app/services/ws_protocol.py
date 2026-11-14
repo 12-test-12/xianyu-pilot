@@ -471,18 +471,23 @@ def parse_numbered_fields(data: dict) -> Optional[dict]:
         session_id = session_info.get("sessionId") or data.get("sessionId") or ""
         create_time = session_info.get("createTime") or extensions.get("VULCAN_CREATE_TIME") or 0
         sender_user_id = extensions.get("extUserId") or ""
+        owner_user_id = extensions.get("ownerUserId") or ""
         receiver_user_id = ""
         receiver_ids = data.get("receiverIds")
         if isinstance(receiver_ids, list) and receiver_ids:
             receiver_user_id = str(receiver_ids[0] or "")
         if not receiver_user_id:
-            receiver_user_id = extensions.get("ownerUserId") or ""
+            receiver_user_id = owner_user_id
         item_id = extensions.get("itemId") or ""
         item_title = extensions.get("itemTitle") or ""
         content_type = 8
         if content_root and content_root.get("contentType") not in (None, ""):
             content_type = content_root.get("contentType")
         msg_content = item_title or f"[会话消息:{content_type}]"
+        is_conversation_opening = bool(
+            content_root and str(content_type) == "8" and session_info.get("sessionId")
+            and create_time and sender_user_id and owner_user_id and item_id
+        )
         if session_id or sender_user_id or receiver_user_id or item_id or item_title:
             return {
                 "sId": str(session_id) if session_id else "",
@@ -495,8 +500,9 @@ def parse_numbered_fields(data: dict) -> Optional[dict]:
                 "msgType": data.get("type", 1),
                 "reminderContent": item_title,
                 "reminderUrl": "",
-                "receiverUserId": str(receiver_user_id) if receiver_user_id else "",
+                "receiverUserId": str(owner_user_id if is_conversation_opening else receiver_user_id),
                 "xyGoodsId": str(item_id) if item_id else "",
+                "isConversationOpening": is_conversation_opening,
             }
 
     def _get(obj: Any, *keys: str, default=None):
