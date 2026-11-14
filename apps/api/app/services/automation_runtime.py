@@ -143,7 +143,11 @@ async def match_welcome_echo(db: AsyncSession, account_id: int, msg: dict) -> No
     """Keep the platform echo and local greeting under the same message identity."""
     sid = _normalize_sid_value(msg.get("sId"))
     content = str(msg.get("msgContent") or "").strip()
-    if not sid or not content or msg.get("contentType") != 1:
+    try:
+        content_type_int = int(msg.get("contentType") or 1)
+    except (TypeError, ValueError):
+        content_type_int = 0
+    if not sid or not content or content_type_int != 1:
         return
     event_key = _build_ai_reply_command({
         "accountId": account_id, "sId": sid, "conversationOpening": True,
@@ -412,6 +416,13 @@ async def process_incoming_message(db: AsyncSession, payload: dict[str, Any]) ->
         welcome_message = ai_config["welcomeMessage"].strip()
         if not welcome_message:
             return "welcome_disabled"
+        if await _conversation_has_chat(db, account_id, s_id):
+            logger.info(
+                "AI 自动回复跳过已有聊天记录的会话欢迎语 accountId=%d session=%s",
+                account_id,
+                s_id,
+            )
+            return "conversation_already_started"
     else:
         if not is_ai_configured(await _resolve_ai_config()):
             logger.warning("AI 自动回复跳过：通用模型未配置或缺少 baseUrl/apiKey/model accountId=%d", account_id)

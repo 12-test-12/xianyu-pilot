@@ -359,7 +359,7 @@ async def test_welcome_uses_new_conversation_push_and_preserves_first_buyer_ques
 
             await process({
                 'sId': 'fresh', 'pnmId': 'platform-welcome-echo', 'senderUserId': 'seller@goofish',
-                'receiverUserId': 'buyer', 'msgContent': welcome, 'messageTime': now + 1, 'contentType': 1,
+                'receiverUserId': 'buyer', 'msgContent': welcome, 'messageTime': now + 1, 'contentType': '1',
                 'rawPayload': {'messageId': 'platform-welcome-echo'},
             })
             monkeypatch.setattr(ws_startup, 'ai_auto_reply_batcher', AiAutoReplyBatcher(
@@ -371,6 +371,8 @@ async def test_welcome_uses_new_conversation_push_and_preserves_first_buyer_ques
             })
             assert sent == [welcome, '有货。']
             assert model_calls == ['load', 'generate']
+            await process(opening('fresh', 'opening-existing-chat'))
+            assert sent == [welcome, '有货。']
             async with runtime.session() as db:
                 assert await db.scalar(text("SELECT count(*) FROM xianyu_chat_message WHERE msg_content = :welcome"), {'welcome': welcome}) == 1
                 await save_raw_business_setting(db, 'ai-customer-service', {'enabled': True, 'welcomeMessage': ''})
