@@ -78,6 +78,9 @@ def test_qq_connection_checks_login_and_robot_friend_before_saving(desktop):
             pass
 
         def do_POST(self):
+            content_length = int(self.headers.get("Content-Length", 0))
+            if content_length > 0:
+                self.rfile.read(content_length)
             state["calls"].append(self.path)
             if self.headers.get("Authorization") != f"Bearer {token}":
                 self.send_error(401)
@@ -90,6 +93,7 @@ def test_qq_connection_checks_login_and_robot_friend_before_saving(desktop):
             body = json.dumps({"status": "ok", "retcode": 0, "data": data}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
 
@@ -120,6 +124,7 @@ def test_qq_connection_checks_login_and_robot_friend_before_saving(desktop):
             assert client.get(path).json()["data"] is None
         finally:
             server.shutdown()
+            server.server_close()
             thread.join(timeout=2)
 
 

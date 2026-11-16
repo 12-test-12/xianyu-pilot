@@ -32,6 +32,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import AppButton from './AppButton.vue'
+import { confirmAction } from '../utils/confirmAction.js'
 import request from '../utils/request.js'
 
 const endpoint = '/desktop/plugins/qq/connection'
@@ -70,7 +71,12 @@ function saveConnection() {
   return run(async () => applyConnection((await request.put(endpoint, { ...form }, config)).data))
 }
 
-function disconnect() {
+async function disconnect() {
+  if (!await confirmAction({
+    title: '确认移除 QQ 绑定？',
+    description: '移除后将清除已核对的机器人好友与本地保存的令牌。',
+    dangerous: true,
+  })) return
   return run(async () => {
     await request.delete(endpoint, config)
     applyConnection(null)

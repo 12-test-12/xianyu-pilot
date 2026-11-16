@@ -67,6 +67,7 @@ REQUIRED = {
     "apps/api/app/desktop_migrations/008_desktop_plugins.sql", "apps/api/app/desktop_plugins_api.py",
     "apps/api/app/desktop_migrations/009_plugin_qq_connection.sql", "apps/api/app/services/qq_bridge/onebot.py",
     "apps/api/app/services/desktop_plugins.py", "apps/web/src/pages/PluginsPage.vue",
+    "apps/web/src/components/PluginQqConnection.vue",
     "apps/api/app/resources/qiuqiu-assist.zip",
     "docs/desktop-performance.md",
     "scripts/ci/windows_icon.py",

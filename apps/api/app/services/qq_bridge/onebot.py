@@ -40,7 +40,8 @@ class OneBotClient:
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=8)
         try:
             connection.request("POST", "/" + action, body=json.dumps(params).encode(), headers={
-                "Authorization": "Bearer " + self.token, "Content-Type": "application/json"})
+                "Authorization": "Bearer " + self.token, "Content-Type": "application/json",
+                "Connection": "close"})
             response = connection.getresponse()
             raw = response.read(1024 * 1024 + 1)
             if response.status in (401, 403):
