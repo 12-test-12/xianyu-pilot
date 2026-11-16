@@ -4,7 +4,7 @@ import json
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Path, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from starlette.concurrency import run_in_threadpool
 
 from app.api.v1.deps import get_current_user
@@ -12,6 +12,7 @@ from app.core.response import ResultObject
 from app.desktop_inventory_api import local_write_boundary
 from app.services.desktop_inventory import InventoryError
 from app.services.desktop_plugins import ID_PATTERN, UPLOAD_LIMIT, VERSION_PATTERN, ParameterType, unpack_zip
+from app.services.qq_bridge.onebot import QQ_ID_PATTERN
 
 router = APIRouter(
     prefix="/api/desktop/plugins",
@@ -30,6 +31,14 @@ class PreviewBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     parameterType: ParameterType
     value: str = Field(min_length=1, max_length=500)
+
+
+class QQConnectionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    endpoint: str = Field(min_length=1, max_length=100)
+    qqAccount: str = Field(pattern=QQ_ID_PATTERN)
+    robotQq: str = Field(pattern=QQ_ID_PATTERN)
+    accessToken: SecretStr = SecretStr("")
 
 
 def store(request: Request):
@@ -66,6 +75,22 @@ async def package_payload(request: Request):
 @router.get("")
 def plugins(request: Request):
     return perform(store(request).status)
+
+
+@router.get("/qq/connection")
+def qq_connection(request: Request):
+    return perform(store(request).qq_connection)
+
+
+@router.put("/qq/connection")
+def connect_qq(request: Request, body: QQConnectionBody):
+    return perform(store(request).connect_qq, body.endpoint, body.qqAccount, body.robotQq,
+                   body.accessToken.get_secret_value())
+
+
+@router.delete("/qq/connection")
+def disconnect_qq(request: Request):
+    return perform(store(request).disconnect_qq)
 
 
 @router.post("/package/inspect")

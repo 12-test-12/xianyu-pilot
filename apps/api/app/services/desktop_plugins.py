@@ -5,6 +5,7 @@ import sqlite3
 import tempfile
 import zlib
 from contextlib import closing
+from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path, PureWindowsPath
 from threading import Lock
@@ -17,7 +18,9 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from app.core.paths import contained_data_path
+from app.core.secret_store import decrypt_secret, encrypt_secret
 from app.services.desktop_inventory import InventoryError
+from app.services.qq_bridge.onebot import ConnectorError, OneBotClient, validate_endpoint
 
 ID_PATTERN = r"^[a-z][a-z0-9-]{0,63}$"
 VERSION_PATTERN = r"^(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})$"
@@ -112,6 +115,61 @@ class DesktopPlugins:
         self.root = program_root / "plugins"
         self.database = database
         self.lock = Lock()
+        self.qq_lock = Lock()
+
+    def qq_connection(self):
+        with closing(self._connect_db()) as db:
+            row = db.execute("""
+                SELECT endpoint, qq_account, robot_qq, robot_name, checked_at
+                FROM desktop_plugin_qq_connection WHERE id = 1
+            """).fetchone()
+        if row is None:
+            return None
+        return dict(zip(("endpoint", "qqAccount", "robotQq", "robotName", "checkedAt"), row))
+
+    def connect_qq(self, endpoint, qq_account, robot_qq, token):
+        purpose = "desktop.plugin.qq.token"
+        with self.qq_lock:
+            try:
+                endpoint = f"http://127.0.0.1:{validate_endpoint(endpoint.strip())}"
+                if qq_account == robot_qq:
+                    raise ConnectorError("机器人 QQ 号应填写好友的 QQ 号")
+                if not token:
+                    with closing(self._connect_db()) as db:
+                        saved = db.execute("""
+                            SELECT encrypted_token FROM desktop_plugin_qq_connection
+                            WHERE id = 1 AND endpoint = ? AND qq_account = ?
+                        """, (endpoint, qq_account)).fetchone()
+                    if saved is None:
+                        raise ConnectorError("请填写当前 OneBot 地址和账号对应的 Access Token")
+                    token = decrypt_secret(saved[0], purpose=purpose)
+                if token.startswith("secret:v1:"):
+                    raise ConnectorError("请填写 OneBot 提供的原始 Access Token")
+                client = OneBotClient(endpoint, token)
+                status = client.call("get_status", {})
+                if not isinstance(status, dict) or status.get("online") is not True:
+                    raise ConnectorError("OneBot 已响应，QQ 当前未在线")
+                target = f"{qq_account}:direct:{robot_qq}"
+                robot = next((friend for friend in client.friends(qq_account) if friend["conversation_id"] == target), None)
+                if robot is None:
+                    raise ConnectorError("QQ 好友列表中找不到这个机器人，请核对 QQ 号和好友关系")
+                encrypted = encrypt_secret(token, purpose=purpose)
+            except ConnectorError as exc:
+                raise InventoryError(str(exc), 422) from exc
+            except RuntimeError as exc:
+                raise InventoryError("无法读取或保存 QQ 凭据，请核对桌面凭据密钥", 503) from exc
+            checked_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            with closing(self._connect_db()) as db, db:
+                db.execute("""
+                    INSERT OR REPLACE INTO desktop_plugin_qq_connection
+                    (id, endpoint, qq_account, robot_qq, robot_name, encrypted_token, checked_at)
+                    VALUES (1, ?, ?, ?, ?, ?, ?)
+                """, (endpoint, qq_account, robot_qq, robot["name"], encrypted, checked_at))
+            return self.qq_connection()
+
+    def disconnect_qq(self):
+        with self.qq_lock, closing(self._connect_db()) as db, db:
+            db.execute("DELETE FROM desktop_plugin_qq_connection WHERE id = 1")
 
     def _path(self, relative):
         try:

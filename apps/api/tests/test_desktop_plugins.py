@@ -1,14 +1,17 @@
 import base64
 import json
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from pathlib import Path
+import sqlite3
+from threading import Thread
 from zipfile import ZipFile
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi.testclient import TestClient
 
-from app.core import paths
+from app.core import paths, secret_store
 from app.core.config import Settings
 from app.desktop_app import create_desktop_app
 from app.services import desktop_plugins
@@ -35,6 +38,8 @@ def archive(files):
 @pytest.fixture
 def desktop(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, "SOURCE_ROOT", tmp_path)
+    config = Settings(runtime_mode="desktop")
+    monkeypatch.setattr(secret_store, "settings", config)
     key = Ed25519PrivateKey.generate()
 
     class Runtime:
@@ -44,7 +49,7 @@ def desktop(tmp_path, monkeypatch):
         async def stop(self):
             pass
 
-    app = create_desktop_app(Settings(runtime_mode="desktop"), web_dir=tmp_path / "web", platform_runtime=Runtime())
+    app = create_desktop_app(config, web_dir=tmp_path / "web", platform_runtime=Runtime())
     with TestClient(app, base_url="http://127.0.0.1:15177") as client:
         assert client.get(ENDPOINT).status_code == 401
         client.headers["Authorization"] = f"Bearer {app.state.desktop_token}"
@@ -60,6 +65,62 @@ def external_publisher(desktop):
 
 def post_zip(client, target, contents):
     return client.post(target, content=contents, headers={"Content-Type": "application/zip", "X-Request-Id": "plugin-test"})
+
+
+def test_qq_connection_checks_login_and_robot_friend_before_saving(desktop):
+    client, _, root = desktop
+    path = f"{ENDPOINT}/qq/connection"
+    token = "fixture-onebot-token"
+    state = {"online": True, "calls": []}
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_):
+            pass
+
+        def do_POST(self):
+            state["calls"].append(self.path)
+            if self.headers.get("Authorization") != f"Bearer {token}":
+                self.send_error(401)
+                return
+            data = {
+                "/get_status": {"online": state["online"]},
+                "/get_login_info": {"user_id": 10001},
+                "/get_friend_list": [{"user_id": 20002, "nickname": "球球机器人"}],
+            }[self.path]
+            body = json.dumps({"status": "ok", "retcode": 0, "data": data}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            payload = {"endpoint": f"http://127.0.0.1:{server.server_port}", "qqAccount": "10001", "robotQq": "20002"}
+            assert client.get(path, headers={"Authorization": ""}).status_code == 401
+            assert client.get(path).json()["data"] is None
+            assert client.put(path, json=payload | {"endpoint": "http://example.com:3000", "accessToken": token}).status_code == 422
+            assert client.put(path, json=payload | {"accessToken": token}, headers={"Origin": "https://example.com"}).status_code == 403
+            result = client.put(path, json=payload | {"accessToken": token})
+            assert result.status_code == 200, result.text
+            saved = result.json()["data"]
+            assert saved == payload | {"robotName": "球球机器人", "checkedAt": saved["checkedAt"]}
+            assert state["calls"] == ["/get_status", "/get_login_info", "/get_friend_list"]
+            with sqlite3.connect(root / "data/app.sqlite3") as db:
+                encrypted, = db.execute("SELECT encrypted_token FROM desktop_plugin_qq_connection").fetchone()
+                assert encrypted.startswith("secret:v1:") and token not in encrypted
+            assert client.put(path, json=payload).status_code == 200
+            for overrides in ({"accessToken": "wrong"}, {"robotQq": "99999"}, {"qqAccount": "99999", "accessToken": token}):
+                assert client.put(path, json=payload | overrides).status_code == 422
+            state["online"] = False
+            assert client.put(path, json=payload).status_code == 422
+            assert client.get(path).json()["data"]["robotQq"] == "20002"
+            assert client.delete(path, headers={"X-Request-Id": "qq-test"}).status_code == 200
+            assert client.get(path).json()["data"] is None
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
 
 
 def test_bundled_plugin_installs_and_runs_without_a_publisher_file(desktop, monkeypatch):

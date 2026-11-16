@@ -4,74 +4,13 @@ OneBot v11 is an optional wire adapter, not the project's MCP protocol or a QQ l
 """
 import hashlib
 import hmac
-import http.client
 import json
 import re
 import time
-from urllib.parse import urlsplit
 
-from .storage import Conflict, now
+from app.services.qq_bridge.onebot import ConnectorError, OneBotClient, validate_endpoint
 
-
-class ConnectorError(ValueError):
-    pass
-
-
-def validate_endpoint(value):
-    parsed = urlsplit(value)
-    try: port = parsed.port
-    except ValueError as exc: raise ConnectorError("QQ 接入端口无效") from exc
-    if (parsed.scheme != "http" or parsed.hostname != "127.0.0.1" or parsed.path not in {"", "/"}
-            or not port or not 1024 <= port <= 65535 or parsed.username or parsed.password or parsed.query or parsed.fragment):
-        raise ConnectorError("QQ 接入地址必须是 http://127.0.0.1:端口")
-    return port
-
-
-class OneBotClient:
-    ALLOWED = {"get_login_info", "get_friend_list", "send_private_msg"}
-
-    def __init__(self, endpoint, token):
-        self.port = validate_endpoint(endpoint)
-        if not token or "\r" in token or "\n" in token:
-            raise ConnectorError("请配置自己的 QQ 接入令牌")
-        self.token = token
-
-    def call(self, action, params):
-        if action not in self.ALLOWED:
-            raise ConnectorError("未开放此 QQ 操作")
-        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=8)
-        try:
-            connection.request("POST", "/" + action, body=json.dumps(params).encode(), headers={
-                "Authorization": "Bearer " + self.token, "Content-Type": "application/json"})
-            response = connection.getresponse()
-            raw = response.read(1024 * 1024 + 1)
-            if response.status != 200 or len(raw) > 1024 * 1024:
-                raise ConnectorError("QQ 接入返回异常，请核对连接和回执")
-            result = json.loads(raw)
-            if not isinstance(result, dict) or "data" not in result:
-                raise ConnectorError("QQ 接入响应格式无效")
-            if result.get("status") != "ok" or result.get("retcode") != 0:
-                raise ConnectorError("QQ 接入未确认操作成功，请核对原操作")
-            return result["data"]
-        except (OSError, ValueError, http.client.HTTPException) as exc:
-            if isinstance(exc, ConnectorError): raise
-            raise ConnectorError("本机 QQ 连接失败；发送请求不会自动重试") from exc
-        finally:
-            connection.close()
-
-    def identity(self, expected):
-        result = self.call("get_login_info", {})
-        if not isinstance(result, dict) or str(result.get("user_id")) != expected:
-            raise ConnectorError("QQ 当前登录账号与登记账号不一致")
-
-    def friends(self, expected):
-        self.identity(expected)
-        result = self.call("get_friend_list", {})
-        if not isinstance(result, list) or len(result) > 500:
-            raise ConnectorError("好友目录格式或数量超过首版核对范围")
-        return [{"conversation_id": f"{expected}:direct:{item['user_id']}",
-                 "name": str(item.get("remark") or item.get("nickname") or item["user_id"])[:80]}
-                for item in result if isinstance(item, dict) and re.fullmatch(r"[1-9][0-9]{0,19}", str(item.get("user_id", "")))]
+from .storage import Conflict
 
 
 def event_state(repository, account_id):

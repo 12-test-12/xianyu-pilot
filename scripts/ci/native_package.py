@@ -65,6 +65,7 @@ REQUIRED = {
     "apps/api/app/services/delivery_gate.py", "docs/windows-portable.md", "scripts/build-windows-portable.ps1",
     "apps/api/app/desktop_console.py", "apps/api/app/desktop_migrations/006_full_console.sql",
     "apps/api/app/desktop_migrations/008_desktop_plugins.sql", "apps/api/app/desktop_plugins_api.py",
+    "apps/api/app/desktop_migrations/009_plugin_qq_connection.sql", "apps/api/app/services/qq_bridge/onebot.py",
     "apps/api/app/services/desktop_plugins.py", "apps/web/src/pages/PluginsPage.vue",
     "apps/api/app/resources/qiuqiu-assist.zip",
     "docs/desktop-performance.md",

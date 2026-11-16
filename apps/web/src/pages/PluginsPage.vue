@@ -59,6 +59,7 @@
         <li v-for="issue in data.issues" :key="issue.path">{{ issue.path }} · {{ issue.message }}</li>
       </ul>
     </section>
+    <PluginQqConnection />
     <section v-if="selected" class="card-panel plugin-panel" aria-labelledby="plugin-preview">
       <header class="plugin-heading">
         <div>
@@ -67,11 +68,13 @@
         </div>
       </header>
       <form class="plugin-form" @submit.prevent="run(preview)">
-        <label>参数类型
-          <select v-model="parameterType" class="input" @change="steps = []">
-            <option v-for="type in selected.parameterTypes" :key="type" :value="type">{{ parameterLabels[type] || type }}</option>
-          </select>
-        </label>
+        <fieldset class="plugin-parameter-types">
+          <legend>参数类型</legend>
+          <label v-for="type in selected.parameterTypes" :key="type">
+            <input v-model="parameterType" type="radio" name="preview-parameter" :value="type" @change="steps = []">
+            <span>{{ parameterLabels[type] || type }}</span>
+          </label>
+        </fieldset>
         <label>样例参数
           <input v-model="value" class="input" maxlength="500" required @input="steps = []">
         </label>
@@ -93,6 +96,7 @@
 import { nextTick, onMounted, ref } from 'vue'
 import AppButton from '../components/AppButton.vue'
 import Badge from '../components/Badge.vue'
+import PluginQqConnection from '../components/PluginQqConnection.vue'
 import { confirmAction } from '../utils/confirmAction.js'
 import request from '../utils/request.js'
 
@@ -226,10 +230,13 @@ async function showPreview(item) {
 
 async function preview() {
   steps.value = []
-  const result = await request.post(`${pathFor(selected.value)}/preview`, {
-    parameterType: parameterType.value, value: value.value,
-  }, { uiMode: 'silent' })
-  steps.value = result.data
+  const path = pathFor(selected.value)
+  const input = { parameterType: parameterType.value, value: value.value }
+  const result = await request.post(`${path}/preview`, input, { uiMode: 'silent' })
+  if (selected.value && pathFor(selected.value) === path &&
+      parameterType.value === input.parameterType && value.value === input.value) {
+    steps.value = result.data
+  }
 }
 
 onMounted(() => run(refresh))
@@ -257,5 +264,10 @@ onMounted(() => run(refresh))
 .plugin-steps li + li { margin-top: 12px; }
 .plugin-form { margin-top: 16px; align-items: end; }
 .plugin-form label { display: grid; gap: 6px; max-width: 100%; }
+.plugin-parameter-types { display: flex; flex-wrap: wrap; gap: 6px; border: 0; margin: 0; padding: 0; min-width: 0; }
+.plugin-parameter-types legend { padding: 0; margin-bottom: 6px; }
+.plugin-parameter-types label { display: flex; align-items: center; min-height: 36px; padding: 0 8px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
+.plugin-parameter-types input { margin: 0; accent-color: var(--primary); }
+.plugin-parameter-types label:focus-within { outline: 2px solid var(--primary); outline-offset: 2px; }
 .plugin-panel .plugin-empty { margin-top: 14px; }
 </style>
