@@ -101,7 +101,8 @@ def preview_plan(manifest, parameter_type, value, *, direct_number=False):
     if parameter_type == "short_link" and not re.fullmatch(r"https?://[^\s/]+(?:/[^\s]*)?", value):
         raise InventoryError("请输入一个完整的短链接")
     # The original signed package declared a rank lookup for IDs the robot now accepts directly.
-    if direct_number and parameter_type == "number":
+    is_pure_number = bool(re.fullmatch(r"[0-9]{5,20}", value))
+    if direct_number and (parameter_type == "number" or is_pure_number):
         return [{"title": "按球球号发起助力", "command": f"助力 {value}"}]
     return [
         {"title": step.title, "command": f"{step.verb} {value}" if step.input == "parameter" else None}
@@ -290,8 +291,8 @@ class DesktopPlugins:
             previous = db.execute("SELECT payload_hash, state FROM desktop_plugin_qq_send_attempt WHERE id=?",
                                   (attempt_id,)).fetchone()
             if previous:
-                if previous == (payload_hash, "submitted"):
-                    return {"state": "submitted"}
+                if previous[0] == payload_hash and previous[1] in ("submitted", "receipt_success", "receipt_capped"):
+                    return {"state": previous[1]}
                 raise InventoryError("这条指令已有发送尝试。请先核对 QQ 聊天记录。", 409)
             if db.execute("""
                 SELECT 1 FROM desktop_plugin_qq_send_attempt WHERE payload_hash=? AND state IN ('sending', 'uncertain')
@@ -303,14 +304,14 @@ class DesktopPlugins:
             with db:
                 db.execute("INSERT INTO desktop_plugin_qq_send_attempt VALUES (?, ?, 'sending')", (attempt_id, payload_hash))
             try:
-                result = send_qq_command(target, command, window)
+                result = send_qq_command(target, command, window, value=value)
             except InventoryError as exc:
                 with db:
                     db.execute("UPDATE desktop_plugin_qq_send_attempt SET state=? WHERE id=?",
                                ("uncertain" if exc.status >= 500 else "rejected", attempt_id))
                 raise
             with db:
-                db.execute("UPDATE desktop_plugin_qq_send_attempt SET state='submitted' WHERE id=?", (attempt_id,))
+                db.execute("UPDATE desktop_plugin_qq_send_attempt SET state=? WHERE id=?", (result["state"], attempt_id))
             return result
 
     def clear_qq_send(self, plugin_id, version, parameter_type, value, step_index, selected_target):

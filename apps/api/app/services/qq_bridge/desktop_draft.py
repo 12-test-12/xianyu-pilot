@@ -38,9 +38,12 @@ def bind_qq_window():
     _unexpected_result(state)
 
 
-def send_qq_command(target, command, window):
-    state = _run_qq_script({**target, "command": command, "operation": "send", "window": window})
-    if state == "submitted":
+def send_qq_command(target, command, window, value=None):
+    payload = {**target, "command": command, "operation": "send", "window": window}
+    if value is not None:
+        payload["value"] = value
+    state = _run_qq_script(payload)
+    if state in ("submitted", "receipt_success", "receipt_capped"):
         return {"state": state}
     if state == "send_uncertain":
         raise InventoryError("QQ 发送结果待核查。请查看聊天记录，确认后再操作。", 503)
@@ -64,7 +67,7 @@ def _run_qq_script(payload):
         result = subprocess.run(
             [str(powershell), "-NoProfile", "-NonInteractive", "-Sta", "-EncodedCommand", script],
             input=json.dumps(payload, ensure_ascii=True).encode("ascii"),
-            capture_output=True, timeout=25, creationflags=subprocess.CREATE_NO_WINDOW,
+            capture_output=True, timeout=35, creationflags=subprocess.CREATE_NO_WINDOW,
         )
     except subprocess.TimeoutExpired as exc:
         if payload.get("operation") == "send":

@@ -63,6 +63,8 @@ public static class XianyuQQWindow {
             keys.Add(Key(digit, false));
             keys.Add(Key(digit, true));
         }
+        keys.Add(Key(0x0D, false));
+        keys.Add(Key(0x0D, true));
         return SendKeys(window, keys.ToArray());
     }
     private static bool SendKeys(IntPtr window, Input[] keys) {
@@ -278,16 +280,16 @@ function Test-Within($child, $parent) {
 }
 
 function Get-SearchResultKind($node) {
-    $inSearch = $false
+    $inContact = $false
     for ($depth = 0; $node -and $depth -lt 8; $depth++) {
         $name = $node.Name
         $class = $node.ClassName
-        if ($name -match '^(\u7fa4\u804a|\u6d88\u606f\u8bb0\u5f55|\u7f51\u7edc\u641c\u7d22|\u7efc\u5408\u641c\u7d22)|\u67e5\u627e.*(?:\u7528\u6237|\u7fa4\u804a)' -or
+        if ($name -match '^(\u7fa4\u804a|\u6d88\u606f\u8bb0\u5f55|\u7f51\u7edc\u641c\u7d22)' -or
             $class -match '(?i)search.*(group|message|network)') { return 'excluded' }
-        if ($name -match '^(\u8054\u7cfb\u4eba|\u597d\u53cb)$' -or $class -match '(?i)search.*(result|list|panel|item|container)') { $inSearch = $true }
+        if ($name -match '^(\u8054\u7cfb\u4eba|\u597d\u53cb)$' -or $class -match '(?i)search.*(result|list|panel|item|container)') { $inContact = $true }
         $node = $automation.Parent($node)
     }
-    if ($inSearch) { return 'contact' }
+    if ($inContact) { return 'contact' }
     return 'unknown'
 }
 
@@ -374,14 +376,43 @@ function Submit-QQCommand($root, $header, $editor, $window, $label) {
     if ($buttons.Count -ne 1 -or [XianyuQQWindow]::GetForegroundWindow() -ne $window -or
         $header.Name -cne $label -or $editor.ReadEditor() -cne $inputData.command) { return 'qq_send_unavailable' }
 
+    $initialTexts = @(Find-Type $root ([QQAutomation]::Text) | ForEach-Object { $_.Name } | Where-Object { $_ })
     $script:submitAttempted = $true
     if (-not $buttons[0].TryInvoke() -and -not (Click-QQControl $buttons[0] $window)) { return 'qq_send_unavailable' }
+    $sentConfirmed = $false
     for ($attempt = 0; $attempt -lt 12; $attempt++) {
         Start-Sleep -Milliseconds 150
         if ([XianyuQQWindow]::GetForegroundWindow() -ne $window -or $header.Name -cne $label) { break }
-        if ($editor.ReadEditor() -ceq '') { return 'submitted' }
+        if ($editor.ReadEditor() -ceq '') { $sentConfirmed = $true; break }
     }
-    return 'send_uncertain'
+    if (-not $sentConfirmed) { return 'send_uncertain' }
+
+    $targetNumber = [string]$inputData.value
+    if (-not $targetNumber -and $inputData.command -match '(\d{5,20})') {
+        $targetNumber = $matches[1]
+    }
+    $targetPattern = if ($targetNumber) { '(?<!\d)' + [regex]::Escape($targetNumber) + '(?!\d)' } else { $null }
+
+    for ($attempt = 0; $attempt -lt 20; $attempt++) {
+        Start-Sleep -Milliseconds 250
+        if ([XianyuQQWindow]::GetForegroundWindow() -ne $window) { break }
+        $currentTexts = @(Find-Type $root ([QQAutomation]::Text) | ForEach-Object { $_.Name } | Where-Object { $_ })
+        $newTexts = @($currentTexts | Where-Object { $_ -notin $initialTexts -and $_ -cne $inputData.command })
+        if (-not $newTexts.Count) { continue }
+
+        foreach ($text in $newTexts) {
+            $matchedTarget = ($targetPattern -and $text -match $targetPattern) -or ($text -match [regex]::Escape($inputData.command))
+            if ($matchedTarget) {
+                if ($text -match '(\u52a9\u529b\u6210\u529f|\u5df2\u6210\u529f\u62c9\u6ee1|\u62c9\u6ee1|\u6210\u529f|\u6392\u540d\u7b2c|\u5df2\u52a9\u529b)') {
+                    return 'receipt_success'
+                }
+                if ($text -match '(\u8fbe\u5230\u4e0a\u9650|\u6b21\u6570\u5df2\u7528\u5b8c|\u4eca\u65e5\u5df2\u6ee1|\u4e0a\u9650|\u4e0d\u5b58\u5728|\u5931\u8d25)') {
+                    return 'receipt_capped'
+                }
+            }
+        }
+    }
+    return 'submitted'
 }
 
 function Open-QQDraft {

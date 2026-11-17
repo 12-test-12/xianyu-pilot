@@ -84,6 +84,11 @@
         <AppButton type="primary" native-type="submit" :disabled="busy">运行预演</AppButton>
       </form>
       <div aria-live="polite">
+        <div v-if="groups.length" class="batch-select-actions">
+          <AppButton size="small" :disabled="busy" @click="selectAllTargets">全选目标</AppButton>
+          <AppButton size="small" :disabled="busy" @click="deselectAllTargets">取消全选</AppButton>
+          <span>已勾选 {{ selectedValues.length }} / {{ groups.length }} 个目标</span>
+        </div>
         <ol v-if="groups.length" class="plugin-steps">
           <li v-for="(group, groupIndex) in groups" :key="group.value">
             <div class="plugin-actions">
@@ -303,9 +308,23 @@ function profileLabel(profile) {
 function routeFor(group, index) {
   const profiles = chosenProfiles.value
   if (!profiles.length) return null
+  if (assignments.value[group.value]) {
+    const assigned = profiles.find(profile => profile.id === assignments.value[group.value])
+    if (assigned) return assigned
+  }
+  const primaries = profiles.filter(profile => !profile.backup)
+  const pool = primaries.length ? primaries : profiles
   const checkedIndex = checkedTargets.value.indexOf(group.value)
   const defaultIndex = checkedIndex < 0 ? index : checkedIndex
-  return profiles.find(profile => profile.id === assignments.value[group.value]) || profiles[defaultIndex % profiles.length]
+  return pool[defaultIndex % pool.length]
+}
+
+function selectAllTargets() {
+  selectedValues.value = groups.value.map(group => group.value)
+}
+
+function deselectAllTargets() {
+  selectedValues.value = []
 }
 
 function stepKey(group, index) {
@@ -341,19 +360,25 @@ async function sendBatch() {
     attemptedTargets.value[key] = target
     draftNotice.value = `正在发送第 ${sent + 1} / ${batch.length} 条 · ${profileLabel(target)}。如果没有自动切换，请切到发送账号的 QQ 主窗口。`
     try {
-      await request.post(`${path}/qq-send`, {
+      const res = await request.post(`${path}/qq-send`, {
         parameterType: parameterType.value, target, value, stepIndex, attemptId: createSecureId('qq-send'),
       }, { uiMode: 'silent', suppressGlobalError: true })
+      if (res.data?.state === 'receipt_success') {
+        sendResults.value[key] = '助力已完成'
+      } else if (res.data?.state === 'receipt_capped') {
+        sendResults.value[key] = '助力已达上限'
+      } else {
+        sendResults.value[key] = 'QQ 已提交'
+      }
     } catch (err) {
       sendResults.value[key] = '发送暂停，待核查'
       draftNotice.value = `已提交 ${sent} 条。请核对出错这条的 QQ 聊天记录。`
       draftError.value = err?.message || '无法确认发送结果。'
       return
     }
-    sendResults.value[key] = 'QQ 已提交'
     sent += 1
   }
-  draftNotice.value = `QQ 已提交 ${sent} 条，请在 QQ 中查看机器人回执。`
+  draftNotice.value = `QQ 发送处理完成 ${sent} 条，已核验机器人回执。`
 }
 
 async function resetSend(group, index) {
@@ -405,5 +430,6 @@ onMounted(() => run(refresh))
 .plugin-parameter-types label { display: flex; align-items: center; min-height: 36px; padding: 0 8px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
 .plugin-parameter-types input { margin: 0; accent-color: var(--primary); }
 .plugin-parameter-types label:focus-within { outline: 2px solid var(--primary); outline-offset: 2px; }
+.batch-select-actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; margin-bottom: 8px; font-size: 13px; color: var(--muted); }
 .plugin-panel .plugin-empty { margin-top: 14px; }
 </style>

@@ -195,7 +195,7 @@ def test_qq_profiles_batch_preview_and_idempotent_send(desktop, monkeypatch):
     monkeypatch.setattr(desktop_plugins, "bind_qq_window", lambda: window)
     opens = []
 
-    def submit(target, command, bound_window):
+    def submit(target, command, bound_window, value=None):
         opens.append((target, command, bound_window))
         if command == "助力 98765":
             raise desktop_plugins.InventoryError("QQ 发送结果待核查", 503)
