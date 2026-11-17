@@ -5,6 +5,7 @@ export function showLegalNotice(title = '相关协议') {
 
   const dialog = document.createElement('dialog')
   dialog.className = 'xya-legal-notice'
+  dialog.id = 'xya-legal-notice-dialog'
   dialog.setAttribute('aria-labelledby', 'xya-legal-notice-title')
 
   const heading = document.createElement('h1')
@@ -17,7 +18,11 @@ export function showLegalNotice(title = '相关协议') {
   const close = document.createElement('button')
   close.type = 'button'
   close.textContent = '我知道了'
-  close.addEventListener('click', () => dialog.close())
+  close.setAttribute('commandfor', 'xya-legal-notice-dialog')
+  close.setAttribute('command', 'close')
+  if (!('commandForElement' in HTMLButtonElement.prototype)) {
+    close.addEventListener('click', () => dialog.close())
+  }
   dialog.addEventListener('close', () => {
     dialog.remove()
     if (activeDialog === dialog) activeDialog = null

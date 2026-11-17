@@ -89,7 +89,7 @@ export function normalizeOpenSourceConfig(config = {}) {
 }
 
 export function cloneOpenSourceConfig(config = {}) {
-  return JSON.parse(JSON.stringify(normalizeOpenSourceConfig(config)))
+  return structuredClone(normalizeOpenSourceConfig(config))
 }
 
 export function syncOpenSourceConfig(target, source = {}) {

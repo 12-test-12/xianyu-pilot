@@ -483,7 +483,7 @@ function rebuildSkus() {
 
 function buildPropertyKey(propertyList) {
   if (!propertyList || propertyList.length === 0) return ''
-  const sorted = [...propertyList].sort((a, b) => String(a.propertyText).localeCompare(String(b.propertyText)))
+  const sorted = propertyList.toSorted((a, b) => String(a.propertyText).localeCompare(String(b.propertyText)))
   return sorted.map(p => `${p.propertyText}=${p.valueText}`).join('|')
 }
 
@@ -1360,21 +1360,29 @@ defineExpose({
 }
 .mse-table-scroll {
   overflow-x: auto;
+  scrollbar-color: #d0d9e8 var(--mse-bg-soft);
+  scrollbar-width: thin;
 }
-.mse-table-scroll::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-.mse-table-scroll::-webkit-scrollbar-track {
-  background: var(--mse-bg-soft);
-}
-.mse-table-scroll::-webkit-scrollbar-thumb {
-  background: #d0d9e8;
-  border-radius: 4px;
-  border: 2px solid var(--mse-bg-soft);
-}
-.mse-table-scroll::-webkit-scrollbar-thumb:hover {
-  background: #b0bdd0;
+
+@supports not (scrollbar-color: auto) {
+  .mse-table-scroll {
+    scrollbar-width: auto;
+  }
+  .mse-table-scroll::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .mse-table-scroll::-webkit-scrollbar-track {
+    background: var(--mse-bg-soft);
+  }
+  .mse-table-scroll::-webkit-scrollbar-thumb {
+    background: #d0d9e8;
+    border-radius: 4px;
+    border: 2px solid var(--mse-bg-soft);
+  }
+  .mse-table-scroll::-webkit-scrollbar-thumb:hover {
+    background: #b0bdd0;
+  }
 }
 
 .mse-table {

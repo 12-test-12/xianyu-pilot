@@ -1156,7 +1156,7 @@ function applyToAllSkus(timing) {
   const template = normalizeSkuTimingConfig(sourceConfig)
   template.enabled = sourceConfig.enabled === 1 || sourceConfig.enabled === true ? 1 : 0
   for (const rule of skuRules.value) {
-    rule[timing] = JSON.parse(JSON.stringify(template))
+    rule[timing] = structuredClone(template)
   }
   skuSuccess.value = `已将「${currentTimingLabelFor(timing)}」的通用配置应用到全部 ${skuRules.value.length} 个 SKU`
   setTimeout(() => { skuSuccess.value = '' }, 3000)
@@ -1386,7 +1386,7 @@ async function updateDesktopConfigs(goodsIds, changeVariants) {
       await saveGoodsDeliveryConfig(goodsId, { expectedVersion: data.version, variants: changeVariants(data.variants) })
       updated += 1
     } catch (e) {
-      throw new Error(`已更新 ${updated} 个商品，商品 ${goodsId} 更新失败：${e.message}`)
+      throw new Error(`已更新 ${updated} 个商品，商品 ${goodsId} 更新失败：${e.message}`, { cause: e })
     }
   }
   return updated

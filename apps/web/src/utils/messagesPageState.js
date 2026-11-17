@@ -119,7 +119,8 @@ function getConversationSortTime(conv) {
 }
 
 export function sortConversationSnapshots(list, { descending = true } = {}) {
-  return [...(Array.isArray(list) ? list : [])].sort((left, right) => {
+  const items = Array.isArray(list) ? list : []
+  return items.toSorted((left, right) => {
     const leftTime = getConversationSortTime(left)
     const rightTime = getConversationSortTime(right)
     return descending ? rightTime - leftTime : leftTime - rightTime

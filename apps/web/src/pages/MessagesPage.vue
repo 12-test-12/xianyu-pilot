@@ -2424,7 +2424,7 @@ function dedupeConversations(list) {
 
 function normalizeMessages(data) {
   const list = Array.isArray(data) ? data : (data?.records || data?.list || data?.rows || data?.messages || [])
-  const sorted = [...list].sort((a, b) => {
+  const sorted = list.toSorted((a, b) => {
     const ta = parseMessageTimestamp(a.messageTime || a.createdTime || 0)
     const tb = parseMessageTimestamp(b.messageTime || b.createdTime || 0)
     return ta - tb
