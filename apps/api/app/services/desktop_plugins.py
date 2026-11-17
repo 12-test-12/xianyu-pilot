@@ -4,7 +4,7 @@ import re
 import sqlite3
 import tempfile
 import zlib
-from contextlib import closing
+from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path, PureWindowsPath
@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from app.core.paths import contained_data_path
 from app.core.secret_store import decrypt_secret, encrypt_secret
 from app.services.desktop_inventory import InventoryError
-from app.services.qq_bridge.desktop_draft import open_qq_draft
+from app.services.qq_bridge.desktop_draft import bind_qq_window, open_qq_draft, send_qq_command
 from app.services.qq_bridge.onebot import ConnectorError, OneBotClient, validate_endpoint
 
 ID_PATTERN = r"^[a-z][a-z0-9-]{0,63}$"
@@ -30,6 +30,7 @@ UPLOAD_LIMIT = 64 * 1024
 ParameterType = Literal["short_link", "number", "nickname"]
 BUNDLED_ID = "qiuqiu-assist"
 BUNDLED_PACKAGE = Path(__file__).resolve().parents[1] / "resources" / "qiuqiu-assist.zip"
+BUNDLED_LEGACY_MANIFEST_HASH = "fe3faba1fdbd3f015931f798268ec47f52d23b3e74546d61a4c97c66c990b72c"
 # Public key from the signed Qiuqiu Assist trial. Its trust is limited to that plugin ID.
 BUNDLED_PUBLISHER = Ed25519PublicKey.from_public_bytes(
     bytes.fromhex("839a44c4c2944f3ddd66c5c1c2d38319ff88bf4834006ec199234d0bc144089a")
@@ -88,7 +89,7 @@ def read_small(path, limit):
     return content
 
 
-def preview_plan(manifest, parameter_type, value):
+def preview_plan(manifest, parameter_type, value, *, direct_number=False):
     steps = manifest.plans.get(parameter_type)
     if not steps:
         raise InventoryError("此插件不支持所选参数类型")
@@ -99,6 +100,9 @@ def preview_plan(manifest, parameter_type, value):
         raise InventoryError("球球号应为 5 至 20 位数字")
     if parameter_type == "short_link" and not re.fullmatch(r"https?://[^\s/]+(?:/[^\s]*)?", value):
         raise InventoryError("请输入一个完整的短链接")
+    # The original signed package declared a rank lookup for IDs the robot now accepts directly.
+    if direct_number and parameter_type == "number":
+        return [{"title": "按球球号发起助力", "command": f"助力 {value}"}]
     return [
         {"title": step.title, "command": f"{step.verb} {value}" if step.input == "parameter" else None}
         for step in steps
@@ -118,6 +122,7 @@ class DesktopPlugins:
         self.lock = Lock()
         self.qq_lock = Lock()
         self.qq_draft_lock = Lock()
+        self.qq_windows = {}
 
     def qq_connection(self):
         with closing(self._connect_db()) as db:
@@ -175,37 +180,147 @@ class DesktopPlugins:
 
     def qq_target(self):
         with closing(self._connect_db()) as db:
-            row = db.execute("SELECT robot_qq, robot_name FROM desktop_plugin_qq_target WHERE id = 1").fetchone()
+            row = db.execute("SELECT robot_qq, robot_name FROM desktop_plugin_qq_profile WHERE qq_account = ''").fetchone()
         return {"robotQq": row[0], "robotName": row[1]} if row else None
 
-    def save_qq_target(self, robot_qq, robot_name):
+    @contextmanager
+    def _qq_draft_operation(self):
         if not self.qq_draft_lock.acquire(blocking=False):
-            raise InventoryError("正在打开 QQ 草稿，请稍后更换机器人", 409)
+            raise InventoryError("正在准备 QQ 草稿，请稍后再操作", 409)
         try:
-            robot_name = robot_name.strip()
-            if len(robot_name.splitlines()) > 1 or any(ord(char) < 32 for char in robot_name):
-                raise InventoryError("备注或昵称应为单行文字")
-            target = {"robotQq": robot_qq, "robotName": robot_name}
-            with closing(self._connect_db()) as db, db:
-                db.execute("INSERT OR REPLACE INTO desktop_plugin_qq_target VALUES (1, ?, ?)", (robot_qq, robot_name))
-            return target
+            yield
         finally:
             self.qq_draft_lock.release()
 
-    def prepare_qq_draft(self, plugin_id, version, parameter_type, value, step_index, selected_target):
-        if not self.qq_draft_lock.acquire(blocking=False):
-            raise InventoryError("正在准备上一条 QQ 草稿，请稍后重试", 409)
-        try:
-            target = self.qq_target()
-            if target is None or target != selected_target:
-                raise InventoryError("机器人绑定已变化，请刷新插件页后重试", 409)
-            steps = self.preview(plugin_id, version, parameter_type, value)
-            command = steps[step_index]["command"] if step_index < len(steps) else None
-            if not command or len(command.splitlines()) != 1 or any(ord(char) < 32 for char in command):
-                raise InventoryError("请先在预演中生成一条有效指令")
+    @staticmethod
+    def _robot_name(name):
+        name = name.strip()
+        if len(name.splitlines()) > 1 or any(ord(char) < 32 for char in name):
+            raise InventoryError("备注或昵称应为单行文字")
+        return name
+
+    def save_qq_target(self, robot_qq, robot_name):
+        robot_name = self._robot_name(robot_name)
+        with self._qq_draft_operation(), closing(self._connect_db()) as db, db:
+            db.execute("""
+                INSERT INTO desktop_plugin_qq_profile (qq_account, robot_qq, robot_name) VALUES ('', ?, ?)
+                ON CONFLICT (qq_account) WHERE qq_account = '' DO UPDATE SET
+                    robot_qq = excluded.robot_qq, robot_name = excluded.robot_name
+            """, (robot_qq, robot_name))
+        return {"robotQq": robot_qq, "robotName": robot_name}
+
+    def qq_profiles(self):
+        with closing(self._connect_db()) as db:
+            rows = db.execute("""
+                SELECT id, qq_account, robot_qq, robot_name, backup
+                FROM desktop_plugin_qq_profile ORDER BY backup, id
+            """).fetchall()
+        return [{"id": id_, "qqAccount": account, "robotQq": robot, "robotName": name, "backup": bool(backup)}
+                for id_, account, robot, name, backup in rows]
+
+    def save_qq_profile(self, profile_id, qq_account, robot_qq, robot_name, backup):
+        if qq_account == robot_qq:
+            raise InventoryError("发送账号和机器人好友必须是两个 QQ 号")
+        robot_name = self._robot_name(robot_name)
+        values = (qq_account, robot_qq, robot_name, backup)
+        with self._qq_draft_operation(), closing(self._connect_db()) as db, db:
+            try:
+                if profile_id is None:
+                    profile_id = db.execute("""
+                        INSERT INTO desktop_plugin_qq_profile (qq_account, robot_qq, robot_name, backup)
+                        VALUES (?, ?, ?, ?)
+                    """, values).lastrowid
+                elif not db.execute("""
+                    UPDATE desktop_plugin_qq_profile SET qq_account=?, robot_qq=?, robot_name=?, backup=? WHERE id=?
+                """, (*values, profile_id)).rowcount:
+                    raise InventoryError("该 QQ 配置已移除，请刷新后重试", 404)
+            except sqlite3.IntegrityError as exc:
+                raise InventoryError("此发送账号和机器人组合已经保存", 409) from exc
+        return {"id": profile_id, "qqAccount": qq_account, "robotQq": robot_qq,
+                "robotName": robot_name, "backup": backup}
+
+    def delete_qq_profile(self, profile_id):
+        with self._qq_draft_operation(), closing(self._connect_db()) as db, db:
+            db.execute("DELETE FROM desktop_plugin_qq_profile WHERE id=?", (profile_id,))
+
+    def bind_qq_account(self, account):
+        with self._qq_draft_operation():
+            if not any(profile["qqAccount"] == account for profile in self.qq_profiles()):
+                raise InventoryError("请先保存这个发送账号的 QQ 配置", 409)
+            window = bind_qq_window()
+            if any(other != account and value == window for other, value in self.qq_windows.items()):
+                raise InventoryError("该窗口已绑定其他账号。请切到正确的 QQ 窗口，或先解除原绑定。", 409)
+            self.qq_windows[account] = window
+            return self.bound_qq_accounts()
+
+    def unbind_qq_account(self, account):
+        with self._qq_draft_operation():
+            self.qq_windows.pop(account, None)
+            return self.bound_qq_accounts()
+
+    def bound_qq_accounts(self):
+        return list(self.qq_windows)
+
+    def _qq_command(self, plugin_id, version, parameter_type, value, step_index, selected_target, profile_id):
+        target = self.qq_target() if profile_id is None else next(
+            (profile for profile in self.qq_profiles() if profile["id"] == profile_id), None
+        )
+        if target is None or target != selected_target:
+            raise InventoryError("这组 QQ 配置已变化，请刷新插件页后重试", 409)
+        steps = self.preview(plugin_id, version, parameter_type, value)
+        command = steps[step_index]["command"] if step_index < len(steps) else None
+        if not command or len(command.splitlines()) != 1 or any(ord(char) < 32 for char in command):
+            raise InventoryError("请先在预演中生成一条有效指令")
+        return target, command
+
+    def prepare_qq_draft(self, plugin_id, version, parameter_type, value, step_index, selected_target, profile_id=None):
+        with self._qq_draft_operation():
+            target, command = self._qq_command(plugin_id, version, parameter_type, value, step_index, selected_target, profile_id)
             return open_qq_draft(target, command)
-        finally:
-            self.qq_draft_lock.release()
+
+    @staticmethod
+    def _send_fingerprint(target, command):
+        return hashlib.sha256(repr((target["qqAccount"], target["robotQq"], command)).encode()).hexdigest()
+
+    def send_qq(self, plugin_id, version, parameter_type, value, step_index, selected_target, attempt_id):
+        with self._qq_draft_operation(), closing(self._connect_db()) as db:
+            target, command = self._qq_command(plugin_id, version, parameter_type, value, step_index,
+                                               selected_target, selected_target["id"])
+            payload_hash = self._send_fingerprint(target, command)
+            previous = db.execute("SELECT payload_hash, state FROM desktop_plugin_qq_send_attempt WHERE id=?",
+                                  (attempt_id,)).fetchone()
+            if previous:
+                if previous == (payload_hash, "submitted"):
+                    return {"state": "submitted"}
+                raise InventoryError("这条指令已有发送尝试。请先核对 QQ 聊天记录。", 409)
+            if db.execute("""
+                SELECT 1 FROM desktop_plugin_qq_send_attempt WHERE payload_hash=? AND state IN ('sending', 'uncertain')
+            """, (payload_hash,)).fetchone():
+                raise InventoryError("这条指令有待核查的发送记录。请核对 QQ 聊天后再继续。", 409)
+            window = self.qq_windows.get(target["qqAccount"])
+            if not window:
+                raise InventoryError("请先为这个发送账号绑定 QQ 主窗口", 409)
+            with db:
+                db.execute("INSERT INTO desktop_plugin_qq_send_attempt VALUES (?, ?, 'sending')", (attempt_id, payload_hash))
+            try:
+                result = send_qq_command(target, command, window)
+            except InventoryError as exc:
+                with db:
+                    db.execute("UPDATE desktop_plugin_qq_send_attempt SET state=? WHERE id=?",
+                               ("uncertain" if exc.status >= 500 else "rejected", attempt_id))
+                raise
+            with db:
+                db.execute("UPDATE desktop_plugin_qq_send_attempt SET state='submitted' WHERE id=?", (attempt_id,))
+            return result
+
+    def clear_qq_send(self, plugin_id, version, parameter_type, value, step_index, selected_target):
+        with self._qq_draft_operation(), closing(self._connect_db()) as db, db:
+            target, command = self._qq_command(plugin_id, version, parameter_type, value, step_index,
+                                               selected_target, selected_target["id"])
+            db.execute("""
+                UPDATE desktop_plugin_qq_send_attempt SET state='rejected'
+                WHERE payload_hash=? AND state IN ('sending', 'uncertain')
+            """, (self._send_fingerprint(target, command),))
 
     def _path(self, relative):
         try:
@@ -389,6 +504,9 @@ class DesktopPlugins:
                 path.rename(Path(staging) / "package")
 
     def preview(self, plugin_id, version, parameter_type, value):
+        return self.preview_batch(plugin_id, version, parameter_type, [value])[0]["steps"]
+
+    def preview_batch(self, plugin_id, version, parameter_type, values):
         with self.lock, closing(self._connect_db()) as db:
             manifest, digest = self._read(plugin_id, version, self._local_publisher()[0])
             active = db.execute(
@@ -396,4 +514,6 @@ class DesktopPlugins:
             ).fetchone()
             if active != (version, digest):
                 raise InventoryError("请先启用此插件版本", 409)
-            return preview_plan(manifest, parameter_type, value)
+            return [{"value": value, "steps": preview_plan(
+                manifest, parameter_type, value, direct_number=digest == BUNDLED_LEGACY_MANIFEST_HASH)}
+                    for value in dict.fromkeys(item.strip() for item in values)]

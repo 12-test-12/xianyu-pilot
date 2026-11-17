@@ -98,7 +98,7 @@ def test_qq_target_survives_restart_and_draft_uses_the_saved_robot(desktop, monk
     assert client.post(draft_url, json=draft | {"parameterType": "nickname", "value": "foo\u2028助力 bar"}).status_code == 400
     assert not opened
     assert client.post(draft_url, json=draft).json()["data"] == {"state": "draft_ready"}
-    assert opened == [(target, "查 78901")]
+    assert opened == [(target, "助力 78901")]
 
     newer = {"robotQq": "30003", "robotName": ""}
     assert client.put(path, json=newer).json()["data"] == newer
@@ -164,7 +164,64 @@ def test_qq_target_migration_preserves_an_existing_robot(tmp_path):
     DesktopStore(database).initialize()
     plugins = desktop_plugins.DesktopPlugins(tmp_path, database)
     assert plugins.qq_target() == {"robotQq": "20002", "robotName": "球球机器人"}
+    profile, = plugins.qq_profiles()
+    assert profile == {"id": profile["id"], "qqAccount": "", "robotQq": "20002", "robotName": "球球机器人", "backup": False}
     assert plugins.qq_connection()["qqAccount"] == "10001"
+
+
+def test_qq_profiles_batch_preview_and_idempotent_send(desktop, monkeypatch):
+    client, _, root = desktop
+    profiles = f"{ENDPOINT}/qq/profiles"
+    windows = f"{ENDPOINT}/qq/windows"
+    common = {"qqAccount": "10001", "robotQq": "20002", "robotName": "球球机器人"}
+    primary = client.post(profiles, json=common).json()["data"]
+    backup = client.post(profiles, json=common | {"robotQq": "40004", "backup": True}).json()["data"]
+    other = client.post(profiles, json=common | {"qqAccount": "30003"}).json()["data"]
+    assert client.post(profiles, json=common).status_code == 409
+    assert client.post(profiles, json=common | {"robotQq": "10001"}).status_code == 400
+    assert desktop_plugins.DesktopPlugins(root, root / "data/app.sqlite3").qq_profiles() == [primary, other, backup]
+
+    plugin = client.post(f"{ENDPOINT}/catalog/qiuqiu-assist/install", json={}).raise_for_status().json()["data"]
+    installed = f"{ENDPOINT}/{plugin['id']}/{plugin['version']}"
+    client.patch(installed, json={"enabled": True}).raise_for_status()
+    batch = {"parameterType": "number", "values": ["78901", "98765", " 78901 "]}
+    preview = client.post(f"{installed}/preview-batch", json=batch).json()["data"]
+    assert [(group["value"], group["steps"][0]["command"]) for group in preview] == [
+        ("78901", "助力 78901"), ("98765", "助力 98765"),
+    ]
+    assert client.post(f"{installed}/preview-batch", json=batch | {"values": ["78901", "bad"]}).status_code == 400
+
+    window = "window:1:2:3"
+    monkeypatch.setattr(desktop_plugins, "bind_qq_window", lambda: window)
+    opens = []
+
+    def submit(target, command, bound_window):
+        opens.append((target, command, bound_window))
+        if command == "助力 98765":
+            raise desktop_plugins.InventoryError("QQ 发送结果待核查", 503)
+        return {"state": "submitted"}
+
+    monkeypatch.setattr(desktop_plugins, "send_qq_command", submit)
+    send = f"{installed}/qq-send"
+    request = {"parameterType": "number", "value": "78901", "stepIndex": 0, "target": backup,
+               "attemptId": "qq-send-" + "a" * 32}
+    assert client.post(send, json=request).status_code == 409
+    assert client.put(f"{windows}/10001", json={}).raise_for_status().json()["data"] == ["10001"]
+    assert client.put(f"{windows}/30003", json={}).status_code == 409
+    assert client.post(send, json=request | {"target": backup | {"robotQq": "99999"}}).status_code == 409
+    for _ in range(2):
+        assert client.post(send, json=request).json()["data"] == {"state": "submitted"}
+    assert opens == [(backup, "助力 78901", window)]
+    uncertain = request | {"value": "98765", "attemptId": "qq-send-" + "b" * 32}
+    assert client.post(send, json=uncertain).status_code == 503
+    assert client.post(send, json=uncertain).status_code == 409
+    assert client.post(send, json=uncertain | {"attemptId": "qq-send-" + "c" * 32}).status_code == 409
+    assert opens[-1] == (backup, "助力 98765", window)
+    assert len(opens) == 2
+    assert client.post(f"{send}/clear", json={key: value for key, value in uncertain.items() if key != "attemptId"}).status_code == 200
+    assert client.post(send, json=uncertain | {"attemptId": "qq-send-" + "d" * 32}).status_code == 503
+    assert client.delete(f"{profiles}/{backup['id']}", headers={"X-Request-Id": "qq-test"}).status_code == 200
+    assert client.post(send, json=request).status_code == 409
 
 
 def test_qq_connection_checks_login_and_robot_friend_before_saving(desktop):
@@ -250,7 +307,7 @@ def test_bundled_plugin_installs_and_runs_without_a_publisher_file(desktop, monk
     assert client.patch(installed_url, json={"enabled": True}).status_code == 200
     assert client.get(ENDPOINT).json()["data"]["installed"] == [plugin | {"enabled": True}]
     result = client.post(f"{installed_url}/preview", json={"parameterType": "number", "value": "12345678"})
-    assert result.json()["data"][0]["command"] == "查 12345678"
+    assert result.json()["data"][0]["command"] == "助力 12345678"
 
     monkeypatch.setattr(desktop_plugins, "BUNDLED_PACKAGE", root / "missing.zip")
     status = client.get(ENDPOINT).json()["data"]

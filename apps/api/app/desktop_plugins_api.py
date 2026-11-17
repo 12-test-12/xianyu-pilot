@@ -20,6 +20,7 @@ router = APIRouter(
 )
 PluginId = Annotated[str, Path(pattern=ID_PATTERN)]
 PluginVersion = Annotated[str, Path(pattern=VERSION_PATTERN)]
+QQAccount = Annotated[str, Path(min_length=5, max_length=20, pattern=QQ_ID_PATTERN)]
 
 
 class EnableBody(BaseModel):
@@ -31,6 +32,12 @@ class PreviewBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     parameterType: ParameterType
     value: str = Field(min_length=1, max_length=500)
+
+
+class BatchPreviewBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    parameterType: ParameterType
+    values: list[Annotated[str, Field(min_length=1, max_length=500)]] = Field(min_length=1, max_length=50)
 
 
 class QQConnectionBody(BaseModel):
@@ -47,9 +54,27 @@ class QQTargetBody(BaseModel):
     robotName: str = Field(default="", max_length=80)
 
 
+class QQProfileBody(QQTargetBody):
+    qqAccount: str = Field(min_length=5, max_length=20, pattern=QQ_ID_PATTERN)
+    backup: bool = Field(default=False, strict=True)
+
+
+class QQProfileSelection(QQProfileBody):
+    id: int = Field(gt=0, strict=True)
+    qqAccount: str = Field(pattern=r"^([1-9][0-9]{4,19})?$")
+
+
 class QQDraftBody(PreviewBody):
-    target: QQTargetBody
+    target: QQProfileSelection | QQTargetBody
     stepIndex: int = Field(strict=True, ge=0, le=2)
+
+
+class QQSendSelection(QQDraftBody):
+    target: QQProfileSelection
+
+
+class QQSendBody(QQSendSelection):
+    attemptId: str = Field(pattern=r"^qq-send-[a-f0-9-]{32,36}$")
 
 
 def store(request: Request):
@@ -114,6 +139,41 @@ def save_qq_target(request: Request, body: QQTargetBody):
     return perform(store(request).save_qq_target, body.robotQq, body.robotName)
 
 
+@router.get("/qq/profiles")
+def qq_profiles(request: Request):
+    return perform(store(request).qq_profiles)
+
+
+@router.post("/qq/profiles")
+def add_qq_profile(request: Request, body: QQProfileBody):
+    return perform(store(request).save_qq_profile, None, body.qqAccount, body.robotQq, body.robotName, body.backup)
+
+
+@router.put("/qq/profiles/{profile_id}")
+def update_qq_profile(request: Request, profile_id: Annotated[int, Path(gt=0)], body: QQProfileBody):
+    return perform(store(request).save_qq_profile, profile_id, body.qqAccount, body.robotQq, body.robotName, body.backup)
+
+
+@router.delete("/qq/profiles/{profile_id}")
+def delete_qq_profile(request: Request, profile_id: Annotated[int, Path(gt=0)]):
+    return perform(store(request).delete_qq_profile, profile_id)
+
+
+@router.get("/qq/windows")
+def bound_qq_accounts(request: Request):
+    return perform(store(request).bound_qq_accounts)
+
+
+@router.put("/qq/windows/{account}")
+def bind_qq_account(request: Request, account: QQAccount):
+    return perform(store(request).bind_qq_account, account)
+
+
+@router.delete("/qq/windows/{account}")
+def unbind_qq_account(request: Request, account: QQAccount):
+    return perform(store(request).unbind_qq_account, account)
+
+
 @router.post("/package/inspect")
 async def inspect_package(request: Request):
     files = await package_payload(request)
@@ -146,7 +206,24 @@ def preview(request: Request, plugin_id: PluginId, version: PluginVersion, body:
     return perform(store(request).preview, plugin_id, version, body.parameterType, body.value)
 
 
+@router.post("/{plugin_id}/{version}/preview-batch")
+def preview_batch(request: Request, plugin_id: PluginId, version: PluginVersion, body: BatchPreviewBody):
+    return perform(store(request).preview_batch, plugin_id, version, body.parameterType, body.values)
+
+
 @router.post("/{plugin_id}/{version}/qq-draft")
 def prepare_qq_draft(request: Request, plugin_id: PluginId, version: PluginVersion, body: QQDraftBody):
     return perform(store(request).prepare_qq_draft, plugin_id, version, body.parameterType, body.value,
+                   body.stepIndex, body.target.model_dump(), getattr(body.target, "id", None))
+
+
+@router.post("/{plugin_id}/{version}/qq-send")
+def send_qq(request: Request, plugin_id: PluginId, version: PluginVersion, body: QQSendBody):
+    return perform(store(request).send_qq, plugin_id, version, body.parameterType, body.value,
+                   body.stepIndex, body.target.model_dump(), body.attemptId)
+
+
+@router.post("/{plugin_id}/{version}/qq-send/clear")
+def clear_qq_send(request: Request, plugin_id: PluginId, version: PluginVersion, body: QQSendSelection):
+    return perform(store(request).clear_qq_send, plugin_id, version, body.parameterType, body.value,
                    body.stepIndex, body.target.model_dump())

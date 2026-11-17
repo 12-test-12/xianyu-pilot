@@ -23,7 +23,7 @@
           <div>
             <h3>{{ item.name }} <small>v{{ item.version }}</small></h3>
             <p>{{ item.description }}</p>
-            <p>支持{{ item.parameterTypes.map(type => parameterLabels[type] || type).join('、') }}。指令可填入 QQ 草稿，由你在 QQ 中确认发送。</p>
+            <p>支持{{ item.parameterTypes.map(type => parameterLabels[type] || type).join('、') }}。可批量预演并通过已绑定的 QQ 发送。</p>
           </div>
           <div class="plugin-actions">
             <Badge v-if="isInstalled(item)" type="green">已安装</Badge>
@@ -59,39 +59,57 @@
         <li v-for="issue in data.issues" :key="issue.path">{{ issue.path }} · {{ issue.message }}</li>
       </ul>
     </section>
-    <PluginQqConnection v-model:target="qqTarget" />
+    <PluginQqConnection
+      v-model:profiles="qqProfiles" v-model:selected-ids="selectedProfileIds"
+      v-model:bound-accounts="boundAccounts" :locked="busy"
+    />
     <section v-if="selected" class="card-panel plugin-panel" aria-labelledby="plugin-preview">
       <header class="plugin-heading">
         <div>
           <h2 id="plugin-preview" ref="previewHeading" tabindex="-1">{{ selected.name }} · 指令预演</h2>
-          <p>首次测试可选球球号或昵称，先试一条查询。</p>
+          <p>每行输入一个目标。球球号可直接生成助力指令。</p>
         </div>
       </header>
       <form class="plugin-form" @submit.prevent="run(preview)">
         <fieldset class="plugin-parameter-types">
           <legend>参数类型</legend>
           <label v-for="type in selected.parameterTypes" :key="type">
-            <input v-model="parameterType" type="radio" name="preview-parameter" :value="type" @change="steps = []">
+            <input v-model="parameterType" type="radio" name="preview-parameter" :value="type" :disabled="busy" @change="groups = []">
             <span>{{ parameterLabels[type] || type }}</span>
           </label>
         </fieldset>
-        <label>样例参数
-          <input v-model="value" class="input" maxlength="500" required @input="steps = []">
+        <label>助力目标（每行一个，最多 50 个）
+          <textarea v-model="value" class="input" rows="3" maxlength="25050" required :disabled="busy" @input="groups = []" />
         </label>
         <AppButton type="primary" native-type="submit" :disabled="busy">运行预演</AppButton>
       </form>
       <div aria-live="polite">
-        <ol v-if="steps.length" class="plugin-steps">
-          <li v-for="(step, index) in steps" :key="index">
-            <strong>{{ step.title }}</strong>
-            <p>{{ step.command || '收到可核对的全服排名后生成指令' }}</p>
-            <div v-if="step.command" class="plugin-actions draft-actions">
-              <AppButton v-if="qqTarget" type="primary" :disabled="busy" @click="run(() => fillQqDraft(index))">填入 QQ 草稿</AppButton>
-              <AppButton :disabled="busy" @click="run(() => copyCommand(step.command))">复制指令</AppButton>
-              <span v-if="!qqTarget">保存机器人后可直接填入 QQ。</span>
+        <ol v-if="groups.length" class="plugin-steps">
+          <li v-for="(group, groupIndex) in groups" :key="group.value">
+            <div class="plugin-actions">
+              <label class="target-choice"><input v-model="selectedValues" type="checkbox" :value="group.value" :disabled="busy">{{ group.value }}</label>
+              <label v-if="chosenProfiles.length" class="route-choice">发送账号和机器人
+                <select class="input" :value="routeFor(group, groupIndex)?.id" :disabled="busy" @change="assignments[group.value] = Number($event.target.value)">
+                  <option v-for="profile in chosenProfiles" :key="profile.id" :value="profile.id">{{ profileLabel(profile) }}</option>
+                </select>
+              </label>
+            </div>
+            <div v-for="(step, index) in group.steps" :key="index">
+              <p>{{ step.title }} · {{ step.command || '收到可核对的全服排名后生成指令' }}</p>
+              <div v-if="step.command" class="plugin-actions draft-actions">
+                <span v-if="sendResults[stepKey(group, index)]">{{ sendResults[stepKey(group, index)] }} · {{ profileLabel(attemptedTargets[stepKey(group, index)]) }}</span>
+                <AppButton v-if="routeFor(group, groupIndex)" :disabled="busy || !!sendResults[stepKey(group, index)]" @click="run(() => fillQqDraft(group, index, routeFor(group, groupIndex)))">填入 QQ 草稿</AppButton>
+                <AppButton :disabled="busy" @click="run(() => copyCommand(step.command))">复制指令</AppButton>
+                <AppButton v-if="sendResults[stepKey(group, index)] === '发送暂停，待核查'" :disabled="busy" @click="run(() => resetSend(group, index))">确认未发送</AppButton>
+              </div>
             </div>
           </li>
         </ol>
+      </div>
+      <div v-if="groups.length" class="plugin-actions draft-actions">
+        <AppButton type="primary" :disabled="busy || !queued.length || missingWindows.length > 0" @click="run(sendBatch)">自动发送所选指令（{{ queued.length }}）</AppButton>
+        <span v-if="!chosenProfiles.length">请先勾选要用的 QQ 配置。</span>
+        <span v-else-if="missingWindows.length">请先绑定发送账号 {{ missingWindows.join('、') }} 的 QQ 窗口。</span>
       </div>
       <p v-if="draftNotice" role="status">{{ draftNotice }}</p>
       <p v-if="draftError" role="alert" class="draft-error">{{ draftError }}</p>
@@ -100,12 +118,13 @@
 </template>
 
 <script setup>
-import { nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import AppButton from '../components/AppButton.vue'
 import Badge from '../components/Badge.vue'
 import PluginQqConnection from '../components/PluginQqConnection.vue'
 import { copyText } from '../utils/clipboard.js'
 import { confirmAction } from '../utils/confirmAction.js'
+import { createSecureId } from '../utils/secureId.js'
 import request from '../utils/request.js'
 
 const endpoint = '/desktop/plugins'
@@ -120,8 +139,26 @@ const notice = ref('')
 const selected = ref(null)
 const parameterType = ref('')
 const value = ref('')
-const steps = ref([])
-const qqTarget = ref(null)
+const groups = ref([])
+const qqProfiles = ref([])
+const selectedProfileIds = ref([])
+const boundAccounts = ref([])
+const selectedValues = ref([])
+const assignments = ref(Object.create(null))
+const sendResults = ref({})
+const attemptedTargets = ref({})
+const chosenProfiles = computed(() => qqProfiles.value.filter(profile => selectedProfileIds.value.includes(profile.id)))
+const checkedTargets = computed(() => groups.value.filter(group => selectedValues.value.includes(group.value)).map(group => group.value))
+const queued = computed(() => groups.value.flatMap((group, groupIndex) => {
+  const target = routeFor(group, groupIndex)
+  if (!target || !selectedValues.value.includes(group.value)) return []
+  return group.steps.flatMap((step, stepIndex) => {
+    const key = stepKey(group, stepIndex)
+    return step.command && !sendResults.value[key] ? [{ key, target, value: group.value, stepIndex }] : []
+  })
+}))
+const missingWindows = computed(() => [...new Set(queued.value.map(item => item.target.qqAccount))]
+  .filter(account => !boundAccounts.value.includes(account)).map(account => account || '未填写发送账号'))
 const draftNotice = ref('')
 const draftError = ref('')
 const pathFor = item => `${endpoint}/${item.id}/${item.version}`
@@ -161,7 +198,7 @@ async function refresh() {
   }
   if (selected.value && !data.value.installed.some(item => item.enabled && pathFor(item) === pathFor(selected.value))) {
     selected.value = null
-    steps.value = []
+    groups.value = []
   }
 }
 
@@ -234,30 +271,53 @@ function remove(item) {
 
 async function showPreview(item) {
   selected.value = item
-  parameterType.value = item.parameterTypes[0]
+  parameterType.value = item.parameterTypes.includes('number') ? 'number' : item.parameterTypes[0]
   value.value = ''
-  steps.value = []
+  groups.value = []
   await nextTick()
   previewHeading.value?.focus()
 }
 
 async function preview() {
-  steps.value = []
+  groups.value = []
   const path = pathFor(selected.value)
-  const input = { parameterType: parameterType.value, value: value.value }
-  const result = await request.post(`${path}/preview`, input, { uiMode: 'silent' })
+  const rawValues = value.value
+  const values = [...new Set(rawValues.split(/\r?\n/).map(item => item.trim()).filter(Boolean))]
+  if (!values.length || values.length > 50 || values.some(item => item.length > 500)) {
+    throw new Error('请输入 1 至 50 个目标，每行最多 500 个字符。')
+  }
+  const input = { parameterType: parameterType.value, values }
+  const result = await request.post(`${path}/preview-batch`, input, { uiMode: 'silent' })
   if (selected.value && pathFor(selected.value) === path &&
-      parameterType.value === input.parameterType && value.value === input.value) {
-    steps.value = result.data
+      parameterType.value === input.parameterType && value.value === rawValues) {
+    groups.value = result.data
+    selectedValues.value = groups.value.map(group => group.value)
+    assignments.value = Object.create(null)
   }
 }
 
-async function fillQqDraft(stepIndex) {
+function profileLabel(profile) {
+  return `${profile.qqAccount || '当前 QQ'} → ${profile.robotName || profile.robotQq}${profile.backup ? '（备用）' : ''}`
+}
+
+function routeFor(group, index) {
+  const profiles = chosenProfiles.value
+  if (!profiles.length) return null
+  const checkedIndex = checkedTargets.value.indexOf(group.value)
+  const defaultIndex = checkedIndex < 0 ? index : checkedIndex
+  return profiles.find(profile => profile.id === assignments.value[group.value]) || profiles[defaultIndex % profiles.length]
+}
+
+function stepKey(group, index) {
+  return JSON.stringify([pathFor(selected.value), parameterType.value, group.value, index, group.steps[index].command])
+}
+
+async function fillQqDraft(group, stepIndex, target) {
   draftError.value = ''
   draftNotice.value = '正在打开 QQ。如果没有自动切换，请从任务栏切到要使用的 QQ 主窗口。'
   try {
     await request.post(`${pathFor(selected.value)}/qq-draft`, {
-      parameterType: parameterType.value, value: value.value, stepIndex, target: qqTarget.value,
+      parameterType: parameterType.value, value: group.value, stepIndex, target,
     }, { uiMode: 'silent' })
     draftNotice.value = '指令已填入 QQ 输入框。请核对当前登录的 QQ 和机器人好友，再手动发送。'
   } catch (err) {
@@ -265,6 +325,45 @@ async function fillQqDraft(stepIndex) {
     draftError.value = err?.message || '无法确认 QQ 草稿是否已填入。请先查看 QQ 输入框。'
     throw err
   }
+}
+
+async function sendBatch() {
+  const batch = queued.value
+  if (!batch.length || missingWindows.value.length) return
+  if (!await confirmAction({
+    title: `通过 QQ 自动发送 ${batch.length} 条指令？`,
+    description: '每条指令按清单里为它选定的发送账号和机器人提交。出现异常时队列会暂停。',
+    confirmText: '开始发送',
+  })) return
+  const path = pathFor(selected.value)
+  let sent = 0
+  for (const { key, target, value, stepIndex } of batch) {
+    attemptedTargets.value[key] = target
+    draftNotice.value = `正在发送第 ${sent + 1} / ${batch.length} 条 · ${profileLabel(target)}。如果没有自动切换，请切到发送账号的 QQ 主窗口。`
+    try {
+      await request.post(`${path}/qq-send`, {
+        parameterType: parameterType.value, target, value, stepIndex, attemptId: createSecureId('qq-send'),
+      }, { uiMode: 'silent', suppressGlobalError: true })
+    } catch (err) {
+      sendResults.value[key] = '发送暂停，待核查'
+      draftNotice.value = `已提交 ${sent} 条。请核对出错这条的 QQ 聊天记录。`
+      draftError.value = err?.message || '无法确认发送结果。'
+      return
+    }
+    sendResults.value[key] = 'QQ 已提交'
+    sent += 1
+  }
+  draftNotice.value = `QQ 已提交 ${sent} 条，请在 QQ 中查看机器人回执。`
+}
+
+async function resetSend(group, index) {
+  if (!await confirmAction({ title: '确认 QQ 聊天记录没有这条指令？', description: '确认后这条指令可以重新加入发送清单。', confirmText: '确认未发送' })) return
+  const key = stepKey(group, index)
+  await request.post(`${pathFor(selected.value)}/qq-send/clear`, {
+    parameterType: parameterType.value, value: group.value, stepIndex: index, target: attemptedTargets.value[key],
+  }, { uiMode: 'silent', suppressGlobalError: true })
+  delete attemptedTargets.value[key]
+  delete sendResults.value[key]
 }
 
 async function copyCommand(command) {
@@ -297,6 +396,7 @@ onMounted(() => run(refresh))
 .plugin-steps li + li { margin-top: 12px; }
 .draft-actions { margin-top: 8px; }
 .draft-actions span { color: var(--muted); }
+.target-choice, .route-choice { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; overflow-wrap: anywhere; }
 .draft-error { color: #b42318; margin-top: 8px; }
 .plugin-form { margin-top: 16px; align-items: end; }
 .plugin-form label { display: grid; gap: 6px; max-width: 100%; }

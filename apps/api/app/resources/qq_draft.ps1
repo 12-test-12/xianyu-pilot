@@ -6,11 +6,35 @@ Add-Type @'
 using System;
 using System.Runtime.InteropServices;
 public static class XianyuQQWindow {
+    [StructLayout(LayoutKind.Sequential)]
+    private struct KeyboardInput {
+        public ushort Key, Scan;
+        public uint Flags, Time;
+        public UIntPtr Extra;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MouseInput {
+        public int X, Y;
+        public uint Data, Flags, Time;
+        public UIntPtr Extra;
+    }
+    [StructLayout(LayoutKind.Explicit)]
+    private struct InputData {
+        [FieldOffset(0)] public KeyboardInput Keyboard;
+        [FieldOffset(0)] public MouseInput Mouse;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Input {
+        public uint Type;
+        public InputData Data;
+    }
+    [DllImport("user32.dll")] private static extern uint SendInput(uint count, Input[] inputs, int size);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr window);
     [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr window, int action);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
     [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr window);
+    [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr window, uint flags);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string className, string title);
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
     [DllImport("user32.dll")] public static extern uint GetClipboardSequenceNumber();
@@ -20,6 +44,29 @@ public static class XianyuQQWindow {
         uint id;
         GetWindowThreadProcessId(window, out id);
         return id;
+    }
+
+    private static Input Key(ushort code, bool release) {
+        return new Input { Type = 1, Data = new InputData {
+            Keyboard = new KeyboardInput { Key = code, Flags = release ? 2u : 0u }
+        }};
+    }
+    public static bool Paste(IntPtr window) {
+        return SendKeys(window, new[] { Key(0x11, false), Key(0x56, false), Key(0x56, true), Key(0x11, true) });
+    }
+    public static bool SearchNumber(IntPtr window, string number) {
+        if (!System.Text.RegularExpressions.Regex.IsMatch(number, @"\A[1-9][0-9]{4,19}\z")) return false;
+        var keys = new System.Collections.Generic.List<Input> {
+            Key(0x11, false), Key(0x41, false), Key(0x41, true), Key(0x11, true)
+        };
+        foreach (char digit in number) {
+            keys.Add(Key(digit, false));
+            keys.Add(Key(digit, true));
+        }
+        return SendKeys(window, keys.ToArray());
+    }
+    private static bool SendKeys(IntPtr window, Input[] keys) {
+        return GetForegroundWindow() == window && SendInput((uint)keys.Length, keys, Marshal.SizeOf(typeof(Input))) == keys.Length;
     }
 }
 
@@ -144,13 +191,6 @@ public sealed class QQControl {
         }
     }
 
-    public bool HasEditableValue {
-        get {
-            var value = Pattern<IQQValue>(10002);
-            return value != null && !value.GetIsReadOnly();
-        }
-    }
-
     public string Value {
         get {
             var value = Pattern<IQQValue>(10002);
@@ -159,12 +199,6 @@ public sealed class QQControl {
     }
 
     public void SetFocus() { Element.SetFocus(); }
-    public void SetValue(string value) {
-        var pattern = Pattern<IQQValue>(10002);
-        if (pattern == null || pattern.GetIsReadOnly()) throw new InvalidOperationException();
-        pattern.SetValue(value);
-    }
-
     public string ReadEditor() {
         var pattern = Pattern<IQQText>(10014);
         var range = pattern == null ? null : pattern.GetDocumentRange();
@@ -196,7 +230,9 @@ public sealed class QQAutomation {
     public const int ClassNameProperty = 30012;
     public const int Edit = 50004;
     public const int ComboBox = 50003;
+    public const int Button = 50000;
     public const int ListItem = 50007;
+    public const int Text = 50020;
     private readonly IQQAutomation client = (IQQAutomation)Activator.CreateInstance(
         Type.GetTypeFromCLSID(new Guid("e22ad333-b25f-460c-83d0-0581107395c9")));
     private readonly IQQWalker walker;
@@ -241,16 +277,44 @@ function Test-Within($child, $parent) {
     return $false
 }
 
-function Test-SearchResult($node) {
+function Get-SearchResultKind($node) {
     $inSearch = $false
     for ($depth = 0; $node -and $depth -lt 8; $depth++) {
         $name = $node.Name
         $class = $node.ClassName
-        if ($name -match '^(\u7fa4\u804a|\u6d88\u606f\u8bb0\u5f55|\u7f51\u7edc\u641c\u7d22)' -or $class -match '(?i)search.*(group|message|network)') { return $false }
+        if ($name -match '^(\u7fa4\u804a|\u6d88\u606f\u8bb0\u5f55|\u7f51\u7edc\u641c\u7d22|\u7efc\u5408\u641c\u7d22)|\u67e5\u627e.*(?:\u7528\u6237|\u7fa4\u804a)' -or
+            $class -match '(?i)search.*(group|message|network)') { return 'excluded' }
         if ($name -match '^(\u8054\u7cfb\u4eba|\u597d\u53cb)$' -or $class -match '(?i)search.*(result|list|panel|item|container)') { $inSearch = $true }
         $node = $automation.Parent($node)
     }
-    return $inSearch
+    if ($inSearch) { return 'contact' }
+    return 'unknown'
+}
+
+function Find-QQContact($panel, [string]$number, [string]$label) {
+    $numberPattern = '(?<!\d)' + [regex]::Escape($number) + '(?!\d)'
+    $fieldsPattern = '^(?:(?:QQ|\u8d26\u53f7|\u5e10\u53f7)\s*[:\uFF1A]?\s*)?' + [regex]::Escape($number) + '$'
+    $candidates = @(foreach ($row in (Find-Type $panel ([QQAutomation]::ListItem))) {
+        $exact = $row.Name -match $numberPattern
+        if (-not $exact -and (-not $label -or $row.Name -cne $label)) { continue }
+        $kind = Get-SearchResultKind $row
+        if ($kind -eq 'excluded') { continue }
+
+        $fields = @((Find-Type $row ([QQAutomation]::Text)).Name | Where-Object { $_ })
+        $names = @($fields | Where-Object { $_ -notmatch $fieldsPattern } | Select-Object -Unique)
+        $observedLabel = if ($label -and $label -cin $names) { $label } elseif ($names.Count -eq 1) { $names[0] }
+        # Some QQ builds expose the result as an unnamed list. Require a dedicated number field there.
+        if ($kind -ne 'contact' -and (-not $observedLabel -or -not @($fields | Where-Object { $_ -match $fieldsPattern }).Count)) { continue }
+        if (-not $observedLabel -and $exact) {
+            $brackets = '[\s\(\[\:\-\uFF08\u3010\uFF1A]*' + $numberPattern + '[\s\)\]\:\-\uFF09\u3011\uFF1A-]*'
+            $observedLabel = ($row.Name -replace $brackets, '').Trim()
+        }
+        if (-not $observedLabel) { $observedLabel = $label }
+        if ($observedLabel) { [pscustomobject]@{ Control = $row; Label = $observedLabel; ExactNumber = $exact } }
+    })
+    $exactMatches = @($candidates | Where-Object ExactNumber)
+    if ($exactMatches.Count) { $candidates = $exactMatches }
+    if ($candidates.Count -eq 1) { return $candidates[0] }
 }
 
 function Paste-Editor($editor, $window, [string]$text) {
@@ -274,15 +338,50 @@ function Paste-Editor($editor, $window, [string]$text) {
     try {
         if ([XianyuQQWindow]::GetForegroundWindow() -ne $window -or
             -not (Test-Within ($automation.Focused()) $editor)) { return $false }
-        [Windows.Forms.SendKeys]::SendWait('^v')
-        Start-Sleep -Milliseconds 220
-        return $true
+        if (-not [XianyuQQWindow]::Paste($window)) { return $false }
+        for ($attempt = 0; $attempt -lt 8; $attempt++) {
+            Start-Sleep -Milliseconds 100
+            if ($editor.ReadEditor() -ceq $text) { return $true }
+        }
+        return $false
     } finally {
         if ([XianyuQQWindow]::GetClipboardSequenceNumber() -eq $sequence) {
             if ($null -eq $saved -or $saved.GetFormats().Length -eq 0) { [Windows.Forms.Clipboard]::Clear() }
             else { [Windows.Forms.Clipboard]::SetDataObject($saved, $true) }
         }
     }
+}
+
+function Click-QQControl($control, $window) {
+    $point = $control.Center()
+    if ($null -eq $point -or -not (Test-Within ($automation.FromPoint($point)) $control) -or
+        [XianyuQQWindow]::GetForegroundWindow() -ne $window) { return $false }
+    [Windows.Forms.Cursor]::Position = [Drawing.Point]::new($point.X, $point.Y)
+    [XianyuQQWindow]::mouse_event(6, 0, 0, 0, [UIntPtr]::Zero)
+    return $true
+}
+
+function Get-QQWindowBinding($window) {
+    $owner = [XianyuQQWindow]::ProcessId($window)
+    $process = Get-Process -Id $owner -ErrorAction SilentlyContinue
+    if ($process -and $process.ProcessName -eq 'QQ') {
+        return 'window:{0}:{1}:{2}' -f $window.ToInt64(), $owner, $process.StartTime.ToUniversalTime().Ticks
+    }
+}
+
+function Submit-QQCommand($root, $header, $editor, $window, $label) {
+    $buttons = @(Find-Type $root ([QQAutomation]::Button) | Where-Object { $_.Name -match '^(\u53d1\u9001|Send)$' })
+    if ($buttons.Count -ne 1 -or [XianyuQQWindow]::GetForegroundWindow() -ne $window -or
+        $header.Name -cne $label -or $editor.ReadEditor() -cne $inputData.command) { return 'qq_send_unavailable' }
+
+    $script:submitAttempted = $true
+    if (-not $buttons[0].TryInvoke() -and -not (Click-QQControl $buttons[0] $window)) { return 'qq_send_unavailable' }
+    for ($attempt = 0; $attempt -lt 12; $attempt++) {
+        Start-Sleep -Milliseconds 150
+        if ([XianyuQQWindow]::GetForegroundWindow() -ne $window -or $header.Name -cne $label) { break }
+        if ($editor.ReadEditor() -ceq '') { return 'submitted' }
+    }
+    return 'send_uncertain'
 }
 
 function Open-QQDraft {
@@ -297,20 +396,31 @@ function Open-QQDraft {
         }
     )
     if (-not $panels.Count) { return 'qq_window_missing' }
+    $binding = $inputData.operation -eq 'bind'
+    $sending = $inputData.operation -eq 'send'
+    $otherPanels = @()
+    if ($sending) {
+        $boundPanels = @($panels | Where-Object { (Get-QQWindowBinding $_) -ceq $inputData.window })
+        $otherPanels = @($panels | Where-Object { $_ -notin $boundPanels })
+        $panels = $boundPanels
+        if ($panels.Count -ne 1) { return 'qq_account_unbound' }
+    }
     $foreground = [XianyuQQWindow]::GetForegroundWindow()
-    if ($panels.Count -eq 1 -and $foreground -notin $panels) {
+    if (-not $binding -and $panels.Count -eq 1 -and $foreground -notin $panels) {
         if ([XianyuQQWindow]::IsIconic($panels[0])) {
             [void][XianyuQQWindow]::ShowWindowAsync($panels[0], 9)
             Start-Sleep -Milliseconds 250
         }
         [void][XianyuQQWindow]::SetForegroundWindow($panels[0])
     }
-    for ($attempt = 0; $attempt -lt 24; $attempt++) {
+    $focusAttempts = if ($binding) { 64 } else { 24 }
+    for ($attempt = 0; $attempt -lt $focusAttempts; $attempt++) {
         $handle = [XianyuQQWindow]::GetForegroundWindow()
         if ($handle -in $panels) { break }
         Start-Sleep -Milliseconds 250
     }
     if ($handle -notin $panels) { return 'qq_unavailable' }
+    if ($binding) { return Get-QQWindowBinding $handle }
 
     $search = $null
     # QQ may populate the accessible controls only after reaching the foreground.
@@ -323,7 +433,7 @@ function Open-QQDraft {
         )
         if ($inputs | Where-Object IsPassword) { return 'qq_closed' }
         $matches = @($inputs | Where-Object { $_.ClassName -match '(?i)search' -or $_.Name -match '^(\u641c\u7d22|Search)' })
-        if ($matches.Count -eq 1 -and $matches[0].HasEditableValue) {
+        if ($matches.Count -eq 1) {
             $search = $matches[0]
             break
         }
@@ -332,65 +442,65 @@ function Open-QQDraft {
     if (-not $search) { return 'qq_search_unavailable' }
     $number = [string]$inputData.robotQq
     $label = [string]$inputData.robotName
-    $numberPattern = '(?<!\d)' + [regex]::Escape($number) + '(?!\d)'
-    if ($search.Value -cne $number) {
-        if ([XianyuQQWindow]::GetForegroundWindow() -ne $handle) { return 'qq_unavailable' }
-        $search.SetFocus()
-        try { $search.SetValue('') } catch {}
-        if ($search.Value) {
-            [Windows.Forms.SendKeys]::SendWait('^a{BACKSPACE}')
-            Start-Sleep -Milliseconds 100
-        }
-        if ($search.Value -or -not (Paste-Editor $search $handle $number)) { return 'qq_search_unavailable' }
+    # QQ's combo box can report a value without triggering the search panel.
+    if (-not (Click-QQControl $search $handle)) { return 'qq_search_unavailable' }
+    Start-Sleep -Milliseconds 150
+    if (-not (Test-Within ($automation.Focused()) $search) -or -not [XianyuQQWindow]::SearchNumber($handle, $number)) {
+        return 'qq_search_unavailable'
     }
 
     $result = $null
-    for ($attempt = 0; $attempt -lt 12; $attempt++) {
+    $queryVisible = $false
+    for ($attempt = 0; $attempt -lt 16; $attempt++) {
         Start-Sleep -Milliseconds 250
         if ([XianyuQQWindow]::GetForegroundWindow() -ne $handle) { return 'qq_unavailable' }
-        if ($search.Value -cne $number) { continue }
-        $rows = @(Find-Type $panel ([QQAutomation]::ListItem) | Where-Object {
-            ($_.Name -match $numberPattern -or ($label -and $_.Name -ceq $label)) -and (Test-SearchResult $_)
-        })
-        if ($rows.Count -eq 1) { $result = $rows[0]; break }
+        if ($search.Value -cne $number -and $search.ReadEditor() -cne $number) { continue }
+        $queryVisible = $true
+        $match = Find-QQContact $panel $number $label
+        if ($match -and (-not $sending -or $match.ExactNumber)) { $result = $match; break }
     }
+    if (-not $queryVisible) { return 'qq_search_not_entered' }
     if (-not $result -or [XianyuQQWindow]::GetForegroundWindow() -ne $handle) { return 'contact_not_found' }
-    if ($result.Name -match $numberPattern) {
-        $bracketPattern = '[\s\(\[\:\-\uFF08\u3010\uFF1A]*' + $numberPattern + '[\s\)\]\:\-\uFF09\u3011\uFF1A]*'
-        $trimChars = [char[]]@(' ', '(', ')', '[', ']', ':', '-', [char]0xff08, [char]0xff09, [char]0x3010, [char]0x3011, [char]0xff1a, [char]0x3000)
-        $resultLabel = ($result.Name -replace $bracketPattern, '').Trim($trimChars)
-        if ($resultLabel) { $label = $resultLabel }
-    }
-    if (-not $label) { $label = $number }
+    $label = $result.Label
     if ([XianyuQQWindow]::GetForegroundWindow() -ne $handle) { return 'qq_unavailable' }
-    if (-not $result.TryInvoke()) {
-        $point = $result.Center()
-        if ($null -eq $point -or -not (Test-Within ($automation.FromPoint($point)) $result)) { return 'contact_not_found' }
-        if ([XianyuQQWindow]::GetForegroundWindow() -ne $handle) { return 'qq_unavailable' }
-        [Windows.Forms.Cursor]::Position = [Drawing.Point]::new($point.X, $point.Y)
-        [XianyuQQWindow]::mouse_event(6, 0, 0, 0, [UIntPtr]::Zero)
-    }
+    if (-not $result.Control.TryInvoke() -and -not (Click-QQControl $result.Control $handle)) { return 'contact_not_found' }
 
     for ($attempt = 0; $attempt -lt 12; $attempt++) {
         Start-Sleep -Milliseconds 250
         $chatHandle = [XianyuQQWindow]::GetForegroundWindow()
         if ($chatHandle -eq [IntPtr]::Zero) { continue }
-        if ([XianyuQQWindow]::ProcessId($chatHandle) -notin $processes.Id) { continue }
+        $chatOwner = [XianyuQQWindow]::ProcessId($chatHandle)
+        if ($chatOwner -notin $processes.Id) { continue }
+        if ($sending -and $chatHandle -ne $handle) {
+            if ($chatHandle -in $otherPanels -or $chatOwner -ne [XianyuQQWindow]::ProcessId($handle)) { continue }
+            if ([XianyuQQWindow]::GetAncestor($chatHandle, 3) -ne $handle -and
+                ($otherPanels | Where-Object { [XianyuQQWindow]::ProcessId($_) -eq $chatOwner })) { continue }
+        }
         $root = $automation.FromHandle($chatHandle)
         $headers = @(Find-Class $root 'chat-header__contact-name')
         $editors = @(Find-Class $root 'qq-msg-editor')
+        if (-not $headers.Count -and -not $editors.Count) {
+            $headers = @(Find-Type $root ([QQAutomation]::Button) | Where-Object Name -CEQ $label)
+            $editors = @(Find-Type $root ([QQAutomation]::Edit) | Where-Object Name -CEQ $label)
+        }
         if ($headers.Count -ne 1 -or $headers[0].Name -cne $label -or $editors.Count -ne 1) { continue }
         $editor = $editors[0]
         $oldValue = $editor.ReadEditor()
         if ($null -eq $oldValue) { return 'chat_not_verified' }
-        if ($oldValue -ceq $inputData.command) { return 'draft_ready' }
+        if (-not $sending -and $oldValue -ceq $inputData.command) { return 'draft_ready' }
         if ($oldValue.Length) { return 'draft_exists' }
         if ($headers[0].Name -cne $label -or $editor.ReadEditor() -cne '' -or
             -not (Paste-Editor $editor $chatHandle $inputData.command)) { return 'chat_not_verified' }
-        if ($headers[0].Name -ceq $label -and $editor.ReadEditor() -ceq $inputData.command) { return 'draft_ready' }
+        if ($headers[0].Name -ceq $label -and $editor.ReadEditor() -ceq $inputData.command) {
+            if ($sending) { return Submit-QQCommand $root $headers[0] $editor $chatHandle $label }
+            return 'draft_ready'
+        }
         return 'chat_not_verified'
     }
     return 'chat_not_verified'
 }
 
-try { Open-QQDraft } catch { 'chat_not_verified' }
+$script:submitAttempted = $false
+try { Open-QQDraft } catch {
+    if ($script:submitAttempted) { 'send_uncertain' } else { 'chat_not_verified' }
+}

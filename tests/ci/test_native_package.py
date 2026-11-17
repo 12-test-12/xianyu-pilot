@@ -38,6 +38,7 @@ class NativePackageTests(unittest.TestCase):
                      '_internal/app/desktop_migrations/006_full_console.sql','_internal/app/desktop_migrations/008_desktop_plugins.sql',
                      '_internal/app/desktop_migrations/009_plugin_qq_connection.sql',
                      '_internal/app/desktop_migrations/010_plugin_qq_target.sql','_internal/app/resources/qq_draft.ps1',
+                     '_internal/app/desktop_migrations/011_plugin_qq_profiles.sql',
                      '_internal/app/resources/categories.json','_internal/app/resources/china_address_dict.json',
                      '_internal/app/resources/qiuqiu-assist.zip','_internal/python311.dll',
                      '_internal/QtWebEngineProcess.exe','_internal/Qt6WebEngineCore.dll',
