@@ -23,7 +23,7 @@ def open_qq_draft(target, command):
         raise InventoryError("直接填入草稿目前支持 Windows 电脑 QQ。可复制指令后手动粘贴。", 409)
     powershell = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
     try:
-        script = b64encode(SCRIPT.read_text(encoding="ascii").encode("utf-16-le")).decode("ascii")
+        script = b64encode(SCRIPT.read_text(encoding="utf-8-sig").encode("utf-16-le")).decode("ascii")
         result = subprocess.run(
             [str(powershell), "-NoProfile", "-NonInteractive", "-Sta", "-EncodedCommand", script],
             input=json.dumps({**target, "command": command}, ensure_ascii=True).encode("ascii"),

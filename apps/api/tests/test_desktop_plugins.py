@@ -104,6 +104,34 @@ def test_qq_target_survives_restart_and_draft_uses_the_saved_robot(desktop, monk
     assert client.get(path).json()["data"] == newer
 
 
+def test_desktop_draft_script_loads_utf8_and_handles_subprocess_results(monkeypatch):
+    from app.services.qq_bridge import desktop_draft
+    assert desktop_draft.SCRIPT.exists()
+    content = desktop_draft.SCRIPT.read_text(encoding="utf-8")
+    assert "Open-QQDraft" in content
+    assert "Paste-Editor" in content
+
+    monkeypatch.setattr(desktop_draft.os, "name", "posix")
+    with pytest.raises(desktop_draft.InventoryError) as exc:
+        desktop_draft.open_qq_draft({"robotQq": "12345"}, "test command")
+    assert "Windows 电脑 QQ" in str(exc.value)
+
+    monkeypatch.setattr(desktop_draft.os, "name", "nt")
+
+    class Completed:
+        returncode = 0
+        stdout = b"qq_closed\n"
+
+    monkeypatch.setattr(desktop_draft.subprocess, "run", lambda *args, **kwargs: Completed())
+    with pytest.raises(desktop_draft.InventoryError) as exc:
+        desktop_draft.open_qq_draft({"robotQq": "12345"}, "test command")
+    assert "请先打开并登录电脑 QQ" in str(exc.value)
+
+    Completed.stdout = b"draft_ready\r\n"
+    res = desktop_draft.open_qq_draft({"robotQq": "12345"}, "test command")
+    assert res == {"state": "draft_ready"}
+
+
 def test_qq_target_migration_preserves_an_existing_robot(tmp_path):
     database = tmp_path / "app.sqlite3"
     older = tmp_path / "migrations"

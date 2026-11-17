@@ -94,6 +94,7 @@
         </ol>
       </div>
       <p v-if="draftNotice" role="status">{{ draftNotice }}</p>
+      <p v-if="draftError" role="alert" class="draft-error">{{ draftError }}</p>
     </section>
   </div>
 </template>
@@ -122,6 +123,7 @@ const value = ref('')
 const steps = ref([])
 const qqTarget = ref(null)
 const draftNotice = ref('')
+const draftError = ref('')
 const pathFor = item => `${endpoint}/${item.id}/${item.version}`
 const isInstalled = item => data.value.installed.some(plugin => pathFor(plugin) === pathFor(item))
 let packageButton
@@ -132,6 +134,7 @@ async function run(action, trigger = document.activeElement) {
   error.value = ''
   notice.value = ''
   draftNotice.value = ''
+  draftError.value = ''
   try {
     await action()
   } catch (err) {
@@ -250,10 +253,16 @@ async function preview() {
 }
 
 async function fillQqDraft(stepIndex) {
-  await request.post(`${pathFor(selected.value)}/qq-draft`, {
-    parameterType: parameterType.value, value: value.value, stepIndex, target: qqTarget.value,
-  }, { uiMode: 'silent' })
-  draftNotice.value = '指令已填入 QQ 输入框。请核对机器人好友后亲自点击发送。'
+  draftError.value = ''
+  try {
+    await request.post(`${pathFor(selected.value)}/qq-draft`, {
+      parameterType: parameterType.value, value: value.value, stepIndex, target: qqTarget.value,
+    }, { uiMode: 'silent' })
+    draftNotice.value = '指令已填入 QQ 输入框。请核对机器人好友后亲自点击发送。'
+  } catch (err) {
+    draftError.value = err?.message || '无法确认 QQ 草稿是否已填入。请先查看 QQ 输入框。'
+    throw err
+  }
 }
 
 async function copyCommand(command) {
@@ -286,6 +295,7 @@ onMounted(() => run(refresh))
 .plugin-steps li + li { margin-top: 12px; }
 .draft-actions { margin-top: 8px; }
 .draft-actions span { color: var(--muted); }
+.draft-error { color: #b42318; margin-top: 8px; }
 .plugin-form { margin-top: 16px; align-items: end; }
 .plugin-form label { display: grid; gap: 6px; max-width: 100%; }
 .plugin-parameter-types { display: flex; flex-wrap: wrap; gap: 6px; border: 0; margin: 0; padding: 0; min-width: 0; }

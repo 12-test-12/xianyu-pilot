@@ -73,6 +73,16 @@ function Paste-Editor($editor, $window, [string]$text) {
         -not (Test-Within ([Windows.Automation.AutomationElement]::FocusedElement) $editor) -or
         (Read-Editor $editor) -cne '') { return $false }
     $previous = [Windows.Forms.Clipboard]::GetDataObject()
+    $saved = $null
+    if ($null -ne $previous) {
+        $saved = [System.Windows.Forms.DataObject]::new()
+        foreach ($format in $previous.GetFormats()) {
+            try {
+                $data = $previous.GetData($format, $true)
+                if ($null -ne $data) { $saved.SetData($format, $data) }
+            } catch {}
+        }
+    }
     [Windows.Forms.Clipboard]::SetText($text)
     $sequence = [XianyuQQWindow]::GetClipboardSequenceNumber()
     try {
@@ -83,8 +93,8 @@ function Paste-Editor($editor, $window, [string]$text) {
         return $true
     } finally {
         if ([XianyuQQWindow]::GetClipboardSequenceNumber() -eq $sequence) {
-            if ($null -eq $previous) { [Windows.Forms.Clipboard]::Clear() }
-            else { [Windows.Forms.Clipboard]::SetDataObject($previous, $true) }
+            if ($null -eq $saved -or $saved.GetFormats().Length -eq 0) { [Windows.Forms.Clipboard]::Clear() }
+            else { [Windows.Forms.Clipboard]::SetDataObject($saved, $true) }
         }
     }
 }
@@ -140,7 +150,9 @@ function Open-QQDraft {
     }
     if (-not $result -or [XianyuQQWindow]::GetForegroundWindow() -ne $handle) { return 'contact_not_found' }
     if ($result.Current.Name -match $numberPattern) {
-        $resultLabel = ($result.Current.Name -replace $numberPattern, '').Trim([char[]]' ()[]:')
+        $bracketPattern = '[\s(（\[【:：-]*' + $numberPattern + '[\s)）\]】:：-]*'
+        $trimChars = [char[]]@(' ', '(', ')', '[', ']', ':', '-', [char]0xff08, [char]0xff09, [char]0x3010, [char]0x3011, [char]0xff1a, [char]0x3000)
+        $resultLabel = ($result.Current.Name -replace $bracketPattern, '').Trim($trimChars)
         if ($resultLabel) { $label = $resultLabel }
     }
     if (-not $label) { $label = $number }
