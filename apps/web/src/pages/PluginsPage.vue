@@ -105,6 +105,7 @@
                 <span v-if="sendResults[stepKey(group, index)]">{{ sendResults[stepKey(group, index)] }} · {{ profileLabel(attemptedTargets[stepKey(group, index)]) }}</span>
                 <AppButton v-if="routeFor(group, groupIndex)" :disabled="busy || !!sendResults[stepKey(group, index)]" @click="run(() => fillQqDraft(group, index, routeFor(group, groupIndex)))">填入 QQ 草稿</AppButton>
                 <AppButton :disabled="busy" @click="run(() => copyCommand(step.command))">复制指令</AppButton>
+                <AppButton v-if="sendResults[stepKey(group, index)] === '发送暂停，待核查'" :disabled="busy" @click="run(() => checkSend(group, index))">查询发送状态</AppButton>
                 <AppButton v-if="sendResults[stepKey(group, index)] === '发送暂停，待核查'" :disabled="busy" @click="run(() => resetSend(group, index))">确认未发送</AppButton>
               </div>
             </div>
@@ -152,6 +153,8 @@ const selectedValues = ref([])
 const assignments = ref(Object.create(null))
 const sendResults = ref({})
 const attemptedTargets = ref({})
+const attemptedIds = ref({})
+const sendStateLabels = { submitted: 'QQ 已提交', receipt_success: '助力已完成', receipt_capped: '助力已达上限' }
 const chosenProfiles = computed(() => qqProfiles.value.filter(profile => selectedProfileIds.value.includes(profile.id)))
 const checkedTargets = computed(() => groups.value.filter(group => selectedValues.value.includes(group.value)).map(group => group.value))
 const queued = computed(() => groups.value.flatMap((group, groupIndex) => {
@@ -356,29 +359,45 @@ async function sendBatch() {
   })) return
   const path = pathFor(selected.value)
   let sent = 0
+  let completed = 0
+  let capped = 0
   for (const { key, target, value, stepIndex } of batch) {
+    const attemptId = createSecureId('qq-send')
     attemptedTargets.value[key] = target
+    attemptedIds.value[key] = attemptId
     draftNotice.value = `正在发送第 ${sent + 1} / ${batch.length} 条 · ${profileLabel(target)}。如果没有自动切换，请切到发送账号的 QQ 主窗口。`
+    let state
     try {
       const res = await request.post(`${path}/qq-send`, {
-        parameterType: parameterType.value, target, value, stepIndex, attemptId: createSecureId('qq-send'),
-      }, { uiMode: 'silent', suppressGlobalError: true })
-      if (res.data?.state === 'receipt_success') {
-        sendResults.value[key] = '助力已完成'
-      } else if (res.data?.state === 'receipt_capped') {
-        sendResults.value[key] = '助力已达上限'
-      } else {
-        sendResults.value[key] = 'QQ 已提交'
-      }
+        parameterType: parameterType.value, target, value, stepIndex, attemptId,
+      }, { timeout: 40000, uiMode: 'silent', suppressGlobalError: true })
+      state = res.data?.state
+      if (!sendStateLabels[state]) throw new Error('无法确认发送结果。')
     } catch (err) {
       sendResults.value[key] = '发送暂停，待核查'
-      draftNotice.value = `已提交 ${sent} 条。请核对出错这条的 QQ 聊天记录。`
+      draftNotice.value = `已提交 ${sent} 条。请查询出错这条的发送状态或核对 QQ 聊天记录。`
       draftError.value = err?.message || '无法确认发送结果。'
       return
     }
+    sendResults.value[key] = sendStateLabels[state]
+    completed += Number(state === 'receipt_success')
+    capped += Number(state === 'receipt_capped')
     sent += 1
   }
-  draftNotice.value = `QQ 发送处理完成 ${sent} 条，已核验机器人回执。`
+  draftNotice.value = `QQ 已提交 ${sent} 条。助力完成 ${completed} 条，达到上限 ${capped} 条，待查看回执 ${sent - completed - capped} 条。`
+}
+
+async function checkSend(group, index) {
+  const key = stepKey(group, index)
+  const { data } = await request.get(`${endpoint}/qq-send/attempts/${attemptedIds.value[key]}`, { uiMode: 'silent' })
+  if (sendStateLabels[data.state]) {
+    sendResults.value[key] = sendStateLabels[data.state]
+    draftNotice.value = `本次发送状态为「${sendResults.value[key]}」。`
+  } else {
+    draftNotice.value = data.state === 'sending'
+      ? '发送仍在处理或上次未正常结束。请稍后再查，或核对 QQ 聊天记录。'
+      : '未找到已提交记录。请先核对 QQ 聊天记录，再决定是否重试。'
+  }
 }
 
 async function resetSend(group, index) {
@@ -386,8 +405,10 @@ async function resetSend(group, index) {
   const key = stepKey(group, index)
   await request.post(`${pathFor(selected.value)}/qq-send/clear`, {
     parameterType: parameterType.value, value: group.value, stepIndex: index, target: attemptedTargets.value[key],
+    attemptId: attemptedIds.value[key],
   }, { uiMode: 'silent', suppressGlobalError: true })
   delete attemptedTargets.value[key]
+  delete attemptedIds.value[key]
   delete sendResults.value[key]
 }
 

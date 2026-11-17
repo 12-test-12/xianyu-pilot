@@ -10,6 +10,7 @@ from app.services.desktop_inventory import InventoryError
 
 
 SCRIPT = Path(__file__).resolve().parents[2] / "resources" / "qq_draft.ps1"
+SUBMITTED_STATES = frozenset({"submitted", "receipt_success", "receipt_capped"})
 MESSAGES = {
     "qq_closed": "请先打开并登录电脑 QQ，再试一次。",
     "qq_window_missing": "检测到 QQ 正在运行。请从任务栏或托盘打开已登录的 QQ 主窗口后重试。",
@@ -43,7 +44,7 @@ def send_qq_command(target, command, window, value=None):
     if value is not None:
         payload["value"] = value
     state = _run_qq_script(payload)
-    if state in ("submitted", "receipt_success", "receipt_capped"):
+    if state in SUBMITTED_STATES:
         return {"state": state}
     if state == "send_uncertain":
         raise InventoryError("QQ 发送结果待核查。请查看聊天记录，确认后再操作。", 503)
@@ -67,14 +68,21 @@ def _run_qq_script(payload):
         result = subprocess.run(
             [str(powershell), "-NoProfile", "-NonInteractive", "-Sta", "-EncodedCommand", script],
             input=json.dumps(payload, ensure_ascii=True).encode("ascii"),
-            capture_output=True, timeout=35, creationflags=subprocess.CREATE_NO_WINDOW,
+            capture_output=True, timeout=35 if payload.get("operation") == "send" else 25,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
     except subprocess.TimeoutExpired as exc:
         if payload.get("operation") == "send":
+            if b"send_confirmed" in (exc.stdout or b"").splitlines():
+                return "submitted"
             raise InventoryError("等待 QQ 发送结果超时。请核对聊天记录后再操作。", 503) from exc
         if payload.get("operation") == "bind":
             raise InventoryError("等待绑定 QQ 主窗口超时。请重新绑定并按提示切换窗口。", 503) from exc
         raise InventoryError("等待 QQ 草稿操作超时。请先确认 QQ 输入框里是否已有指令，再重试或复制指令。", 503) from exc
     except OSError as exc:
         raise InventoryError("无法确认 QQ 草稿是否已填入。请先查看 QQ 输入框。", 503) from exc
-    return result.stdout.decode("ascii", errors="replace").strip() if result.returncode == 0 else ""
+    lines = result.stdout.decode("ascii", errors="replace").strip().splitlines()
+    state = lines[-1] if lines and result.returncode == 0 else ""
+    if payload.get("operation") == "send" and "send_confirmed" in lines and state not in SUBMITTED_STATES:
+        return "submitted"
+    return state

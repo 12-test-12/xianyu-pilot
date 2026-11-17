@@ -68,6 +68,7 @@ REQUIRED = {
     "apps/api/app/desktop_migrations/009_plugin_qq_connection.sql", "apps/api/app/services/qq_bridge/onebot.py",
     "apps/api/app/desktop_migrations/010_plugin_qq_target.sql", "apps/api/app/services/qq_bridge/desktop_draft.py",
     "apps/api/app/desktop_migrations/011_plugin_qq_profiles.sql",
+    "apps/api/app/desktop_migrations/012_plugin_qq_receipts.sql",
     "apps/api/app/resources/qq_draft.ps1",
     "apps/api/app/services/desktop_plugins.py", "apps/web/src/pages/PluginsPage.vue",
     "apps/web/src/components/PluginQqConnection.vue",

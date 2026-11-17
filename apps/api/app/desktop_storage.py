@@ -32,7 +32,14 @@ class DesktopStore:
         expected = {name: hashlib.sha256(sql.encode()).hexdigest() for name, sql in migrations}
         if applied.keys() - expected.keys():
             raise DesktopSchemaError("数据库版本较新，请使用匹配的应用版本")
-        if any(applied[name] != expected[name] for name in applied):
+        for name, checksum in applied.items():
+            if checksum == expected[name]:
+                continue
+            # A short-lived build changed 011 in place. Migration 012 handles both known schemas.
+            if (name == "011_plugin_qq_profiles.sql" and "012_plugin_qq_receipts.sql" in expected
+                    and checksum == "a5652ecad0b2007d9971b95dd1f35472f58afffde865f173f3957cfb1a722632"
+                    and expected[name] == "2c594a1bacaa0769444defed00de636309410cc88e4dbc471e29a02b65b42b32"):
+                continue
             raise DesktopSchemaError("桌面迁移校验失败，请保留数据并恢复匹配版本")
         return applied, expected
 
@@ -83,4 +90,4 @@ class DesktopStore:
     def status(self):
         with closing(sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True, timeout=5)) as connection:
             applied, expected = self._validate(connection, self.migrations())
-        return {"current": applied == expected, "version": sorted(applied)[-1] if applied else None}
+        return {"current": applied.keys() == expected.keys(), "version": sorted(applied)[-1] if applied else None}

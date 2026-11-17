@@ -16,5 +16,5 @@ SELECT '', robot_qq, robot_name FROM desktop_plugin_qq_target WHERE id = 1;
 CREATE TABLE desktop_plugin_qq_send_attempt (
     id TEXT PRIMARY KEY,
     payload_hash TEXT NOT NULL,
-    state TEXT NOT NULL CHECK (state IN ('sending', 'submitted', 'rejected', 'uncertain', 'receipt_success', 'receipt_capped'))
+    state TEXT NOT NULL CHECK (state IN ('sending', 'submitted', 'rejected', 'uncertain'))
 );

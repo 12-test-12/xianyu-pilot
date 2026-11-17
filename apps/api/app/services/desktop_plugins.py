@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from app.core.paths import contained_data_path
 from app.core.secret_store import decrypt_secret, encrypt_secret
 from app.services.desktop_inventory import InventoryError
-from app.services.qq_bridge.desktop_draft import bind_qq_window, open_qq_draft, send_qq_command
+from app.services.qq_bridge.desktop_draft import SUBMITTED_STATES, bind_qq_window, open_qq_draft, send_qq_command
 from app.services.qq_bridge.onebot import ConnectorError, OneBotClient, validate_endpoint
 
 ID_PATTERN = r"^[a-z][a-z0-9-]{0,63}$"
@@ -96,14 +96,14 @@ def preview_plan(manifest, parameter_type, value, *, direct_number=False):
     value = value.strip()
     if not value or any(ord(char) < 32 for char in value):
         raise InventoryError("请输入一个有效的单行参数")
-    if parameter_type == "number" and not re.fullmatch(r"[0-9]{5,20}", value):
+    is_pure_number = bool(re.fullmatch(r"[0-9]{5,20}", value))
+    # The original signed package declared a rank lookup for IDs the robot now accepts directly.
+    if direct_number and is_pure_number:
+        return [{"title": "按球球号发起助力", "command": f"助力 {value}"}]
+    if parameter_type == "number" and not is_pure_number:
         raise InventoryError("球球号应为 5 至 20 位数字")
     if parameter_type == "short_link" and not re.fullmatch(r"https?://[^\s/]+(?:/[^\s]*)?", value):
         raise InventoryError("请输入一个完整的短链接")
-    # The original signed package declared a rank lookup for IDs the robot now accepts directly.
-    is_pure_number = bool(re.fullmatch(r"[0-9]{5,20}", value))
-    if direct_number and (parameter_type == "number" or is_pure_number):
-        return [{"title": "按球球号发起助力", "command": f"助力 {value}"}]
     return [
         {"title": step.title, "command": f"{step.verb} {value}" if step.input == "parameter" else None}
         for step in steps
@@ -283,6 +283,11 @@ class DesktopPlugins:
     def _send_fingerprint(target, command):
         return hashlib.sha256(repr((target["qqAccount"], target["robotQq"], command)).encode()).hexdigest()
 
+    def qq_send_state(self, attempt_id):
+        with closing(self._connect_db()) as db:
+            row = db.execute("SELECT state FROM desktop_plugin_qq_send_attempt WHERE id=?", (attempt_id,)).fetchone()
+        return {"state": row[0] if row else "not_found"}
+
     def send_qq(self, plugin_id, version, parameter_type, value, step_index, selected_target, attempt_id):
         with self._qq_draft_operation(), closing(self._connect_db()) as db:
             target, command = self._qq_command(plugin_id, version, parameter_type, value, step_index,
@@ -291,7 +296,7 @@ class DesktopPlugins:
             previous = db.execute("SELECT payload_hash, state FROM desktop_plugin_qq_send_attempt WHERE id=?",
                                   (attempt_id,)).fetchone()
             if previous:
-                if previous[0] == payload_hash and previous[1] in ("submitted", "receipt_success", "receipt_capped"):
+                if previous[0] == payload_hash and previous[1] in SUBMITTED_STATES:
                     return {"state": previous[1]}
                 raise InventoryError("这条指令已有发送尝试。请先核对 QQ 聊天记录。", 409)
             if db.execute("""
@@ -301,10 +306,12 @@ class DesktopPlugins:
             window = self.qq_windows.get(target["qqAccount"])
             if not window:
                 raise InventoryError("请先为这个发送账号绑定 QQ 主窗口", 409)
+            repeat = db.execute("SELECT 1 FROM desktop_plugin_qq_send_attempt WHERE payload_hash=? LIMIT 1",
+                                (payload_hash,)).fetchone() is not None
             with db:
                 db.execute("INSERT INTO desktop_plugin_qq_send_attempt VALUES (?, ?, 'sending')", (attempt_id, payload_hash))
             try:
-                result = send_qq_command(target, command, window, value=value)
+                result = send_qq_command(target, command, window, value=None if repeat else value.strip())
             except InventoryError as exc:
                 with db:
                     db.execute("UPDATE desktop_plugin_qq_send_attempt SET state=? WHERE id=?",
@@ -314,14 +321,20 @@ class DesktopPlugins:
                 db.execute("UPDATE desktop_plugin_qq_send_attempt SET state=? WHERE id=?", (result["state"], attempt_id))
             return result
 
-    def clear_qq_send(self, plugin_id, version, parameter_type, value, step_index, selected_target):
+    def clear_qq_send(self, plugin_id, version, parameter_type, value, step_index, selected_target, attempt_id=None):
         with self._qq_draft_operation(), closing(self._connect_db()) as db, db:
             target, command = self._qq_command(plugin_id, version, parameter_type, value, step_index,
                                                selected_target, selected_target["id"])
+            payload_hash = self._send_fingerprint(target, command)
+            if attempt_id:
+                row = db.execute("SELECT payload_hash, state FROM desktop_plugin_qq_send_attempt WHERE id=?",
+                                 (attempt_id,)).fetchone()
+                if row and (row[0] != payload_hash or row[1] in SUBMITTED_STATES):
+                    raise InventoryError("该次发送已有提交记录或与当前配置不符，请查询发送状态。", 409)
             db.execute("""
                 UPDATE desktop_plugin_qq_send_attempt SET state='rejected'
                 WHERE payload_hash=? AND state IN ('sending', 'uncertain')
-            """, (self._send_fingerprint(target, command),))
+            """, (payload_hash,))
 
     def _path(self, relative):
         try:

@@ -63,9 +63,10 @@ public static class XianyuQQWindow {
             keys.Add(Key(digit, false));
             keys.Add(Key(digit, true));
         }
-        keys.Add(Key(0x0D, false));
-        keys.Add(Key(0x0D, true));
         return SendKeys(window, keys.ToArray());
+    }
+    public static bool SearchEnter(IntPtr window) {
+        return SendKeys(window, new[] { Key(0x0D, false), Key(0x0D, true) });
     }
     private static bool SendKeys(IntPtr window, Input[] keys) {
         return GetForegroundWindow() == window && SendInput((uint)keys.Length, keys, Marshal.SizeOf(typeof(Input))) == keys.Length;
@@ -98,6 +99,11 @@ internal interface IQQAutomation {
     void CreateTrueCondition();
     void CreateFalseCondition();
     IQQCondition CreatePropertyCondition(int property, [MarshalAs(UnmanagedType.Struct)] object value);
+    IQQCondition CreatePropertyConditionEx(int property, [MarshalAs(UnmanagedType.Struct)] object value, int flags);
+    void CreateAndCondition();
+    void CreateAndConditionFromArray();
+    void CreateAndConditionFromNativeArray();
+    IQQCondition CreateOrCondition(IQQCondition first, IQQCondition second);
 }
 
 [ComImport, Guid("352ffba8-0973-437c-a61f-f64cafd81df9"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
@@ -106,7 +112,8 @@ internal interface IQQCondition {}
 [ComImport, Guid("d22108aa-8ac5-49a5-837b-37bbb3d7591e"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 internal interface IQQElement {
     void SetFocus();
-    void GetRuntimeId();
+    [return: MarshalAs(UnmanagedType.SafeArray, SafeArraySubType=VarEnum.VT_I4)]
+    int[] GetRuntimeId();
     void FindFirst();
     IQQElements FindAll(int scope, IQQCondition condition);
     void FindFirstBuildCache();
@@ -184,6 +191,7 @@ public sealed class QQControl {
 
     public string Name { get { return Element.GetCurrentPropertyValue(30005) as string; } }
     public string ClassName { get { return Element.GetCurrentPropertyValue(30012) as string; } }
+    public string RuntimeId { get { return String.Join(":", Element.GetRuntimeId()); } }
     public bool IsPassword { get { return Equals(Element.GetCurrentPropertyValue(30019), true); } }
 
     internal bool IsUsable {
@@ -247,7 +255,18 @@ public sealed class QQAutomation {
     public bool Same(QQControl first, QQControl second) { return client.CompareElements(first.Element, second.Element); }
 
     public QQControl[] Find(QQControl root, int property, object value) {
-        var matches = root.Element.FindAll(4, client.CreatePropertyCondition(property, value));
+        return Find(root, client.CreatePropertyCondition(property, value));
+    }
+
+    public QQControl[] MessageContainers(QQControl root) {
+        const int matchSubstring = 2;
+        var outer = client.CreatePropertyConditionEx(ClassNameProperty, "message-container", matchSubstring);
+        var inner = client.CreatePropertyConditionEx(ClassNameProperty, "msg-content-container", matchSubstring);
+        return Find(root, client.CreateOrCondition(outer, inner));
+    }
+
+    private static QQControl[] Find(QQControl root, IQQCondition condition) {
+        var matches = root.Element.FindAll(4, condition);
         var result = new System.Collections.Generic.List<QQControl>();
         int count = matches.GetLength();
         for (var index = 0; index < count; index++) {
@@ -280,17 +299,86 @@ function Test-Within($child, $parent) {
 }
 
 function Get-SearchResultKind($node) {
+    if ($node.Name -match '^\s*(?:(?:\u7efc\u5408\u641c\u7d22|\u7f51\u7edc\u641c\u7d22)(?:$|[\s:\uFF1A]|\u67e5\u627e)|\u67e5\u627e\s*(?:\u7528\u6237|\u7fa4\u804a)(?:$|[\s:\uFF1A]))') { return 'excluded' }
     $inContact = $false
     for ($depth = 0; $node -and $depth -lt 8; $depth++) {
         $name = $node.Name
         $class = $node.ClassName
-        if ($name -match '^(\u7fa4\u804a|\u6d88\u606f\u8bb0\u5f55|\u7f51\u7edc\u641c\u7d22)' -or
+        if ($name -match '^(?:\u7fa4\u804a|\u6d88\u606f\u8bb0\u5f55|\u7f51\u7edc\u641c\u7d22)(?:$|[\s:\uFF1A(\uFF08])' -or
             $class -match '(?i)search.*(group|message|network)') { return 'excluded' }
         if ($name -match '^(\u8054\u7cfb\u4eba|\u597d\u53cb)$' -or $class -match '(?i)search.*(result|list|panel|item|container)') { $inContact = $true }
         $node = $automation.Parent($node)
     }
     if ($inContact) { return 'contact' }
     return 'unknown'
+}
+
+function Get-QQChatControls($root, [string]$label) {
+    $headers = @(Find-Class $root 'chat-header__contact-name')
+    $editors = @(Find-Class $root 'qq-msg-editor')
+    if (-not $headers.Count -and -not $editors.Count) {
+        $headers = @(Find-Type $root ([QQAutomation]::Button) | Where-Object Name -CEQ $label)
+        $editors = @(Find-Type $root ([QQAutomation]::Edit) | Where-Object Name -CEQ $label)
+    }
+    if ($headers.Count -eq 1 -and $headers[0].Name -ceq $label -and $editors.Count -eq 1) {
+        return @{ Header = $headers[0]; Editor = $editors[0] }
+    }
+}
+
+function Get-QQMessageBubbles($root) {
+    $messageClass = '^(?:message-container|msg-content-container)(?:--[^\s]+)?(?:\s|$)'
+    $messages = [ordered]@{}
+    foreach ($bubble in $automation.MessageContainers($root)) {
+        if ($bubble.ClassName -notmatch $messageClass) { continue }
+        $self = $bubble.ClassName -match 'container--self'
+        $outer = $bubble
+        $parent = $automation.Parent($bubble)
+        for ($depth = 0; $parent -and $depth -lt 8; $depth++) {
+            if ($parent.ClassName -match $messageClass) { $outer = $parent }
+            if ($parent.ClassName -match 'container--self') { $self = $true }
+            $parent = $automation.Parent($parent)
+        }
+        $id = $outer.RuntimeId
+        if (-not $id) { continue }
+        if (-not $messages.Contains($id)) { $messages[$id] = @{ Control = $outer; Self = $false } }
+        if ($self) { $messages[$id].Self = $true }
+    }
+    foreach ($id in $messages.Keys) {
+        $message = $messages[$id]
+        $text = ((Find-Type $message.Control ([QQAutomation]::Text)) | ForEach-Object { $_.Name } | Where-Object { $_ }) -join ' '
+        if ($text) { [pscustomobject]@{ Id = $id; Self = $message.Self; Text = $text.Trim() } }
+    }
+}
+
+function Get-QQReceiptState([string]$text, [string]$target) {
+    if ($target -notmatch '^[0-9]{5,20}$') { return }
+    $number = '(?<!\d)' + [regex]::Escape($target) + '(?!\d)'
+    $numbers = @([regex]::Matches($text, '(?<!\d)[0-9]{5,20}(?!\d)').Value | Select-Object -Unique)
+    if ($numbers.Count -ne 1 -or $numbers[0] -cne $target) { return }
+    $trim = [char[]]@(' ', "`r", "`n", "`t", ':', '[', ']', '(', ')', '!', '.', ',', [char]0xFF1A, [char]0x3002, [char]0xFF01, [char]0xFF0C)
+    $result = ($text -replace ('(?:(?:\u76ee\u6807)?\u7403\u7403\u53f7\s*[:\uFF1A]?\s*)?' + $number), '').Trim($trim)
+    if ($result -match '^(?:\u52a9\u529b\u6210\u529f|\u5df2\u52a9\u529b(?:\u6210\u529f)?|\u5df2\u6210\u529f\u62c9\u6ee1)$') { return 'receipt_success' }
+    if ($result -match '^(?:(?:\u5df2)?\u8fbe\u5230\u4e0a\u9650|\u52a9\u529b\u5df2\u8fbe\u4e0a\u9650|\u6b21\u6570\u5df2\u7528\u5b8c|\u4eca\u65e5\u5df2\u6ee1|\u4eca\u65e5\u52a9\u529b\u6b21\u6570\u5df2\u7528\u5b8c)$') { return 'receipt_capped' }
+}
+
+function Find-QQReceipt($baseline, $current, [string]$command, [string]$target) {
+    if ($baseline | Where-Object { $_.Self -and $_.Text -ceq $command }) { return }
+    if ($baseline.Count) {
+        # A changed message viewport can give old bubbles new runtime IDs.
+        $lastKnown = [Array]::IndexOf(@($current.Id), $baseline[-1].Id)
+        if ($lastKnown -lt 0) { return }
+        $current = @($current | Select-Object -Skip ($lastKnown + 1))
+    }
+    $newBubbles = @($current | Where-Object { $_.Id -notin $baseline.Id })
+    $own = @($newBubbles | Where-Object { $_.Self -and $_.Text -ceq $command })
+    if ($own.Count -ne 1) { return }
+    $afterCommand = $false
+    $states = @(foreach ($bubble in $newBubbles) {
+        if ($bubble.Self) { $afterCommand = $bubble.Id -eq $own[0].Id; continue }
+        if ($afterCommand) { Get-QQReceiptState $bubble.Text $target }
+    })
+    $states = @($states | Select-Object -Unique)
+    if ($states.Count -eq 1) { return $states[0] }
 }
 
 function Find-QQContact($panel, [string]$number, [string]$label) {
@@ -372,44 +460,57 @@ function Get-QQWindowBinding($window) {
 }
 
 function Submit-QQCommand($root, $header, $editor, $window, $label) {
-    $buttons = @(Find-Type $root ([QQAutomation]::Button) | Where-Object { $_.Name -match '^(\u53d1\u9001|Send)$' })
-    if ($buttons.Count -ne 1 -or [XianyuQQWindow]::GetForegroundWindow() -ne $window -or
+    if ([XianyuQQWindow]::GetForegroundWindow() -ne $window -or
         $header.Name -cne $label -or $editor.ReadEditor() -cne $inputData.command) { return 'qq_send_unavailable' }
 
-    $initialTexts = @(Find-Type $root ([QQAutomation]::Text) | ForEach-Object { $_.Name } | Where-Object { $_ })
+    $targetNumber = [string]$inputData.value
+    $readReceipt = $targetNumber -match '^[0-9]{5,20}$' -and
+        $inputData.command -cmatch ('^\u52a9\u529b ' + $targetNumber + '\z')
+    if ($readReceipt) {
+        try { $baseline = @(Get-QQMessageBubbles $root) }
+        catch { $readReceipt = $false }
+    }
+
+    if ([XianyuQQWindow]::GetForegroundWindow() -ne $window) { return 'qq_send_unavailable' }
+    $root = $automation.FromHandle($window)
+    $chat = Get-QQChatControls $root $label
+    if (-not $chat -or -not $automation.Same($chat.Header, $header) -or
+        -not $automation.Same($chat.Editor, $editor)) { return 'qq_send_unavailable' }
+    $buttons = @(Find-Type $root ([QQAutomation]::Button) | Where-Object { $_.Name -match '^(\u53d1\u9001|Send)$' })
+    if ($buttons.Count -ne 1 -or $chat.Header.Name -cne $label -or
+        $chat.Editor.ReadEditor() -cne $inputData.command -or
+        [XianyuQQWindow]::GetForegroundWindow() -ne $window) { return 'qq_send_unavailable' }
+
     $script:submitAttempted = $true
-    if (-not $buttons[0].TryInvoke() -and -not (Click-QQControl $buttons[0] $window)) { return 'qq_send_unavailable' }
+    if (-not $buttons[0].TryInvoke()) {
+        if ($chat.Header.Name -cne $label -or $chat.Editor.ReadEditor() -cne $inputData.command -or
+            -not (Click-QQControl $buttons[0] $window)) { return 'qq_send_unavailable' }
+    }
     $sentConfirmed = $false
     for ($attempt = 0; $attempt -lt 12; $attempt++) {
         Start-Sleep -Milliseconds 150
-        if ([XianyuQQWindow]::GetForegroundWindow() -ne $window -or $header.Name -cne $label) { break }
-        if ($editor.ReadEditor() -ceq '') { $sentConfirmed = $true; break }
+        if ([XianyuQQWindow]::GetForegroundWindow() -ne $window -or $chat.Header.Name -cne $label) { break }
+        if ($chat.Editor.ReadEditor() -ceq '') { $sentConfirmed = $true; break }
     }
     if (-not $sentConfirmed) { return 'send_uncertain' }
 
-    $targetNumber = [string]$inputData.value
-    if (-not $targetNumber -and $inputData.command -match '(\d{5,20})') {
-        $targetNumber = $matches[1]
-    }
-    $targetPattern = if ($targetNumber) { '(?<!\d)' + [regex]::Escape($targetNumber) + '(?!\d)' } else { $null }
-
-    for ($attempt = 0; $attempt -lt 20; $attempt++) {
-        Start-Sleep -Milliseconds 250
-        if ([XianyuQQWindow]::GetForegroundWindow() -ne $window) { break }
-        $currentTexts = @(Find-Type $root ([QQAutomation]::Text) | ForEach-Object { $_.Name } | Where-Object { $_ })
-        $newTexts = @($currentTexts | Where-Object { $_ -notin $initialTexts -and $_ -cne $inputData.command })
-        if (-not $newTexts.Count) { continue }
-
-        foreach ($text in $newTexts) {
-            $matchedTarget = ($targetPattern -and $text -match $targetPattern) -or ($text -match [regex]::Escape($inputData.command))
-            if ($matchedTarget) {
-                if ($text -match '(\u52a9\u529b\u6210\u529f|\u5df2\u6210\u529f\u62c9\u6ee1|\u62c9\u6ee1|\u6210\u529f|\u6392\u540d\u7b2c|\u5df2\u52a9\u529b)') {
-                    return 'receipt_success'
-                }
-                if ($text -match '(\u8fbe\u5230\u4e0a\u9650|\u6b21\u6570\u5df2\u7528\u5b8c|\u4eca\u65e5\u5df2\u6ee1|\u4e0a\u9650|\u4e0d\u5b58\u5728|\u5931\u8d25)') {
-                    return 'receipt_capped'
-                }
+    [Console]::Out.WriteLine('send_confirmed')
+    [Console]::Out.Flush()
+    if ($readReceipt) {
+        try {
+            for ($attempt = 0; $attempt -lt 20; $attempt++) {
+                Start-Sleep -Milliseconds 250
+                if ([XianyuQQWindow]::GetForegroundWindow() -ne $window -or $chat.Header.Name -cne $label) { break }
+                $receipt = Find-QQReceipt $baseline @(Get-QQMessageBubbles $root) $inputData.command $targetNumber
+                if (-not $receipt) { continue }
+                $currentChat = Get-QQChatControls ($automation.FromHandle($window)) $label
+                if ($currentChat -and $automation.Same($currentChat.Header, $chat.Header) -and
+                    $automation.Same($currentChat.Editor, $chat.Editor) -and
+                    [XianyuQQWindow]::GetForegroundWindow() -eq $window) { return $receipt }
+                break
             }
+        } catch {
+            # The editor already cleared. An unreadable receipt cannot undo the submission.
         }
     }
     return 'submitted'
@@ -482,6 +583,7 @@ function Open-QQDraft {
 
     $result = $null
     $queryVisible = $false
+    $enterTried = $false
     for ($attempt = 0; $attempt -lt 16; $attempt++) {
         Start-Sleep -Milliseconds 250
         if ([XianyuQQWindow]::GetForegroundWindow() -ne $handle) { return 'qq_unavailable' }
@@ -489,6 +591,10 @@ function Open-QQDraft {
         $queryVisible = $true
         $match = Find-QQContact $panel $number $label
         if ($match -and (-not $sending -or $match.ExactNumber)) { $result = $match; break }
+        if ($attempt -ge 7 -and -not $enterTried -and (Test-Within ($automation.Focused()) $search)) {
+            $enterTried = $true
+            if (-not [XianyuQQWindow]::SearchEnter($handle)) { return 'qq_search_unavailable' }
+        }
     }
     if (-not $queryVisible) { return 'qq_search_not_entered' }
     if (-not $result -or [XianyuQQWindow]::GetForegroundWindow() -ne $handle) { return 'contact_not_found' }
@@ -508,22 +614,17 @@ function Open-QQDraft {
                 ($otherPanels | Where-Object { [XianyuQQWindow]::ProcessId($_) -eq $chatOwner })) { continue }
         }
         $root = $automation.FromHandle($chatHandle)
-        $headers = @(Find-Class $root 'chat-header__contact-name')
-        $editors = @(Find-Class $root 'qq-msg-editor')
-        if (-not $headers.Count -and -not $editors.Count) {
-            $headers = @(Find-Type $root ([QQAutomation]::Button) | Where-Object Name -CEQ $label)
-            $editors = @(Find-Type $root ([QQAutomation]::Edit) | Where-Object Name -CEQ $label)
-        }
-        if ($headers.Count -ne 1 -or $headers[0].Name -cne $label -or $editors.Count -ne 1) { continue }
-        $editor = $editors[0]
+        $chat = Get-QQChatControls $root $label
+        if (-not $chat) { continue }
+        $editor = $chat.Editor
         $oldValue = $editor.ReadEditor()
         if ($null -eq $oldValue) { return 'chat_not_verified' }
         if (-not $sending -and $oldValue -ceq $inputData.command) { return 'draft_ready' }
         if ($oldValue.Length) { return 'draft_exists' }
-        if ($headers[0].Name -cne $label -or $editor.ReadEditor() -cne '' -or
+        if ($chat.Header.Name -cne $label -or $editor.ReadEditor() -cne '' -or
             -not (Paste-Editor $editor $chatHandle $inputData.command)) { return 'chat_not_verified' }
-        if ($headers[0].Name -ceq $label -and $editor.ReadEditor() -ceq $inputData.command) {
-            if ($sending) { return Submit-QQCommand $root $headers[0] $editor $chatHandle $label }
+        if ($chat.Header.Name -ceq $label -and $editor.ReadEditor() -ceq $inputData.command) {
+            if ($sending) { return Submit-QQCommand $root $chat.Header $editor $chatHandle $label }
             return 'draft_ready'
         }
         return 'chat_not_verified'

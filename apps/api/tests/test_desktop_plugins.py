@@ -1,9 +1,11 @@
 import base64
 import json
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from pathlib import Path
 import sqlite3
+import subprocess
 from subprocess import CompletedProcess, TimeoutExpired
 from threading import Thread
 from types import SimpleNamespace
@@ -150,6 +152,27 @@ def test_desktop_draft_script_loads_utf8_and_handles_subprocess_results(monkeypa
     with pytest.raises(desktop_draft.InventoryError, match="等待 QQ 草稿操作超时"):
         desktop_draft.open_qq_draft({"robotQq": "12345"}, "test command")
 
+    def receipt_timeout(args, *, timeout, **kwargs):
+        raise TimeoutExpired(args, timeout, output=b"send_confirmed\r\n")
+
+    process.run = receipt_timeout
+    assert desktop_draft.send_qq_command({"robotQq": "12345"}, "test command", "window:1:2:3") == {"state": "submitted"}
+
+
+@pytest.mark.skipif(os.name != "nt", reason="tests the native Windows PowerShell script")
+def test_qq_script_checks_receipt_and_send_context_without_interacting_with_qq():
+    fixture = Path(__file__).with_name("qq_draft_review.ps1")
+    script_path = str(fixture).replace("'", "''")
+    launch = f"& ([scriptblock]::Create([IO.File]::ReadAllText('{script_path}')))"
+    # The fixture reads the production script relative to its own repository path.
+    powershell = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    result = subprocess.run(
+        [str(powershell), "-NoProfile", "-NonInteractive", "-EncodedCommand",
+         base64.b64encode(launch.encode("utf-16-le")).decode("ascii")],
+        cwd=fixture.parents[3], capture_output=True, timeout=20,
+    )
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+
 
 def test_qq_target_migration_preserves_an_existing_robot(tmp_path):
     database = tmp_path / "app.sqlite3"
@@ -169,6 +192,32 @@ def test_qq_target_migration_preserves_an_existing_robot(tmp_path):
     assert plugins.qq_connection()["qqAccount"] == "10001"
 
 
+@pytest.mark.parametrize("previous_receipt", [False, True])
+def test_qq_receipt_migration_upgrades_both_predecessors(tmp_path, previous_receipt):
+    database = tmp_path / "app.sqlite3"
+    older = tmp_path / "migrations"
+    older.mkdir()
+    for migration in MIGRATIONS.glob("*.sql"):
+        if migration.name.startswith("012_"):
+            continue
+        sql = migration.read_text(encoding="utf-8")
+        if previous_receipt and migration.name.startswith("011_"):
+            sql = sql.replace("'uncertain'))", "'uncertain', 'receipt_success', 'receipt_capped'))")
+        (older / migration.name).write_text(sql, encoding="utf-8")
+    DesktopStore(database, older).initialize()
+    with sqlite3.connect(database) as db:
+        db.execute("INSERT INTO desktop_plugin_qq_send_attempt VALUES ('id', 'original', ?)",
+                   ("receipt_success" if previous_receipt else "submitted",))
+        db.execute("INSERT INTO desktop_plugin_qq_send_attempt VALUES ('unresolved', 'other', 'uncertain')")
+    store = DesktopStore(database)
+    assert store.initialize()["current"] and store.initialize()["current"]
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT * FROM desktop_plugin_qq_send_attempt ORDER BY id").fetchall() == [
+            ("id", "original", "submitted"), ("unresolved", "other", "uncertain"),
+        ]
+        db.execute("UPDATE desktop_plugin_qq_send_attempt SET state='receipt_success' WHERE id='id'")
+
+
 def test_qq_profiles_batch_preview_and_idempotent_send(desktop, monkeypatch):
     client, _, root = desktop
     profiles = f"{ENDPOINT}/qq/profiles"
@@ -185,41 +234,51 @@ def test_qq_profiles_batch_preview_and_idempotent_send(desktop, monkeypatch):
     installed = f"{ENDPOINT}/{plugin['id']}/{plugin['version']}"
     client.patch(installed, json={"enabled": True}).raise_for_status()
     batch = {"parameterType": "number", "values": ["78901", "98765", " 78901 "]}
-    preview = client.post(f"{installed}/preview-batch", json=batch).json()["data"]
-    assert [(group["value"], group["steps"][0]["command"]) for group in preview] == [
-        ("78901", "助力 78901"), ("98765", "助力 98765"),
-    ]
+    for kind in ("number", "nickname", "short_link"):
+        preview = client.post(f"{installed}/preview-batch", json=batch | {"parameterType": kind}).json()["data"]
+        assert [(group["value"], group["steps"][0]["command"]) for group in preview] == [
+            ("78901", "助力 78901"), ("98765", "助力 98765"),
+        ]
     assert client.post(f"{installed}/preview-batch", json=batch | {"values": ["78901", "bad"]}).status_code == 400
 
     window = "window:1:2:3"
+    attempts = f"{ENDPOINT}/qq-send/attempts"
     monkeypatch.setattr(desktop_plugins, "bind_qq_window", lambda: window)
     opens = []
 
     def submit(target, command, bound_window, value=None):
-        opens.append((target, command, bound_window))
+        opens.append((target, command, bound_window, value))
         if command == "助力 98765":
             raise desktop_plugins.InventoryError("QQ 发送结果待核查", 503)
-        return {"state": "submitted"}
+        return {"state": "receipt_success" if value else "submitted"}
 
     monkeypatch.setattr(desktop_plugins, "send_qq_command", submit)
     send = f"{installed}/qq-send"
     request = {"parameterType": "number", "value": "78901", "stepIndex": 0, "target": backup,
                "attemptId": "qq-send-" + "a" * 32}
     assert client.post(send, json=request).status_code == 409
+    assert client.get(f"{attempts}/{request['attemptId']}").json()["data"] == {"state": "not_found"}
     assert client.put(f"{windows}/10001", json={}).raise_for_status().json()["data"] == ["10001"]
     assert client.put(f"{windows}/30003", json={}).status_code == 409
     assert client.post(send, json=request | {"target": backup | {"robotQq": "99999"}}).status_code == 409
     for _ in range(2):
-        assert client.post(send, json=request).json()["data"] == {"state": "submitted"}
-    assert opens == [(backup, "助力 78901", window)]
+        assert client.post(send, json=request).json()["data"] == {"state": "receipt_success"}
+    assert client.get(f"{attempts}/{request['attemptId']}").json()["data"] == {"state": "receipt_success"}
+    assert client.post(f"{send}/clear", json=request).status_code == 409
+    assert opens == [(backup, "助力 78901", window, "78901")]
+    repeat = request | {"attemptId": "qq-send-" + "e" * 32}
+    assert client.post(send, json=repeat).json()["data"] == {"state": "submitted"}
+    assert opens[-1] == (backup, "助力 78901", window, None)
     uncertain = request | {"value": "98765", "attemptId": "qq-send-" + "b" * 32}
     assert client.post(send, json=uncertain).status_code == 503
     assert client.post(send, json=uncertain).status_code == 409
     assert client.post(send, json=uncertain | {"attemptId": "qq-send-" + "c" * 32}).status_code == 409
-    assert opens[-1] == (backup, "助力 98765", window)
-    assert len(opens) == 2
+    assert client.get(f"{attempts}/{uncertain['attemptId']}").json()["data"] == {"state": "uncertain"}
+    assert opens[-1] == (backup, "助力 98765", window, "98765")
+    assert len(opens) == 3
     assert client.post(f"{send}/clear", json={key: value for key, value in uncertain.items() if key != "attemptId"}).status_code == 200
     assert client.post(send, json=uncertain | {"attemptId": "qq-send-" + "d" * 32}).status_code == 503
+    assert opens[-1] == (backup, "助力 98765", window, None)
     assert client.delete(f"{profiles}/{backup['id']}", headers={"X-Request-Id": "qq-test"}).status_code == 200
     assert client.post(send, json=request).status_code == 409
 

@@ -67,6 +67,7 @@ def validate_required(files):
               '_internal/app/desktop_migrations/009_plugin_qq_connection.sql',
               '_internal/app/desktop_migrations/010_plugin_qq_target.sql',
               '_internal/app/desktop_migrations/011_plugin_qq_profiles.sql',
+              '_internal/app/desktop_migrations/012_plugin_qq_receipts.sql',
               '_internal/app/resources/categories.json','_internal/app/resources/china_address_dict.json',
               '_internal/app/resources/qiuqiu-assist.zip','_internal/app/resources/qq_draft.ps1',
               'PORTABLE-README.txt'}

@@ -21,6 +21,7 @@ router = APIRouter(
 PluginId = Annotated[str, Path(pattern=ID_PATTERN)]
 PluginVersion = Annotated[str, Path(pattern=VERSION_PATTERN)]
 QQAccount = Annotated[str, Path(min_length=5, max_length=20, pattern=QQ_ID_PATTERN)]
+QQ_ATTEMPT_PATTERN = r"^qq-send-[a-f0-9-]{32,36}$"
 
 
 class EnableBody(BaseModel):
@@ -74,7 +75,11 @@ class QQSendSelection(QQDraftBody):
 
 
 class QQSendBody(QQSendSelection):
-    attemptId: str = Field(pattern=r"^qq-send-[a-f0-9-]{32,36}$")
+    attemptId: str = Field(pattern=QQ_ATTEMPT_PATTERN)
+
+
+class QQSendReviewBody(QQSendSelection):
+    attemptId: str | None = Field(default=None, pattern=QQ_ATTEMPT_PATTERN)
 
 
 def store(request: Request):
@@ -224,6 +229,11 @@ def send_qq(request: Request, plugin_id: PluginId, version: PluginVersion, body:
 
 
 @router.post("/{plugin_id}/{version}/qq-send/clear")
-def clear_qq_send(request: Request, plugin_id: PluginId, version: PluginVersion, body: QQSendSelection):
+def clear_qq_send(request: Request, plugin_id: PluginId, version: PluginVersion, body: QQSendReviewBody):
     return perform(store(request).clear_qq_send, plugin_id, version, body.parameterType, body.value,
-                   body.stepIndex, body.target.model_dump())
+                   body.stepIndex, body.target.model_dump(), body.attemptId)
+
+
+@router.get("/qq-send/attempts/{attempt_id}")
+def qq_send_state(request: Request, attempt_id: Annotated[str, Path(pattern=QQ_ATTEMPT_PATTERN)]):
+    return perform(store(request).qq_send_state, attempt_id)
