@@ -106,12 +106,14 @@ def test_qq_target_survives_restart_and_draft_uses_the_saved_robot(desktop, monk
     assert client.get(path).json()["data"] == newer
 
 
-def test_desktop_draft_script_loads_utf8_and_handles_subprocess_results(monkeypatch):
+def test_desktop_draft_script_loads_utf8_and_handles_subprocess_results(monkeypatch, tmp_path):
     from app.services.qq_bridge import desktop_draft
     assert desktop_draft.SCRIPT.exists()
     content = desktop_draft.SCRIPT.read_text(encoding="utf-8-sig")
     assert "Open-QQDraft" in content
     assert "Paste-Editor" in content
+    monkeypatch.setattr(desktop_draft, "SCRIPT", tmp_path / "Win's QQ 草稿.ps1")
+    escaped_path = tmp_path / "Win''s QQ 草稿.ps1"
 
     # Changing the shared os module would also change pathlib and pytest.
     platform = SimpleNamespace(name="posix", environ={})
@@ -125,19 +127,28 @@ def test_desktop_draft_script_loads_utf8_and_handles_subprocess_results(monkeypa
     no_window = 0x08000000
 
     def run(args, **kwargs):
-        assert base64.b64decode(args[-1]).decode("utf-16-le") == content
+        launch = base64.b64decode(args[-1]).decode("utf-16-le")
+        assert launch == f"& ([scriptblock]::Create([IO.File]::ReadAllText('{escaped_path}')))"
         assert kwargs["creationflags"] == no_window
         return result
 
-    monkeypatch.setattr(desktop_draft, "subprocess", SimpleNamespace(
+    process = SimpleNamespace(
         run=run, CREATE_NO_WINDOW=no_window, TimeoutExpired=TimeoutExpired,
-    ))
+    )
+    monkeypatch.setattr(desktop_draft, "subprocess", process)
     with pytest.raises(desktop_draft.InventoryError) as exc:
         desktop_draft.open_qq_draft({"robotQq": "12345"}, "test command")
     assert "请先打开并登录电脑 QQ" in str(exc.value)
 
     result.stdout = b"draft_ready\r\n"
     assert desktop_draft.open_qq_draft({"robotQq": "12345"}, "test command") == {"state": "draft_ready"}
+
+    def time_out(args, *, timeout, **kwargs):
+        raise TimeoutExpired(args, timeout)
+
+    process.run = time_out
+    with pytest.raises(desktop_draft.InventoryError, match="等待 QQ 草稿操作超时"):
+        desktop_draft.open_qq_draft({"robotQq": "12345"}, "test command")
 
 
 def test_qq_target_migration_preserves_an_existing_robot(tmp_path):

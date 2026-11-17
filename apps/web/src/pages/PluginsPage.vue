@@ -254,12 +254,14 @@ async function preview() {
 
 async function fillQqDraft(stepIndex) {
   draftError.value = ''
+  draftNotice.value = '正在打开 QQ。如果没有自动切换，请从任务栏切到要使用的 QQ 主窗口。'
   try {
     await request.post(`${pathFor(selected.value)}/qq-draft`, {
       parameterType: parameterType.value, value: value.value, stepIndex, target: qqTarget.value,
     }, { uiMode: 'silent' })
-    draftNotice.value = '指令已填入 QQ 输入框。请核对机器人好友后亲自点击发送。'
+    draftNotice.value = '指令已填入 QQ 输入框。请核对当前登录的 QQ 和机器人好友，再手动发送。'
   } catch (err) {
+    draftNotice.value = ''
     draftError.value = err?.message || '无法确认 QQ 草稿是否已填入。请先查看 QQ 输入框。'
     throw err
   }
