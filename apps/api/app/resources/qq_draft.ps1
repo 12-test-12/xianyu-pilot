@@ -336,7 +336,11 @@ function Open-QQDraft {
     if ($search.Value -cne $number) {
         if ([XianyuQQWindow]::GetForegroundWindow() -ne $handle) { return 'qq_unavailable' }
         $search.SetFocus()
-        $search.SetValue('')
+        try { $search.SetValue('') } catch {}
+        if ($search.Value) {
+            [Windows.Forms.SendKeys]::SendWait('^a{BACKSPACE}')
+            Start-Sleep -Milliseconds 100
+        }
         if ($search.Value -or -not (Paste-Editor $search $handle $number)) { return 'qq_search_unavailable' }
     }
 
@@ -348,12 +352,11 @@ function Open-QQDraft {
         $rows = @(Find-Type $panel ([QQAutomation]::ListItem) | Where-Object {
             ($_.Name -match $numberPattern -or ($label -and $_.Name -ceq $label)) -and (Test-SearchResult $_)
         })
-        if ($rows.Count -gt 1) { return 'contact_not_found' }
         if ($rows.Count -eq 1) { $result = $rows[0]; break }
     }
     if (-not $result -or [XianyuQQWindow]::GetForegroundWindow() -ne $handle) { return 'contact_not_found' }
     if ($result.Name -match $numberPattern) {
-        $bracketPattern = '[\s(（\[【:：-]*' + $numberPattern + '[\s)）\]】:：-]*'
+        $bracketPattern = '[\s\(\[\:\-\uFF08\u3010\uFF1A]*' + $numberPattern + '[\s\)\]\:\-\uFF09\u3011\uFF1A]*'
         $trimChars = [char[]]@(' ', '(', ')', '[', ']', ':', '-', [char]0xff08, [char]0xff09, [char]0x3010, [char]0x3011, [char]0xff1a, [char]0x3000)
         $resultLabel = ($result.Name -replace $bracketPattern, '').Trim($trimChars)
         if ($resultLabel) { $label = $resultLabel }
@@ -372,7 +375,7 @@ function Open-QQDraft {
         Start-Sleep -Milliseconds 250
         $chatHandle = [XianyuQQWindow]::GetForegroundWindow()
         if ($chatHandle -eq [IntPtr]::Zero) { continue }
-        if ([XianyuQQWindow]::ProcessId($chatHandle) -notin $processes.Id) { return 'chat_not_verified' }
+        if ([XianyuQQWindow]::ProcessId($chatHandle) -notin $processes.Id) { continue }
         $root = $automation.FromHandle($chatHandle)
         $headers = @(Find-Class $root 'chat-header__contact-name')
         $editors = @(Find-Class $root 'qq-msg-editor')

@@ -26,7 +26,7 @@ def open_qq_draft(target, command):
     powershell = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
     try:
         script_path = str(SCRIPT).replace("'", "''")
-        launch = f"& ([scriptblock]::Create([IO.File]::ReadAllText('{script_path}')))"
+        launch = f"& ([scriptblock]::Create([IO.File]::ReadAllText('{script_path}', [System.Text.Encoding]::UTF8)))"
         script = b64encode(launch.encode("utf-16-le")).decode("ascii")
         result = subprocess.run(
             [str(powershell), "-NoProfile", "-NonInteractive", "-Sta", "-EncodedCommand", script],
