@@ -4,7 +4,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from pathlib import Path
 import sqlite3
+from subprocess import CompletedProcess, TimeoutExpired
 from threading import Thread
+from types import SimpleNamespace
 from zipfile import ZipFile
 
 import pytest
@@ -107,29 +109,35 @@ def test_qq_target_survives_restart_and_draft_uses_the_saved_robot(desktop, monk
 def test_desktop_draft_script_loads_utf8_and_handles_subprocess_results(monkeypatch):
     from app.services.qq_bridge import desktop_draft
     assert desktop_draft.SCRIPT.exists()
-    content = desktop_draft.SCRIPT.read_text(encoding="utf-8")
+    content = desktop_draft.SCRIPT.read_text(encoding="utf-8-sig")
     assert "Open-QQDraft" in content
     assert "Paste-Editor" in content
 
-    monkeypatch.setattr(desktop_draft.os, "name", "posix")
+    # Changing the shared os module would also change pathlib and pytest.
+    platform = SimpleNamespace(name="posix", environ={})
+    monkeypatch.setattr(desktop_draft, "os", platform)
     with pytest.raises(desktop_draft.InventoryError) as exc:
         desktop_draft.open_qq_draft({"robotQq": "12345"}, "test command")
     assert "Windows 电脑 QQ" in str(exc.value)
 
-    monkeypatch.setattr(desktop_draft.os, "name", "nt")
+    platform.name = "nt"
+    result = CompletedProcess(args=[], returncode=0, stdout=b"qq_closed\n")
+    no_window = 0x08000000
 
-    class Completed:
-        returncode = 0
-        stdout = b"qq_closed\n"
+    def run(args, **kwargs):
+        assert base64.b64decode(args[-1]).decode("utf-16-le") == content
+        assert kwargs["creationflags"] == no_window
+        return result
 
-    monkeypatch.setattr(desktop_draft.subprocess, "run", lambda *args, **kwargs: Completed())
+    monkeypatch.setattr(desktop_draft, "subprocess", SimpleNamespace(
+        run=run, CREATE_NO_WINDOW=no_window, TimeoutExpired=TimeoutExpired,
+    ))
     with pytest.raises(desktop_draft.InventoryError) as exc:
         desktop_draft.open_qq_draft({"robotQq": "12345"}, "test command")
     assert "请先打开并登录电脑 QQ" in str(exc.value)
 
-    Completed.stdout = b"draft_ready\r\n"
-    res = desktop_draft.open_qq_draft({"robotQq": "12345"}, "test command")
-    assert res == {"state": "draft_ready"}
+    result.stdout = b"draft_ready\r\n"
+    assert desktop_draft.open_qq_draft({"robotQq": "12345"}, "test command") == {"state": "draft_ready"}
 
 
 def test_qq_target_migration_preserves_an_existing_robot(tmp_path):
