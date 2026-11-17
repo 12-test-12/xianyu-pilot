@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from app.core.paths import contained_data_path
 from app.core.secret_store import decrypt_secret, encrypt_secret
 from app.services.desktop_inventory import InventoryError
+from app.services.qq_bridge.desktop_draft import open_qq_draft
 from app.services.qq_bridge.onebot import ConnectorError, OneBotClient, validate_endpoint
 
 ID_PATTERN = r"^[a-z][a-z0-9-]{0,63}$"
@@ -116,6 +117,7 @@ class DesktopPlugins:
         self.database = database
         self.lock = Lock()
         self.qq_lock = Lock()
+        self.qq_draft_lock = Lock()
 
     def qq_connection(self):
         with closing(self._connect_db()) as db:
@@ -170,6 +172,40 @@ class DesktopPlugins:
     def disconnect_qq(self):
         with self.qq_lock, closing(self._connect_db()) as db, db:
             db.execute("DELETE FROM desktop_plugin_qq_connection WHERE id = 1")
+
+    def qq_target(self):
+        with closing(self._connect_db()) as db:
+            row = db.execute("SELECT robot_qq, robot_name FROM desktop_plugin_qq_target WHERE id = 1").fetchone()
+        return {"robotQq": row[0], "robotName": row[1]} if row else None
+
+    def save_qq_target(self, robot_qq, robot_name):
+        if not self.qq_draft_lock.acquire(blocking=False):
+            raise InventoryError("正在打开 QQ 草稿，请稍后更换机器人", 409)
+        try:
+            robot_name = robot_name.strip()
+            if len(robot_name.splitlines()) > 1 or any(ord(char) < 32 for char in robot_name):
+                raise InventoryError("备注或昵称应为单行文字")
+            target = {"robotQq": robot_qq, "robotName": robot_name}
+            with closing(self._connect_db()) as db, db:
+                db.execute("INSERT OR REPLACE INTO desktop_plugin_qq_target VALUES (1, ?, ?)", (robot_qq, robot_name))
+            return target
+        finally:
+            self.qq_draft_lock.release()
+
+    def prepare_qq_draft(self, plugin_id, version, parameter_type, value, step_index, selected_target):
+        if not self.qq_draft_lock.acquire(blocking=False):
+            raise InventoryError("正在准备上一条 QQ 草稿，请稍后重试", 409)
+        try:
+            target = self.qq_target()
+            if target is None or target != selected_target:
+                raise InventoryError("机器人绑定已变化，请刷新插件页后重试", 409)
+            steps = self.preview(plugin_id, version, parameter_type, value)
+            command = steps[step_index]["command"] if step_index < len(steps) else None
+            if not command or len(command.splitlines()) != 1 or any(ord(char) < 32 for char in command):
+                raise InventoryError("请先在预演中生成一条有效指令")
+            return open_qq_draft(target, command)
+        finally:
+            self.qq_draft_lock.release()
 
     def _path(self, relative):
         try:

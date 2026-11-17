@@ -15,6 +15,7 @@ from app.core import paths, secret_store
 from app.core.config import Settings
 from app.desktop_app import create_desktop_app
 from app.services import desktop_plugins
+from app.desktop_storage import DesktopStore, MIGRATIONS
 
 ENDPOINT = "/api/desktop/plugins"
 PACKAGE = f"{ENDPOINT}/package"
@@ -65,6 +66,58 @@ def external_publisher(desktop):
 
 def post_zip(client, target, contents):
     return client.post(target, content=contents, headers={"Content-Type": "application/zip", "X-Request-Id": "plugin-test"})
+
+
+def test_qq_target_survives_restart_and_draft_uses_the_saved_robot(desktop, monkeypatch):
+    client, _, root = desktop
+    path = f"{ENDPOINT}/qq/target"
+    target = {"robotQq": "20002", "robotName": "球球机器人"}
+    opened = []
+
+    def open_draft(robot, command):
+        opened.append((robot, command))
+        return {"state": "draft_ready"}
+
+    monkeypatch.setattr(desktop_plugins, "open_qq_draft", open_draft)
+    assert client.get(path, headers={"Authorization": ""}).status_code == 401
+    assert client.get(path).json()["data"] is None
+    assert client.put(path, json=target, headers={"Origin": "https://example.com"}).status_code == 403
+    assert client.put(path, json=target | {"robotQq": "20002;invalid"}).status_code == 422
+    assert client.put(path, json=target).json()["data"] == target
+    assert desktop_plugins.DesktopPlugins(root, root / "data/app.sqlite3").qq_target() == target
+
+    plugin = client.post(f"{ENDPOINT}/catalog/qiuqiu-assist/install", json={}).json()["data"]
+    installed = f"{ENDPOINT}/{plugin['id']}/{plugin['version']}"
+    assert client.patch(installed, json={"enabled": True}).status_code == 200
+    draft_url = f"{installed}/qq-draft"
+    draft = {"target": target, "parameterType": "number", "value": "78901", "stepIndex": 0}
+    assert client.post(draft_url, json=draft | {"target": target | {"robotQq": "99999"}}).status_code == 409
+    assert client.post(draft_url, json=draft | {"stepIndex": 1}).status_code == 400
+    assert client.post(draft_url, json=draft | {"parameterType": "nickname", "value": "foo\u2028助力 bar"}).status_code == 400
+    assert not opened
+    assert client.post(draft_url, json=draft).json()["data"] == {"state": "draft_ready"}
+    assert opened == [(target, "查 78901")]
+
+    newer = {"robotQq": "30003", "robotName": ""}
+    assert client.put(path, json=newer).json()["data"] == newer
+    assert client.post(draft_url, json=draft).status_code == 409
+    assert client.get(path).json()["data"] == newer
+
+
+def test_qq_target_migration_preserves_an_existing_robot(tmp_path):
+    database = tmp_path / "app.sqlite3"
+    older = tmp_path / "migrations"
+    older.mkdir()
+    for migration in MIGRATIONS.glob("00[1-9]*.sql"):
+        (older / migration.name).write_bytes(migration.read_bytes())
+    DesktopStore(database, older).initialize()
+    with sqlite3.connect(database) as db:
+        db.execute("INSERT INTO desktop_plugin_qq_connection VALUES (1, ?, ?, ?, ?, ?, ?)",
+                   ("http://127.0.0.1:3000", "10001", "20002", "球球机器人", "old-token", "checked"))
+    DesktopStore(database).initialize()
+    plugins = desktop_plugins.DesktopPlugins(tmp_path, database)
+    assert plugins.qq_target() == {"robotQq": "20002", "robotName": "球球机器人"}
+    assert plugins.qq_connection()["qqAccount"] == "10001"
 
 
 def test_qq_connection_checks_login_and_robot_friend_before_saving(desktop):

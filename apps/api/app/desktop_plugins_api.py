@@ -41,6 +41,17 @@ class QQConnectionBody(BaseModel):
     accessToken: SecretStr = SecretStr("")
 
 
+class QQTargetBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    robotQq: str = Field(min_length=5, max_length=20, pattern=QQ_ID_PATTERN)
+    robotName: str = Field(default="", max_length=80)
+
+
+class QQDraftBody(PreviewBody):
+    target: QQTargetBody
+    stepIndex: int = Field(strict=True, ge=0, le=2)
+
+
 def store(request: Request):
     return request.app.state.desktop_plugins
 
@@ -93,6 +104,16 @@ def disconnect_qq(request: Request):
     return perform(store(request).disconnect_qq)
 
 
+@router.get("/qq/target")
+def qq_target(request: Request):
+    return perform(store(request).qq_target)
+
+
+@router.put("/qq/target")
+def save_qq_target(request: Request, body: QQTargetBody):
+    return perform(store(request).save_qq_target, body.robotQq, body.robotName)
+
+
 @router.post("/package/inspect")
 async def inspect_package(request: Request):
     files = await package_payload(request)
@@ -123,3 +144,9 @@ def uninstall(request: Request, plugin_id: PluginId, version: PluginVersion):
 @router.post("/{plugin_id}/{version}/preview")
 def preview(request: Request, plugin_id: PluginId, version: PluginVersion, body: PreviewBody):
     return perform(store(request).preview, plugin_id, version, body.parameterType, body.value)
+
+
+@router.post("/{plugin_id}/{version}/qq-draft")
+def prepare_qq_draft(request: Request, plugin_id: PluginId, version: PluginVersion, body: QQDraftBody):
+    return perform(store(request).prepare_qq_draft, plugin_id, version, body.parameterType, body.value,
+                   body.stepIndex, body.target.model_dump())

@@ -23,7 +23,7 @@
           <div>
             <h3>{{ item.name }} <small>v{{ item.version }}</small></h3>
             <p>{{ item.description }}</p>
-            <p>支持{{ item.parameterTypes.map(type => parameterLabels[type] || type).join('、') }}。预演仅生成指令，QQ 收发和闲鱼发货需手动操作。</p>
+            <p>支持{{ item.parameterTypes.map(type => parameterLabels[type] || type).join('、') }}。指令可填入 QQ 草稿，由你在 QQ 中确认发送。</p>
           </div>
           <div class="plugin-actions">
             <Badge v-if="isInstalled(item)" type="green">已安装</Badge>
@@ -59,12 +59,12 @@
         <li v-for="issue in data.issues" :key="issue.path">{{ issue.path }} · {{ issue.message }}</li>
       </ul>
     </section>
-    <PluginQqConnection />
+    <PluginQqConnection v-model:target="qqTarget" />
     <section v-if="selected" class="card-panel plugin-panel" aria-labelledby="plugin-preview">
       <header class="plugin-heading">
         <div>
           <h2 id="plugin-preview" ref="previewHeading" tabindex="-1">{{ selected.name }} · 指令预演</h2>
-          <p>在本机查看预计发送的指令。</p>
+          <p>首次测试可选球球号或昵称，先试一条查询。</p>
         </div>
       </header>
       <form class="plugin-form" @submit.prevent="run(preview)">
@@ -85,9 +85,15 @@
           <li v-for="(step, index) in steps" :key="index">
             <strong>{{ step.title }}</strong>
             <p>{{ step.command || '收到可核对的全服排名后生成指令' }}</p>
+            <div v-if="step.command" class="plugin-actions draft-actions">
+              <AppButton v-if="qqTarget" type="primary" :disabled="busy" @click="run(() => fillQqDraft(index))">填入 QQ 草稿</AppButton>
+              <AppButton :disabled="busy" @click="run(() => copyCommand(step.command))">复制指令</AppButton>
+              <span v-if="!qqTarget">保存机器人后可直接填入 QQ。</span>
+            </div>
           </li>
         </ol>
       </div>
+      <p v-if="draftNotice" role="status">{{ draftNotice }}</p>
     </section>
   </div>
 </template>
@@ -97,6 +103,7 @@ import { nextTick, onMounted, ref } from 'vue'
 import AppButton from '../components/AppButton.vue'
 import Badge from '../components/Badge.vue'
 import PluginQqConnection from '../components/PluginQqConnection.vue'
+import { copyText } from '../utils/clipboard.js'
 import { confirmAction } from '../utils/confirmAction.js'
 import request from '../utils/request.js'
 
@@ -113,6 +120,8 @@ const selected = ref(null)
 const parameterType = ref('')
 const value = ref('')
 const steps = ref([])
+const qqTarget = ref(null)
+const draftNotice = ref('')
 const pathFor = item => `${endpoint}/${item.id}/${item.version}`
 const isInstalled = item => data.value.installed.some(plugin => pathFor(plugin) === pathFor(item))
 let packageButton
@@ -122,6 +131,7 @@ async function run(action, trigger = document.activeElement) {
   busy.value = true
   error.value = ''
   notice.value = ''
+  draftNotice.value = ''
   try {
     await action()
   } catch (err) {
@@ -239,6 +249,18 @@ async function preview() {
   }
 }
 
+async function fillQqDraft(stepIndex) {
+  await request.post(`${pathFor(selected.value)}/qq-draft`, {
+    parameterType: parameterType.value, value: value.value, stepIndex, target: qqTarget.value,
+  }, { uiMode: 'silent' })
+  draftNotice.value = '指令已填入 QQ 输入框。请核对机器人好友后亲自点击发送。'
+}
+
+async function copyCommand(command) {
+  if (!await copyText(command)) throw new Error('无法复制，请选中指令文字手动复制。')
+  draftNotice.value = '指令已复制。可在机器人 QQ 私聊中粘贴。'
+}
+
 onMounted(() => run(refresh))
 </script>
 
@@ -262,6 +284,8 @@ onMounted(() => run(refresh))
 .plugin-row:last-child { margin-bottom: 0; }
 .plugin-issues, .plugin-steps { margin: 14px 0 0; padding-left: 24px; }
 .plugin-steps li + li { margin-top: 12px; }
+.draft-actions { margin-top: 8px; }
+.draft-actions span { color: var(--muted); }
 .plugin-form { margin-top: 16px; align-items: end; }
 .plugin-form label { display: grid; gap: 6px; max-width: 100%; }
 .plugin-parameter-types { display: flex; flex-wrap: wrap; gap: 6px; border: 0; margin: 0; padding: 0; min-width: 0; }

@@ -16,6 +16,7 @@ class PortablePackageTests(unittest.TestCase):
         for name in ['XianyuPilot.exe','_internal/web/index.html','_internal/web/assets/safety.js',
                      '_internal/app/desktop_migrations/006_full_console.sql','_internal/app/desktop_migrations/008_desktop_plugins.sql',
                      '_internal/app/desktop_migrations/009_plugin_qq_connection.sql',
+                     '_internal/app/desktop_migrations/010_plugin_qq_target.sql','_internal/app/resources/qq_draft.ps1',
                      '_internal/app/resources/categories.json','_internal/app/resources/china_address_dict.json',
                      '_internal/app/resources/qiuqiu-assist.zip','_internal/python311.dll',
                      '_internal/PySide6/QtWebEngineProcess.exe','_internal/PySide6/Qt6WebEngineCore.dll',
