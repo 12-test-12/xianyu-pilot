@@ -28,5 +28,8 @@
     "eslint": "10.5.0",
     "eslint-plugin-vue": "10.9.2",
     "globals": "17.6.0"
+  },
+  "overrides": {
+    "picomatch": "npm:@ryotsu/picomatch@4.0.7-a"
   }
 }
