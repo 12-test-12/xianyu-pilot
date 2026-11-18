@@ -70,6 +70,7 @@ def validate_required(files):
               '_internal/app/desktop_migrations/012_plugin_qq_receipts.sql',
               '_internal/app/resources/categories.json','_internal/app/resources/china_address_dict.json',
               '_internal/app/resources/qiuqiu-assist.zip','_internal/app/resources/qq_draft.ps1',
+              '_internal/app/resources/qq_draft.dll',
               'PORTABLE-README.txt'}
     if not required<=files.keys():
         raise ValueError('portable build is incomplete')

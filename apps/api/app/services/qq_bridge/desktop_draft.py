@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 
 from app.services.desktop_inventory import InventoryError
 
@@ -13,12 +14,15 @@ SCRIPT = Path(__file__).resolve().parents[2] / "resources" / "qq_draft.ps1"
 SUBMITTED_STATES = frozenset({"submitted", "receipt_success", "receipt_capped"})
 MESSAGES = {
     "qq_closed": "请先打开并登录电脑 QQ，再试一次。",
+    "qq_helper_unavailable": "无法加载 QQ 窗口操作组件。请检查桌面版程序文件是否完整，或复制指令后手动粘贴。",
     "qq_window_missing": "检测到 QQ 正在运行。请从任务栏或托盘打开已登录的 QQ 主窗口后重试。",
     "qq_unavailable": "QQ 主窗口没有保持在前台。请重试，并在等待时点击任务栏里的 QQ 主窗口。",
     "qq_search_unavailable": "已找到 QQ 主窗口，但无法使用搜索框。可复制指令后在机器人 QQ 私聊中粘贴。",
     "qq_search_not_entered": "QQ 搜索框没有读回机器人号码。请保持 QQ 主窗口在前台，或复制指令后手动粘贴。",
     "contact_not_found": "QQ 中没找到可确认的机器人好友，请核对 QQ 号和 QQ 中显示的备注或昵称。",
+    "contact_not_opened": "已找到机器人好友，但未能确认已打开对应的私聊。请在 QQ 中打开机器人会话，或复制指令后手动粘贴。",
     "chat_not_verified": "没能核对聊天对象或输入框。可复制指令后在 QQ 私聊粘贴。",
+    "draft_not_inserted": "已打开机器人私聊，但无法确认指令已填入。请先查看 QQ 输入框，再决定是否手动粘贴。",
     "draft_exists": "这个 QQ 聊天已有草稿。请先处理原草稿，再试一次。",
     "qq_account_unbound": "没有找到这次绑定的发送账号窗口。请重新绑定对应的 QQ 主窗口。",
     "qq_send_unavailable": "已填入草稿，但无法核对发送按钮。请先查看 QQ 聊天，处理草稿后再继续。",
@@ -63,7 +67,10 @@ def _run_qq_script(payload):
     powershell = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
     try:
         script_path = str(SCRIPT).replace("'", "''")
-        launch = f"& ([scriptblock]::Create([IO.File]::ReadAllText('{script_path}', [System.Text.Encoding]::UTF8)))"
+        helper = SCRIPT.with_suffix(".dll" if getattr(sys, "frozen", False) else ".cs")
+        helper_path = str(helper).replace("'", "''")
+        launch = (f"& ([scriptblock]::Create([IO.File]::ReadAllText('{script_path}', [System.Text.Encoding]::UTF8)))"
+                  f" -helperPath '{helper_path}'")
         script = b64encode(launch.encode("utf-16-le")).decode("ascii")
         result = subprocess.run(
             [str(powershell), "-NoProfile", "-NonInteractive", "-Sta", "-EncodedCommand", script],

@@ -102,11 +102,11 @@
             <div v-for="(step, index) in group.steps" :key="index">
               <p>{{ step.title }} · {{ step.command || '收到可核对的全服排名后生成指令' }}</p>
               <div v-if="step.command" class="plugin-actions draft-actions">
-                <span v-if="sendResults[stepKey(group, index)]">{{ sendResults[stepKey(group, index)] }} · {{ profileLabel(attemptedTargets[stepKey(group, index)]) }}</span>
+                <span v-if="sendResults[stepKey(group, index)]">{{ sendStateLabels[sendResults[stepKey(group, index)]] }} · {{ profileLabel(attemptedTargets[stepKey(group, index)]) }}</span>
                 <AppButton v-if="routeFor(group, groupIndex)" :disabled="busy || !!sendResults[stepKey(group, index)]" @click="run(() => fillQqDraft(group, index, routeFor(group, groupIndex)))">填入 QQ 草稿</AppButton>
                 <AppButton :disabled="busy" @click="run(() => copyCommand(step.command))">复制指令</AppButton>
-                <AppButton v-if="sendResults[stepKey(group, index)] === '发送暂停，待核查'" :disabled="busy" @click="run(() => checkSend(group, index))">查询发送状态</AppButton>
-                <AppButton v-if="sendResults[stepKey(group, index)] === '发送暂停，待核查'" :disabled="busy" @click="run(() => resetSend(group, index))">确认未发送</AppButton>
+                <AppButton v-if="sendResults[stepKey(group, index)] === 'uncertain'" :disabled="busy" @click="run(() => checkSend(group, index))">查询发送状态</AppButton>
+                <AppButton v-if="sendResults[stepKey(group, index)] === 'uncertain'" :disabled="busy" @click="run(() => resetSend(group, index))">确认未发送</AppButton>
               </div>
             </div>
           </li>
@@ -154,7 +154,9 @@ const assignments = ref(Object.create(null))
 const sendResults = ref({})
 const attemptedTargets = ref({})
 const attemptedIds = ref({})
-const sendStateLabels = { submitted: 'QQ 已提交', receipt_success: '助力已完成', receipt_capped: '助力已达上限' }
+const sendStateLabels = {
+  submitted: 'QQ 已提交', receipt_success: '助力已完成', receipt_capped: '助力已达上限', uncertain: '发送暂停，待核查',
+}
 const chosenProfiles = computed(() => qqProfiles.value.filter(profile => selectedProfileIds.value.includes(profile.id)))
 const checkedTargets = computed(() => groups.value.filter(group => selectedValues.value.includes(group.value)).map(group => group.value))
 const queued = computed(() => groups.value.flatMap((group, groupIndex) => {
@@ -187,8 +189,9 @@ async function run(action, trigger = document.activeElement) {
   } finally {
     busy.value = false
     await nextTick()
-    if (document.activeElement === document.body && trigger instanceof HTMLButtonElement && trigger.isConnected) {
-      trigger.focus()
+    if (document.activeElement === document.body && trigger instanceof HTMLButtonElement) {
+      if (trigger.isConnected && !trigger.disabled) trigger.focus()
+      else previewHeading.value?.focus()
     }
   }
 }
@@ -334,6 +337,27 @@ function stepKey(group, index) {
   return JSON.stringify([pathFor(selected.value), parameterType.value, group.value, index, group.steps[index].command])
 }
 
+function removeCompletedTargets() {
+  const completed = groups.value.filter(group => group.steps.length &&
+    group.steps.every((step, index) => step.command && sendResults.value[stepKey(group, index)] === 'receipt_success'))
+  if (!completed.length) return
+
+  const targets = new Set(completed.map(group => group.value))
+  groups.value = groups.value.filter(group => !targets.has(group.value))
+  selectedValues.value = selectedValues.value.filter(target => !targets.has(target))
+  value.value = value.value.split(/\r?\n/).filter(line => !targets.has(line.trim())).join('\n')
+  for (const group of completed) {
+    delete assignments.value[group.value]
+    for (const index of group.steps.keys()) {
+      const key = stepKey(group, index)
+      delete sendResults.value[key]
+      delete attemptedTargets.value[key]
+      delete attemptedIds.value[key]
+    }
+  }
+  draftNotice.value += ` 已从清单移除 ${completed.length} 个完成目标。`
+}
+
 async function fillQqDraft(group, stepIndex, target) {
   draftError.value = ''
   draftNotice.value = '正在打开 QQ。如果没有自动切换，请从任务栏切到要使用的 QQ 主窗口。'
@@ -374,25 +398,28 @@ async function sendBatch() {
       state = res.data?.state
       if (!sendStateLabels[state]) throw new Error('无法确认发送结果。')
     } catch (err) {
-      sendResults.value[key] = '发送暂停，待核查'
+      sendResults.value[key] = 'uncertain'
       draftNotice.value = `已提交 ${sent} 条。请查询出错这条的发送状态或核对 QQ 聊天记录。`
       draftError.value = err?.message || '无法确认发送结果。'
+      removeCompletedTargets()
       return
     }
-    sendResults.value[key] = sendStateLabels[state]
+    sendResults.value[key] = state
     completed += Number(state === 'receipt_success')
     capped += Number(state === 'receipt_capped')
     sent += 1
   }
   draftNotice.value = `QQ 已提交 ${sent} 条。助力完成 ${completed} 条，达到上限 ${capped} 条，待查看回执 ${sent - completed - capped} 条。`
+  removeCompletedTargets()
 }
 
 async function checkSend(group, index) {
   const key = stepKey(group, index)
   const { data } = await request.get(`${endpoint}/qq-send/attempts/${attemptedIds.value[key]}`, { uiMode: 'silent' })
   if (sendStateLabels[data.state]) {
-    sendResults.value[key] = sendStateLabels[data.state]
-    draftNotice.value = `本次发送状态为「${sendResults.value[key]}」。`
+    sendResults.value[key] = data.state
+    draftNotice.value = `本次发送状态为「${sendStateLabels[data.state]}」。`
+    removeCompletedTargets()
   } else {
     draftNotice.value = data.state === 'sending'
       ? '发送仍在处理或上次未正常结束。请稍后再查，或核对 QQ 聊天记录。'

@@ -130,7 +130,8 @@ def test_desktop_draft_script_loads_utf8_and_handles_subprocess_results(monkeypa
 
     def run(args, **kwargs):
         launch = base64.b64decode(args[-1]).decode("utf-16-le")
-        assert launch == f"& ([scriptblock]::Create([IO.File]::ReadAllText('{escaped_path}', [System.Text.Encoding]::UTF8)))"
+        assert launch == (f"& ([scriptblock]::Create([IO.File]::ReadAllText('{escaped_path}', [System.Text.Encoding]::UTF8)))"
+                          f" -helperPath '{escaped_path.with_suffix('.cs')}'")
         assert kwargs["creationflags"] == no_window
         return result
 
