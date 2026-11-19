@@ -216,7 +216,9 @@ public sealed class QQControl {
         var pattern = Pattern<IQQText>(10014);
         var range = pattern == null ? null : pattern.GetDocumentRange();
         var text = range == null ? null : range.GetText(600).TrimEnd('\r', '\n');
-        return String.IsNullOrEmpty(text) ? Value ?? text : text;
+        if (String.IsNullOrWhiteSpace(text)) text = Value ?? text;
+        // QQ can expose an empty chat editor as a newline and a space.
+        return text != null && String.IsNullOrWhiteSpace(text) ? String.Empty : text;
     }
 
     public bool TryInvoke() {
